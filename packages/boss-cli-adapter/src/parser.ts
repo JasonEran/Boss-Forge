@@ -28,6 +28,21 @@ function parseFields(raw: string): Record<string, string> {
   return fields;
 }
 
+function deduplicateCandidates(candidates: ParsedCandidate[]): ParsedCandidate[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const fingerprint = JSON.stringify([
+      candidate.source,
+      candidate.name,
+      Object.entries(candidate.fields).sort(([left], [right]) => left.localeCompare(right)),
+      candidate.evidence
+    ]);
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
+  });
+}
+
 function parsePositions(raw: string): ParsedPosition[] {
   const positions: ParsedPosition[] = [];
   for (const line of raw.split(/\r?\n/)) {
@@ -66,7 +81,7 @@ function parseRecommend(raw: string): ParsedCandidate[] {
       current.evidence.push(advantage[1]!.trim());
     }
   }
-  return candidates;
+  return deduplicateCandidates(candidates);
 }
 
 function parseSearch(raw: string): ParsedCandidate[] {
@@ -89,7 +104,7 @@ function parseSearch(raw: string): ParsedCandidate[] {
     const detail = line.match(/^\s{3,}(.+)$/);
     if (detail && current) current.evidence.push(detail[1]!.trim());
   }
-  return candidates;
+  return deduplicateCandidates(candidates);
 }
 
 function parseDeepSearch(raw: string): ParsedCandidate[] {
@@ -115,7 +130,7 @@ function parseDeepSearch(raw: string): ParsedCandidate[] {
       current.evidence.push(`${detail[1]}：${detail[2]!.trim()}`);
     }
   }
-  return candidates;
+  return deduplicateCandidates(candidates);
 }
 
 function parseResume(raw: string): ParsedResume {
