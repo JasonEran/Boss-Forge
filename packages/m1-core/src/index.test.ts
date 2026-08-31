@@ -25,6 +25,36 @@ describe("M1 candidate pipeline", () => {
     expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
   });
 
+  it("keeps the same fingerprint when mutable expectation fields change", () => {
+    const first = candidate({
+      fields: {
+        信息: "28岁 / 4年 / 本科 / 离职-随时到岗",
+        期望: "珠海 内容运营",
+        薪资: "8-10K"
+      }
+    });
+    const second = candidate({
+      fields: {
+        信息: "28岁 / 4年 / 本科 / 离职-随时到岗",
+        期望: "珠海 媒介专员",
+        薪资: "9-12K"
+      }
+    });
+    expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
+  });
+
+  it("does not merge people with the same masked name but different base information", () => {
+    const first = candidate({
+      name: "刘女士",
+      fields: { 信息: "23岁 / 1年 / 本科", 期望: "珠海 内容运营" }
+    });
+    const second = candidate({
+      name: "刘女士",
+      fields: { 信息: "37岁 / 10年以上 / 本科", 期望: "珠海 行政" }
+    });
+    expect(candidateFingerprint(first)).not.toBe(candidateFingerprint(second));
+  });
+
   it("stores a matched TEM8 result with original evidence", () => {
     const result = evaluateCandidate(candidate(), rule);
     expect(result.decision).toBe("matched");

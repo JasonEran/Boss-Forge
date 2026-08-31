@@ -8,6 +8,8 @@ import {
   BriefcaseBusiness,
   CalendarClock,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   CircleGauge,
   Clock3,
   Eye,
@@ -338,12 +340,57 @@ function SectionEmpty({
   );
 }
 
+const candidatePageSize = 25;
+
+function PaginationFooter({
+  page,
+  totalItems,
+  onPageChange,
+}: {
+  page: number;
+  totalItems: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / candidatePageSize));
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between border-t px-4 py-3">
+      <p className="text-xs text-muted-foreground">
+        共 {totalItems} 人 · 第 {page}/{totalPages} 页
+      </p>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+        >
+          <ChevronLeft />
+          上一页
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+        >
+          下一页
+          <ChevronRight />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function DashboardClient({ page }: { page: DashboardPage }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
   const [selectedPositionId, setSelectedPositionId] = useState('');
   const [candidatePositionFilter, setCandidatePositionFilter] = useState('all');
+  const [pendingCandidatePage, setPendingCandidatePage] = useState(1);
+  const [screenedOutCandidatePage, setScreenedOutCandidatePage] = useState(1);
+  const [approvedCandidatePage, setApprovedCandidatePage] = useState(1);
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
@@ -403,6 +450,18 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
         (candidatePositionFilter === 'all' ||
           candidate.positionName === candidatePositionFilter),
     ) ?? [];
+  const visiblePendingCandidates = pendingCandidates.slice(
+    (pendingCandidatePage - 1) * candidatePageSize,
+    pendingCandidatePage * candidatePageSize,
+  );
+  const visibleScreenedOutCandidates = screenedOutCandidates.slice(
+    (screenedOutCandidatePage - 1) * candidatePageSize,
+    screenedOutCandidatePage * candidatePageSize,
+  );
+  const visibleApprovedCandidates = approvedCandidates.slice(
+    (approvedCandidatePage - 1) * candidatePageSize,
+    approvedCandidatePage * candidatePageSize,
+  );
   const activeSchedules = data?.schedules.filter((item) => item.enabled) ?? [];
   const pageInfo = pageCopy[page];
   const metrics = useMemo(
@@ -655,9 +714,11 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
             {page === 'candidates' ? (
               <Select
                 value={candidatePositionFilter}
-                onValueChange={(value) =>
-                  setCandidatePositionFilter(value ?? 'all')
-                }
+                onValueChange={(value) => {
+                  setCandidatePositionFilter(value ?? 'all');
+                  setPendingCandidatePage(1);
+                  setScreenedOutCandidatePage(1);
+                }}
               >
                 <SelectTrigger className="h-9 min-w-44">
                   <SelectValue />
@@ -1213,7 +1274,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {pendingCandidates.map((candidate) => (
+                      {visiblePendingCandidates.map((candidate) => (
                         <TableRow key={candidate.stateId}>
                           <TableCell className="pl-4">
                             <p className="font-medium">{candidate.name}</p>
@@ -1261,6 +1322,11 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                     </TableBody>
                   </Table>
                 )}
+                <PaginationFooter
+                  page={pendingCandidatePage}
+                  totalItems={pendingCandidates.length}
+                  onPageChange={setPendingCandidatePage}
+                />
               </CardContent>
             </Card>
             <Card>
@@ -1291,7 +1357,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {screenedOutCandidates.map((candidate) => (
+                      {visibleScreenedOutCandidates.map((candidate) => (
                         <TableRow key={candidate.stateId}>
                           <TableCell className="pl-4 font-medium">
                             {candidate.name}
@@ -1320,6 +1386,11 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                     </TableBody>
                   </Table>
                 )}
+                <PaginationFooter
+                  page={screenedOutCandidatePage}
+                  totalItems={screenedOutCandidates.length}
+                  onPageChange={setScreenedOutCandidatePage}
+                />
               </CardContent>
             </Card>
             </>
@@ -1373,7 +1444,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {approvedCandidates.map((candidate) => (
+                          {visibleApprovedCandidates.map((candidate) => (
                             <TableRow key={candidate.stateId}>
                               <TableCell className="pl-4 font-medium">
                                 {candidate.name}
@@ -1406,6 +1477,11 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                         </TableBody>
                       </Table>
                     )}
+                    <PaginationFooter
+                      page={approvedCandidatePage}
+                      totalItems={approvedCandidates.length}
+                      onPageChange={setApprovedCandidatePage}
+                    />
                   </CardContent>
                 </Card>
                 <Card>

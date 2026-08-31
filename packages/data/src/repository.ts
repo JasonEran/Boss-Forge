@@ -260,14 +260,39 @@ export class BossForgeRepository {
   async completeTask(task: Task, records: CandidateEvaluationRecord[]): Promise<void> {
     await this.sql.begin(async (transaction) => {
       for (const record of records) {
-        const candidateRows = await transaction<{ id: string }[]>`
-          INSERT INTO candidates (id, fingerprint, display_name)
-          VALUES (${randomUUID()}, ${record.fingerprint}, ${record.displayName})
-          ON CONFLICT (fingerprint) DO UPDATE SET
-            display_name = EXCLUDED.display_name,
-            updated_at = now()
-          RETURNING id
-        `;
+        const baseInfo = record.rawFields["信息"]?.trim();
+        let candidateRows: Array<{ id: string }> = [];
+        if (baseInfo) {
+          candidateRows = await transaction<{ id: string }[]>`
+            SELECT c.id
+            FROM candidates c
+            JOIN candidate_snapshots cs ON cs.candidate_id = c.id
+            WHERE LOWER(BTRIM(c.display_name)) = LOWER(BTRIM(${record.displayName}))
+              AND BTRIM(cs.raw_fields ->> '信息') = ${baseInfo}
+            ORDER BY c.updated_at DESC, cs.collected_at DESC
+            LIMIT 1
+          `;
+          if (candidateRows[0]) {
+            candidateRows = await transaction<{ id: string }[]>`
+              UPDATE candidates
+              SET fingerprint = ${record.fingerprint},
+                display_name = ${record.displayName},
+                updated_at = now()
+              WHERE id = ${candidateRows[0].id}
+              RETURNING id
+            `;
+          }
+        }
+        if (!candidateRows[0]) {
+          candidateRows = await transaction<{ id: string }[]>`
+            INSERT INTO candidates (id, fingerprint, display_name)
+            VALUES (${randomUUID()}, ${record.fingerprint}, ${record.displayName})
+            ON CONFLICT (fingerprint) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              updated_at = now()
+            RETURNING id
+          `;
+        }
         const candidateId = candidateRows[0]!.id;
         const snapshotRows = await transaction<{ id: string }[]>`
           INSERT INTO candidate_snapshots (
@@ -945,22 +970,45 @@ export class BossForgeRepository {
           updated_at: Date;
         }>
       >`
-        SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
-          p.name AS position_name, cps.rule_decision, cps.rule_confidence,
-          cps.review_status, cps.contact_status, cps.version AS state_version,
-          cps.resume_screening_status, cps.current_english_level,
-          cps.resume_screened_at, cps.resume_screening_error,
-          cs.source_evidence, cs.raw_fields,
-          cps.updated_at
-        FROM candidate_position_states cps
-        JOIN candidates c ON c.id = cps.candidate_id
-        JOIN positions p ON p.id = cps.position_id
-        JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
-        WHERE cps.review_status IN ('pending', 'approved', 'not_required')
+        WITH candidate_source AS (
+          SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
+            p.id AS position_id, p.name AS position_name,
+            cps.rule_decision, cps.rule_confidence,
+            cps.review_status, cps.contact_status, cps.version AS state_version,
+            cps.resume_screening_status, cps.current_english_level,
+            cps.resume_screened_at, cps.resume_screening_error,
+            cs.source_evidence, cs.raw_fields, cps.updated_at,
+            CASE
+              WHEN NULLIF(BTRIM(cs.raw_fields ->> '信息'), '') IS NULL THEN c.id::text
+              ELSE LOWER(BTRIM(c.display_name)) || E'\x1f' ||
+                REGEXP_REPLACE(LOWER(BTRIM(cs.raw_fields ->> '信息')), '\\s+', ' ', 'g')
+            END AS candidate_identity
+          FROM candidate_position_states cps
+          JOIN candidates c ON c.id = cps.candidate_id
+          JOIN positions p ON p.id = cps.position_id
+          JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
+        ), ranked_candidates AS (
+          SELECT candidate_source.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY position_id, candidate_identity
+              ORDER BY
+                CASE review_status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                CASE resume_screening_status WHEN 'screened' THEN 0 ELSE 1 END,
+                updated_at DESC
+            ) AS identity_rank
+          FROM candidate_source
+        )
+        SELECT state_id, candidate_id, display_name, position_name,
+          rule_decision, rule_confidence, review_status, contact_status,
+          state_version, resume_screening_status, current_english_level,
+          resume_screened_at, resume_screening_error, source_evidence,
+          raw_fields, updated_at
+        FROM ranked_candidates
+        WHERE identity_rank = 1
+          AND review_status IN ('pending', 'approved', 'not_required')
         ORDER BY
-          CASE cps.rule_decision WHEN 'matched' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,
-          cps.rule_confidence DESC, cps.updated_at DESC
-        LIMIT 50
+          CASE rule_decision WHEN 'matched' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,
+          rule_confidence DESC, updated_at DESC
       `,
       this.sql<
         Array<{
@@ -970,6 +1018,27 @@ export class BossForgeRepository {
           contacted_today: number;
         }>
       >`
+        WITH candidate_source AS (
+          SELECT cps.*,
+            CASE
+              WHEN NULLIF(BTRIM(cs.raw_fields ->> '信息'), '') IS NULL THEN c.id::text
+              ELSE LOWER(BTRIM(c.display_name)) || E'\x1f' ||
+                REGEXP_REPLACE(LOWER(BTRIM(cs.raw_fields ->> '信息')), '\\s+', ' ', 'g')
+            END AS candidate_identity
+          FROM candidate_position_states cps
+          JOIN candidates c ON c.id = cps.candidate_id
+          JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
+        ), ranked_candidates AS (
+          SELECT candidate_source.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY candidate_identity
+              ORDER BY
+                CASE review_status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                CASE resume_screening_status WHEN 'screened' THEN 0 ELSE 1 END,
+                updated_at DESC
+            ) AS identity_rank
+          FROM candidate_source
+        )
         SELECT
           COUNT(*)::int AS total_candidates,
           COUNT(*) FILTER (
@@ -982,7 +1051,8 @@ export class BossForgeRepository {
           COUNT(*) FILTER (
             WHERE contact_status = 'sent' AND updated_at >= date_trunc('day', now())
           )::int AS contacted_today
-        FROM candidate_position_states
+        FROM ranked_candidates
+        WHERE identity_rank = 1
       `
     ]);
     const metrics = metricRows[0]!;

@@ -9,10 +9,18 @@ function normalizedFields(fields: Record<string, string>): Array<[string, string
     .sort(([left], [right]) => left.localeCompare(right));
 }
 
+const MUTABLE_LIST_FIELD_NAMES = new Set(["期望", "薪资"]);
+
+function identityFields(fields: Record<string, string>): Array<[string, string]> {
+  const normalized = normalizedFields(fields);
+  const stable = normalized.filter(([key]) => !MUTABLE_LIST_FIELD_NAMES.has(key));
+  return stable.length > 0 ? stable : normalized;
+}
+
 export function candidateFingerprint(candidate: ParsedCandidate): string {
   const identity = JSON.stringify({
     name: candidate.name.trim().toLocaleLowerCase("zh-CN"),
-    fields: normalizedFields(candidate.fields)
+    fields: identityFields(candidate.fields)
   });
   return createHash("sha256").update(identity).digest("hex");
 }
