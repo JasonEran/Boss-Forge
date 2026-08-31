@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit && pnpm --dir apps/web typecheck",
     "test": "vitest run",
     "test:integration:data": "tsx --env-file-if-exists=.env packages/data/src/integration-smoke.ts",
+    "test:e2e:user": "tsx --env-file-if-exists=.env apps/control-api/src/e2e-user-flow.ts",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "tsx --env-file-if-exists=.env packages/data/src/migrate.ts",
     "m1:seed": "tsx --env-file-if-exists=.env apps/control-api/src/seed.ts",
