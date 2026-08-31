@@ -1,0 +1,10 @@
+{
+  "name": "@boss-forge/boss-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@boss-forge/boss-cli-adapter": "workspace:*",
+    "@boss-forge/contracts": "workspace:*"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@boss-forge/boss-cli-adapter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@boss-forge/contracts": "workspace:*",
+    "@joohw/boss-cli": "0.6.6"
+  }
+}

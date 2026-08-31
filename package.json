@@ -1,0 +1,26 @@
+{
+  "name": "boss-forge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "m0": "tsx apps/boss-worker/src/m0.ts",
+    "m0:doctor": "tsx apps/boss-worker/src/m0.ts doctor",
+    "m0:heartbeat": "tsx apps/boss-worker/src/m0.ts heartbeat",
+    "m0:install-browser": "pnpm dlx @puppeteer/browsers@3.2.1 install chrome@152.0.7977.64 --path .boss-forge/browsers",
+    "worker": "tsx apps/boss-worker/src/worker.ts"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
