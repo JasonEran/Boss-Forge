@@ -4,6 +4,7 @@
 
 当前文档：
 
+- [基于 Odoo Community Recruitment 的详细重构设计](docs/ODOO_COMMUNITY_REFACTOR_PLAN.md)
 - [HR Dashboard 产品需求文档](docs/HR_DASHBOARD_PRD.md)
 - [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
