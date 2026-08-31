@@ -44,6 +44,9 @@ importers:
 
   apps/control-api:
     dependencies:
+      '@boss-forge/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@boss-forge/data':
         specifier: workspace:*
         version: link:../../packages/data
@@ -179,6 +182,12 @@ importers:
       '@boss-forge/contact-policy':
         specifier: workspace:*
         version: link:../contact-policy
+      '@boss-forge/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@boss-forge/rule-engine':
+        specifier: workspace:*
+        version: link:../rule-engine
       postgres:
         specifier: 3.4.7
         version: 3.4.7

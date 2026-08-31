@@ -13,6 +13,7 @@ import {
 } from "@boss-forge/data";
 import { evaluateCandidate } from "@boss-forge/m1-core";
 import { withAccountLock } from "./account-lock.js";
+import { selectUnambiguousCandidateTarget } from "./candidate-target.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import {
   effectiveOcrEnabled,
@@ -73,8 +74,11 @@ function resumeScreeningEnabled(): boolean {
 async function processNextTask(repository: BossForgeRepository): Promise<boolean> {
   const workerId = process.env.BOSS_FORGE_WORKER_ID?.trim() || "worker-local-01";
   const accountId = process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01";
-  const task = await repository.claimNextTask(workerId);
+  const task = await repository.claimNextTask(workerId, accountId);
   if (!task) return false;
+  if (task.bossAccountId !== accountId) {
+    throw new Error("Claimed task does not belong to the worker BOSS account.");
+  }
   await withAccountLock(accountId, async () => {
     await writeHeartbeat({ state: "busy", activeAccountId: accountId });
     try {
@@ -106,7 +110,7 @@ async function processNextTask(repository: BossForgeRepository): Promise<boolean
       );
     } catch (error: unknown) {
       const message = safeErrorMessage(error);
-      await repository.failTask(task.id, message);
+      await repository.failTask(task.id, message, task.claimToken);
       throw error;
     } finally {
       await writeHeartbeat({ state: "ready" });
@@ -118,8 +122,11 @@ async function processNextTask(repository: BossForgeRepository): Promise<boolean
 async function processNextResumeScreening(repository: BossForgeRepository): Promise<boolean> {
   const workerId = process.env.BOSS_FORGE_WORKER_ID?.trim() || "worker-local-01";
   const accountId = process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01";
-  const job = await repository.claimNextResumeScreening(workerId);
+  const job = await repository.claimNextResumeScreening(workerId, accountId);
   if (!job) return false;
+  if (job.bossAccountId !== accountId) {
+    throw new Error("Claimed resume job does not belong to the worker BOSS account.");
+  }
   await withAccountLock(accountId, async () => {
     await writeHeartbeat({ state: "busy", activeAccountId: accountId });
     try {
@@ -133,15 +140,13 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
         contextCommand,
         contextResult.stdout
       );
-      if (
-        context.kind !== "candidates" ||
-        !context.candidates.some((candidate) => candidate.name === job.candidateName)
-      ) {
-        throw new Error("Candidate is no longer present in the refreshed BOSS result list.");
+      if (context.kind !== "candidates") {
+        throw new Error("Candidate context did not return a candidate list.");
       }
+      const target = selectUnambiguousCandidateTarget(job.candidate, context.candidates);
       const previewCommand: BossCommand = {
         type: "preview",
-        candidateTarget: job.candidateName
+        candidateTarget: target.name
       };
       const previewResult = await runBossCommand(previewCommand, {
         timeoutMs: 120_000,

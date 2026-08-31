@@ -110,7 +110,13 @@ type Candidate = {
   evidence: string[];
   fields: Record<string, string>;
   reviewStatus: 'pending' | 'approved' | 'rejected' | 'not_required';
-  contactStatus: 'not_contacted' | 'queued' | 'sent' | 'failed' | 'uncertain';
+  contactStatus:
+    | 'not_contacted'
+    | 'queued'
+    | 'sent'
+    | 'simulated'
+    | 'failed'
+    | 'uncertain';
 };
 type Schedule = {
   id: string;
@@ -129,6 +135,7 @@ type ContactIntent = {
     | 'ready'
     | 'processing'
     | 'sent'
+    | 'simulated'
     | 'failed'
     | 'uncertain'
     | 'cancelled';
@@ -285,6 +292,7 @@ const contactStatusLabel: Record<
   ready: '等待执行',
   processing: '执行中',
   sent: '已联系',
+  simulated: '模拟完成',
   failed: '失败',
   uncertain: '待人工核验',
   cancelled: '已取消',
@@ -299,6 +307,7 @@ const auditActionLabel: Record<string, string> = {
   'schedule.cancelled': '停用定时计划',
   'contact.intent.created': '创建联系意图',
   'contact.sent': '联系成功',
+  'contact.simulated': '模拟联系完成',
   'contact.failed': '联系失败',
   'contact.uncertain': '联系结果待核验',
 };

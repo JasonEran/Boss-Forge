@@ -1,3 +1,6 @@
+import type { ParsedCandidate } from "@boss-forge/contracts";
+import type { InstitutionCatalog, InstitutionCategoryRule } from "@boss-forge/rule-engine";
+
 export type Position = {
   id: string;
   bossAccountId: string;
@@ -10,12 +13,103 @@ export type Position = {
   updatedAt: string;
 };
 
-export type RuleConfig = {
+export type LegacyRuleConfig = {
   requiredCapabilities: Array<{
     capability: "tem8";
     minimumConfidence: number;
   }>;
 };
+
+export type Tem8RuleNode = {
+  type: "tem8";
+  minimumConfidence: number;
+  /** Defaults to manual_review for snapshots created before generic rules existed. */
+  unknownPolicy?: UnknownPolicy;
+};
+
+export type UnknownPolicy = "manual_review" | "fail" | "ignore";
+
+/** Compatibility with the generic capability leaf documented by the Odoo design. */
+export type Tem8CapabilityRuleNode = {
+  type: "capability";
+  capability: "tem8";
+  match: "confirmed";
+  minimumConfidence?: number;
+  unknownPolicy: UnknownPolicy;
+};
+
+export type RangeRuleNode = {
+  type: "range";
+  field: "yearsOfExperience";
+  minimum?: number;
+  maximum?: number;
+  unknownPolicy: UnknownPolicy;
+};
+
+export type KeywordRuleNode = {
+  type: "keyword";
+  /** `all` searches the complete candidate card and OCR text. */
+  field: string | "all";
+  values: string[];
+  mode: "any" | "all";
+  unknownPolicy: UnknownPolicy;
+};
+
+export type EnumRuleNode = {
+  type: "enum";
+  field: string;
+  values: string[];
+  mode: "any" | "all";
+  match: "exact" | "contains";
+  unknownPolicy: UnknownPolicy;
+};
+
+export type TextRuleNode = {
+  type: "text";
+  field: string | "all";
+  value: string;
+  match: "exact" | "contains";
+  unknownPolicy: UnknownPolicy;
+};
+
+export type EducationLevel = "high_school" | "associate" | "bachelor" | "master" | "doctor";
+
+export type EducationLevelRuleNode = {
+  type: "education_level";
+  minimum: EducationLevel;
+  unknownPolicy: UnknownPolicy;
+};
+
+export type RuleGroupNode =
+  | {
+      operator: "AND" | "OR" | "NOT";
+      children: RuleNode[];
+    }
+  | {
+      type: "all" | "any";
+      children: RuleNode[];
+    };
+
+export type RuleNode =
+  | RuleGroupNode
+  | Tem8RuleNode
+  | Tem8CapabilityRuleNode
+  | RangeRuleNode
+  | KeywordRuleNode
+  | EnumRuleNode
+  | TextRuleNode
+  | EducationLevelRuleNode
+  | InstitutionCategoryRule;
+
+export type CompositeRuleConfig = {
+  schemaVersion: "1.0";
+  name?: string;
+  root: RuleGroupNode;
+  /** Immutable, published and content-hash-verified snapshot used by institution leaves. */
+  institutionCatalog?: InstitutionCatalog;
+};
+
+export type RuleConfig = LegacyRuleConfig | CompositeRuleConfig;
 
 export type RuleVersion = {
   id: string;
@@ -41,6 +135,7 @@ export type Task = {
   idempotencyKey: string;
   positionId: string;
   positionName: string;
+  bossAccountId: string;
   bossJobKeyword: string | null;
   ruleVersionId: string;
   ruleConfig: RuleConfig;
@@ -51,6 +146,8 @@ export type Task = {
   createdBy: string;
   candidateCount: number;
   errorMessage: string | null;
+  /** Opaque worker lease. Mutating a claimed task requires the current token. */
+  claimToken: string | null;
   createdAt: string;
 };
 
@@ -69,12 +166,35 @@ export type CandidateEvaluationRecord = {
   dictionaryVersion: string;
   currentEnglishLevel: string | null;
   reasonCodes: string[];
+  institutionDecision?: "matched" | "not_matched" | "unknown";
+  institutionSummary?: string;
+  institutionCatalogVersion?: string;
+  education?: CandidateEducationEvidence[];
   evidence: Array<{
     sourceText: string;
     normalizedAlias: string;
     status: "positive" | "negative" | "ambiguous";
     confidence: number;
+    /** Composite rules can persist the identity and reasons of each individual leaf. */
+    capabilityId?: string;
+    canonicalLabel?: string;
+    dictionaryVersion?: string;
+    reasonCodes?: string[];
   }>;
+};
+
+export type CandidateEducationEvidence = {
+  stage: "college" | "bachelor" | "master" | "doctor" | "other";
+  institutionRaw: string;
+  degree?: string;
+  major?: string;
+  campusOrCollege?: string;
+  startAt?: string;
+  endAt?: string;
+  categorySnapshot: string[];
+  confidence: number;
+  evidenceText?: string;
+  artifactReference?: string;
 };
 
 export type ResumeScreeningStatus =
@@ -93,7 +213,13 @@ export type DashboardCandidate = {
   ruleDecision: CandidateEvaluationRecord["decision"];
   ruleConfidence: number;
   reviewStatus: "pending" | "approved" | "rejected" | "not_required";
-  contactStatus: "not_contacted" | "queued" | "sent" | "failed" | "uncertain";
+  contactStatus:
+    | "not_contacted"
+    | "queued"
+    | "sent"
+    | "simulated"
+    | "failed"
+    | "uncertain";
   stateVersion: number;
   resumeScreeningStatus: ResumeScreeningStatus;
   currentEnglishLevel: string | null;
@@ -140,7 +266,9 @@ export type CandidateDetail = DashboardCandidate & {
 export type ResumeScreeningJob = {
   stateId: string;
   taskId: string;
+  ruleVersionId: string;
   candidateName: string;
+  bossAccountId: string;
   bossJobKeyword: string | null;
   source: "recommend" | "search";
   searchKeyword: string | null;
@@ -183,9 +311,20 @@ export type ContactIntentStatus =
   | "ready"
   | "processing"
   | "sent"
+  | "simulated"
   | "failed"
   | "uncertain"
   | "cancelled";
+
+export type ContactAttemptStatus =
+  | "processing"
+  | "deferred"
+  | "sent"
+  | "simulated"
+  | "failed"
+  | "uncertain";
+
+export type ContactDispatchResult = Exclude<ContactAttemptStatus, "processing" | "deferred">;
 
 export type ContactIntent = {
   id: string;
@@ -193,6 +332,7 @@ export type ContactIntent = {
   candidateName: string;
   positionName: string;
   renderedMessage: string;
+  transportMode: "fake" | "real";
   status: ContactIntentStatus;
   createdBy: string;
   createdAt: string;
@@ -202,8 +342,19 @@ export type ContactIntent = {
 export type ContactDispatchJob = ContactIntent & {
   outboxEventId: string;
   taskId: string;
+  bossAccountId: string;
   bossJobKeyword: string | null;
   candidateTarget: string;
+  candidateFingerprint: string;
+  candidateSnapshot: ParsedCandidate;
+  sourceReference: string;
+  source: "recommend" | "search";
+  searchKeyword: string | null;
+  authorizationId: string | null;
+  contactPolicyVersionId: string | null;
+  odooDatabaseUuid: string | null;
+  odooJobId: number | null;
+  odooApplicantId: number | null;
   attemptNo: number;
 };
 

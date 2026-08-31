@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_hr_job_form_boss_forge" model="ir.ui.view">
+        <field name="name">hr.job.form.boss.forge</field>
+        <field name="model">hr.job</field>
+        <field name="inherit_id" ref="hr.view_hr_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button
+                    name="action_bf_publish_config"
+                    type="object"
+                    string="Publish Boss-Forge Config"
+                    class="btn-secondary"
+                    invisible="not bf_enabled"
+                />
+                <button
+                    name="action_bf_request_screening"
+                    type="object"
+                    string="Run Screening Now"
+                    class="btn-primary"
+                    invisible="not bf_enabled or bf_config_version == 0"
+                />
+            </xpath>
+            <xpath expr="//page[@name='job_description_page']" position="after">
+                <page string="Boss-Forge" name="boss_forge_page">
+                    <group>
+                        <group string="Sourcing">
+                            <field name="bf_enabled"/>
+                            <field name="bf_job_keyword" required="bf_enabled"/>
+                            <field
+                                name="bf_boss_account_id"
+                                required="bf_enabled"
+                                options="{'no_create': True}"
+                            />
+                            <field name="bf_priority"/>
+                            <field name="bf_target_date"/>
+                        </group>
+                        <group string="Ownership">
+                            <field name="user_id" string="Primary Recruiter"/>
+                            <field name="bf_collaborator_ids" widget="many2many_tags_avatar"/>
+                            <field name="bf_hiring_manager_ids" widget="many2many_tags_avatar"/>
+                            <field name="interviewer_ids" widget="many2many_tags_avatar"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Published Snapshots">
+                            <field
+                                name="bf_rule_version_id"
+                                required="bf_enabled"
+                                options="{'no_create': True}"
+                            />
+                            <field
+                                name="bf_message_template_id"
+                                required="bf_enabled"
+                                options="{'no_create': True}"
+                            />
+                            <field
+                                name="bf_contact_policy_id"
+                                required="bf_enabled"
+                                options="{'no_create': True}"
+                            />
+                        </group>
+                        <group string="Contact Safety">
+                            <field name="bf_auto_contact_after_review"/>
+                            <field name="bf_config_version" readonly="1"/>
+                            <field name="bf_last_sync_at" readonly="1"/>
+                            <field name="bf_health_state" readonly="1" widget="badge"/>
+                        </group>
+                    </group>
+                    <field name="bf_rule_set_ids" context="{'default_job_id': id}">
+                        <list>
+                            <field name="name"/>
+                            <field name="owner_id"/>
+                            <field name="current_version_id"/>
+                            <field name="active"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

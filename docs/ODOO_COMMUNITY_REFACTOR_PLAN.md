@@ -9,6 +9,8 @@
 > 使用范围：公司内网 HR 部门
 >
 > 关联文档：[产品需求文档](HR_DASHBOARD_PRD.md) · [现有系统架构](SYSTEM_ARCHITECTURE.md) · [boss-cli 复用清单](BOSS_CLI_REUSE_MATRIX.md)
+>
+> 实施状态：R0-R4 技术基础与 Fake 联系闭环已进入验收；R5-R6、真实联系启用和生产数据迁移不在本轮开启。实际交付与测试结果见 [重构实施报告](ODOO_REFACTOR_IMPLEMENTATION_REPORT.md)。
 
 ## 1. 文档目的
 
@@ -534,6 +536,7 @@ Odoo 19 Controller 支持 `auth='bearer'` 并按服务用户权限执行，参�
 | `job.config.published.v1` | 岗位 BOSS 配置和规则发布 |
 | `screening.run.requested.v1` | HR 立即执行或计划到期 |
 | `screening.run.cancelled.v1` | HR 取消任务 |
+| `candidate.review.completed.v1` | HR 完成通过/拒绝审核；驱动任务终态并作为联系授权前序事件 |
 | `candidate.contact.authorized.v1` | HR 通过并联系 |
 | `candidate.contact.revoked.v1` | 执行前撤销授权 |
 | `job.automation.paused.v1` | 岗位紧急暂停 |

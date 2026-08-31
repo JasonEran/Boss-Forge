@@ -1,0 +1,22 @@
+[options]
+addons_path = /mnt/extra-addons,/usr/lib/python3/dist-packages/odoo/addons
+data_dir = /var/lib/odoo
+# DB credentials and database name come only from deploy/.env.intranet via Compose.
+# Odoo 19 makes admin_passwd file-only. Empty plus list_db=False disables Web DB management.
+admin_passwd =
+list_db = False
+# Direct intranet service for R0-R4; no public reverse proxy assumed.
+http_enable = True
+http_interface = 0.0.0.0
+http_port = 8069
+proxy_mode = False
+# Single process avoids a public reverse proxy/WebSocket split. Odoo never runs Chrome/OCR.
+workers = 0
+max_cron_threads = 1
+limit_time_cpu = 120
+limit_time_real = 240
+limit_memory_soft = 2147483648
+limit_memory_hard = 2684354560
+without_demo = all
+log_level = info
+log_handler = :INFO

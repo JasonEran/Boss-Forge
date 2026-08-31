@@ -12,6 +12,11 @@ import type {
   ReviewRecord,
   Task
 } from "./types.js";
+import {
+  enqueueIntegrationEvent,
+  enqueueTaskCompletionIfReady,
+  loadTaskIntegrationContext
+} from "./integration-events.js";
 
 export class OptimisticLockError extends Error {
   constructor(
@@ -40,6 +45,7 @@ type TaskRow = {
   idempotency_key: string;
   position_id: string;
   position_name: string;
+  boss_account_id: string;
   boss_job_keyword: string | null;
   rule_version_id: string;
   rule_config: RuleConfig;
@@ -50,6 +56,7 @@ type TaskRow = {
   created_by: string;
   candidate_count: number;
   error_message: string | null;
+  claim_token: string | null;
   created_at: Date;
 };
 
@@ -77,6 +84,7 @@ function mapTask(row: TaskRow): Task {
     idempotencyKey: row.idempotency_key,
     positionId: row.position_id,
     positionName: row.position_name,
+    bossAccountId: row.boss_account_id,
     bossJobKeyword: row.boss_job_keyword,
     ruleVersionId: row.rule_version_id,
     ruleConfig: row.rule_config,
@@ -87,15 +95,16 @@ function mapTask(row: TaskRow): Task {
     createdBy: row.created_by,
     candidateCount: row.candidate_count,
     errorMessage: row.error_message,
+    claimToken: row.claim_token,
     createdAt: iso(row.created_at)
   };
 }
 
 const TASK_SELECT = `
   SELECT t.id, t.idempotency_key, t.position_id, p.name AS position_name,
-    p.boss_job_keyword, t.rule_version_id, rv.config AS rule_config,
+    p.boss_account_id, p.boss_job_keyword, t.rule_version_id, rv.config AS rule_config,
     t.execution_mode, t.source, t.search_keyword, t.status, t.created_by,
-    t.candidate_count, t.error_message, t.created_at
+    t.candidate_count, t.error_message, t.claim_token, t.created_at
   FROM tasks t
   JOIN positions p ON p.id = t.position_id
   JOIN rule_versions rv ON rv.id = t.rule_version_id
@@ -237,21 +246,52 @@ export class BossForgeRepository {
     });
   }
 
-  async claimNextTask(workerId: string): Promise<Task | null> {
+  async claimNextTask(workerId: string, bossAccountId: string): Promise<Task | null> {
     return this.sql.begin(async (transaction) => {
       const selected = await transaction<{ id: string }[]>`
-        SELECT id FROM tasks
-        WHERE status = 'queued'
-        ORDER BY created_at ASC
-        FOR UPDATE SKIP LOCKED
+        SELECT t.id FROM tasks t
+        JOIN positions p ON p.id = t.position_id
+        WHERE (
+            t.status = 'queued'
+            OR (
+              t.status = 'running'
+              AND t.claimed_at < now() - interval '15 minutes'
+            )
+          )
+          AND p.boss_account_id = ${bossAccountId}
+        ORDER BY t.created_at ASC
+        FOR UPDATE OF t SKIP LOCKED
         LIMIT 1
       `;
       const id = selected[0]?.id;
       if (!id) return null;
+      const claimToken = randomUUID();
       await transaction`
-        UPDATE tasks SET status = 'running', claimed_by = ${workerId}, started_at = now()
+        UPDATE tasks SET status = 'running', claimed_by = ${workerId},
+          claim_token = ${claimToken}, claimed_at = now(),
+          claim_attempts = claim_attempts + 1,
+          started_at = COALESCE(started_at, now()), finished_at = NULL,
+          error_message = NULL
         WHERE id = ${id}
       `;
+      const integration = await loadTaskIntegrationContext(transaction, id);
+      if (integration) {
+        await enqueueIntegrationEvent(transaction, {
+          deduplicationKey: `task:${id}:started`,
+          correlationId: integration.correlationId,
+          eventType: "screening.run.started.v1",
+          aggregateType: "screening_run",
+          aggregateId: integration.odooRunId,
+          aggregateVersion: 1,
+          payload: {
+            taskId: id,
+            screeningRunId: integration.odooRunId,
+            odooDatabaseUuid: integration.odooDatabaseUuid,
+            odooJobId: integration.odooJobId,
+            workerId
+          }
+        });
+      }
       const rows = await transaction.unsafe<TaskRow[]>(`${TASK_SELECT} WHERE t.id = $1`, [id]);
       return mapTask(rows[0]!);
     });
@@ -259,6 +299,23 @@ export class BossForgeRepository {
 
   async completeTask(task: Task, records: CandidateEvaluationRecord[]): Promise<void> {
     await this.sql.begin(async (transaction) => {
+      const currentTasks = await transaction<
+        Array<{ status: Task["status"]; claim_token: string | null }>
+      >`
+        SELECT status, claim_token FROM tasks WHERE id = ${task.id} FOR UPDATE
+      `;
+      const currentTask = currentTasks[0];
+      if (!currentTask) throw new Error("Task was not found during collection completion.");
+      if (["cancelled", "completed", "failed"].includes(currentTask.status)) return;
+      if (
+        currentTask.status !== "running" ||
+        !task.claimToken ||
+        currentTask.claim_token !== task.claimToken
+      ) {
+        throw new Error("Task collection lease is no longer active.");
+      }
+      const integration = await loadTaskIntegrationContext(transaction, task.id);
+      const uniqueStateIds = new Set<string>();
       for (const record of records) {
         const baseInfo = record.rawFields["信息"]?.trim();
         let candidateRows: Array<{ id: string }> = [];
@@ -311,7 +368,7 @@ export class BossForgeRepository {
         `;
         const snapshotId = snapshotRows[0]!.id;
         const stateRows = await transaction<
-          Array<{ id: string; resume_screening_status: string }>
+          Array<{ id: string; resume_screening_status: string; version: number }>
         >`
           INSERT INTO candidate_position_states (
             id, position_id, candidate_id, latest_task_id, latest_snapshot_id,
@@ -357,9 +414,10 @@ export class BossForgeRepository {
             END,
             version = candidate_position_states.version + 1,
             updated_at = now()
-          RETURNING id, resume_screening_status
+          RETURNING id, resume_screening_status, version
         `;
         const stateId = stateRows[0]!.id;
+        uniqueStateIds.add(stateId);
         if (stateRows[0]!.resume_screening_status !== "screened") {
           await transaction`DELETE FROM match_evidence WHERE candidate_position_state_id = ${stateId}`;
           for (const evidence of record.evidence) {
@@ -369,18 +427,47 @@ export class BossForgeRepository {
                 dictionary_version, source_text, normalized_alias, evidence_status,
                 confidence, reason_codes
               ) VALUES (
-                ${randomUUID()}, ${stateId}, ${record.capabilityId}, ${record.canonicalLabel},
-                ${record.dictionaryVersion}, ${evidence.sourceText}, ${evidence.normalizedAlias},
-                ${evidence.status}, ${evidence.confidence}, ${transaction.json(record.reasonCodes)}
+                ${randomUUID()}, ${stateId},
+                ${evidence.capabilityId ?? record.capabilityId},
+                ${evidence.canonicalLabel ?? record.canonicalLabel},
+                ${evidence.dictionaryVersion ?? record.dictionaryVersion},
+                ${evidence.sourceText}, ${evidence.normalizedAlias},
+                ${evidence.status}, ${evidence.confidence},
+                ${transaction.json(evidence.reasonCodes ?? record.reasonCodes)}
               )
             `;
           }
         }
+        if (integration) {
+          await enqueueIntegrationEvent(transaction, {
+            deduplicationKey: `task:${task.id}:candidate:${stateId}:collected`,
+            correlationId: integration.correlationId,
+            eventType: "candidate.collected.v1",
+            aggregateType: "candidate_state",
+            aggregateId: stateId,
+            aggregateVersion: stateRows[0]!.version,
+            payload: {
+              taskId: task.id,
+              screeningRunId: integration.odooRunId,
+              odooDatabaseUuid: integration.odooDatabaseUuid,
+              odooJobId: integration.odooJobId,
+              candidateStateId: stateId,
+              externalCandidateId: candidateId,
+              identityKey: record.fingerprint,
+              candidateName: record.displayName,
+              source: record.source,
+              screeningStatus: "queued",
+              fields: record.rawFields
+            }
+          });
+        }
       }
-      const status = records.length > 0 ? "screening" : "completed";
+      const uniqueCandidateCount = uniqueStateIds.size;
+      const status = uniqueCandidateCount > 0 ? "screening" : "completed";
       await transaction`
-        UPDATE tasks SET status = ${status}, candidate_count = ${records.length},
-          finished_at = ${records.length > 0 ? null : new Date()}, error_message = NULL
+        UPDATE tasks SET status = ${status}, candidate_count = ${uniqueCandidateCount},
+          finished_at = ${uniqueCandidateCount > 0 ? null : new Date()}, error_message = NULL,
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL
         WHERE id = ${task.id}
       `;
       await transaction`
@@ -388,20 +475,38 @@ export class BossForgeRepository {
           id, actor_id, action, resource_type, resource_id, payload
         ) VALUES (
           ${randomUUID()}, ${task.createdBy}, 'task.collection.completed',
-          'task', ${task.id}, ${transaction.json({ candidateCount: records.length })}
+          'task', ${task.id},
+          ${transaction.json({
+            candidateCount: uniqueCandidateCount,
+            rawRecordCount: records.length,
+            duplicatesCollapsed: records.length - uniqueCandidateCount
+          })}
         )
       `;
+      await enqueueTaskCompletionIfReady(transaction, task.id);
     });
   }
 
-  async claimNextResumeScreening(workerId: string): Promise<ResumeScreeningJob | null> {
+  async claimNextResumeScreening(
+    workerId: string,
+    bossAccountId: string
+  ): Promise<ResumeScreeningJob | null> {
     return this.sql.begin(async (transaction) => {
       const selected = await transaction<{ id: string }[]>`
         SELECT id FROM candidate_position_states
-        WHERE resume_screening_status = 'queued'
+        WHERE (
+          resume_screening_status = 'queued'
           OR (
-            resume_screening_status = 'processing'
-            AND resume_screening_claimed_at < now() - interval '15 minutes'
+              resume_screening_status = 'processing'
+              AND resume_screening_claimed_at < now() - interval '15 minutes'
+            )
+          )
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            JOIN positions ON positions.id = tasks.position_id
+            WHERE tasks.id = candidate_position_states.latest_task_id
+              AND tasks.status IN ('screening', 'waiting_review')
+              AND positions.boss_account_id = ${bossAccountId}
           )
         ORDER BY updated_at ASC
         FOR UPDATE SKIP LOCKED
@@ -424,9 +529,11 @@ export class BossForgeRepository {
           state_id: string;
           task_id: string;
           candidate_name: string;
+          boss_account_id: string;
           boss_job_keyword: string | null;
           source: "recommend" | "search";
           search_keyword: string | null;
+          rule_version_id: string;
           rule_config: RuleConfig;
           source_reference: string;
           raw_fields: Record<string, string>;
@@ -435,7 +542,9 @@ export class BossForgeRepository {
         }>
       >`
         SELECT cps.id AS state_id, t.id AS task_id, c.display_name AS candidate_name,
-          p.boss_job_keyword, t.source, t.search_keyword, rv.config AS rule_config,
+          p.boss_account_id, p.boss_job_keyword, t.source, t.search_keyword,
+          COALESCE(rv.external_version_id, rv.id::text) AS rule_version_id,
+          rv.config AS rule_config,
           cs.source_reference, cs.raw_fields, cs.source_evidence, cs.raw_text
         FROM candidate_position_states cps
         JOIN candidates c ON c.id = cps.candidate_id
@@ -451,7 +560,9 @@ export class BossForgeRepository {
       return {
         stateId: row.state_id,
         taskId: row.task_id,
+        ruleVersionId: row.rule_version_id,
         candidateName: row.candidate_name,
+        bossAccountId: row.boss_account_id,
         bossJobKeyword: row.boss_job_keyword,
         source: row.source,
         searchKeyword: row.search_keyword,
@@ -480,7 +591,12 @@ export class BossForgeRepository {
     ocrRequestId?: string | null;
   }): Promise<void> {
     await this.sql.begin(async (transaction) => {
-      await transaction`
+      const taskRows = await transaction<Array<{ status: Task["status"] }>>`
+        SELECT status FROM tasks WHERE id = ${input.job.taskId} FOR UPDATE
+      `;
+      if (!taskRows[0]) throw new Error("Resume screening task was not found.");
+      if (!["screening", "waiting_review"].includes(taskRows[0].status)) return;
+      const updatedStates = await transaction<Array<{ version: number; review_status: string }>>`
         UPDATE candidate_position_states
         SET rule_decision = ${input.record.decision},
           rule_confidence = ${input.record.confidence},
@@ -499,8 +615,13 @@ export class BossForgeRepository {
           END,
           version = version + 1,
           updated_at = now()
-        WHERE id = ${input.job.stateId} AND resume_screening_status = 'processing'
+        WHERE id = ${input.job.stateId}
+          AND latest_task_id = ${input.job.taskId}
+          AND resume_screening_status = 'processing'
+        RETURNING version, review_status
       `;
+      const updatedState = updatedStates[0];
+      if (!updatedState) throw new Error("Candidate resume screening claim is no longer active.");
       await transaction`
         DELETE FROM match_evidence WHERE candidate_position_state_id = ${input.job.stateId}
       `;
@@ -511,10 +632,13 @@ export class BossForgeRepository {
             dictionary_version, source_text, normalized_alias, evidence_status,
             confidence, reason_codes
           ) VALUES (
-            ${randomUUID()}, ${input.job.stateId}, ${input.record.capabilityId},
-            ${input.record.canonicalLabel}, ${input.record.dictionaryVersion},
+            ${randomUUID()}, ${input.job.stateId},
+            ${evidence.capabilityId ?? input.record.capabilityId},
+            ${evidence.canonicalLabel ?? input.record.canonicalLabel},
+            ${evidence.dictionaryVersion ?? input.record.dictionaryVersion},
             ${evidence.sourceText}, ${evidence.normalizedAlias}, ${evidence.status},
-            ${evidence.confidence}, ${transaction.json(input.record.reasonCodes)}
+            ${evidence.confidence},
+            ${transaction.json(evidence.reasonCodes ?? input.record.reasonCodes)}
           )
         `;
       }
@@ -555,8 +679,47 @@ export class BossForgeRepository {
                 AND resume_screening_status IN ('queued', 'processing')
             ) THEN NULL ELSE now()
           END
-        WHERE id = ${input.job.taskId}
+        WHERE id = ${input.job.taskId} AND status IN ('screening', 'waiting_review')
       `;
+      const integration = await loadTaskIntegrationContext(transaction, input.job.taskId);
+      if (integration) {
+        await enqueueIntegrationEvent(transaction, {
+          deduplicationKey:
+            `task:${input.job.taskId}:candidate:${input.job.stateId}:screened:${updatedState.version}`,
+          correlationId: integration.correlationId,
+          eventType: "candidate.screened.v1",
+          aggregateType: "candidate_state",
+          aggregateId: input.job.stateId,
+          aggregateVersion: updatedState.version,
+          payload: {
+            taskId: input.job.taskId,
+            screeningRunId: integration.odooRunId,
+            odooDatabaseUuid: integration.odooDatabaseUuid,
+            odooJobId: integration.odooJobId,
+            candidateStateId: input.job.stateId,
+            ruleVersionId: input.job.ruleVersionId,
+            decision: input.record.decision,
+            score: Number((input.record.confidence * 100).toFixed(2)),
+            confidence: input.record.confidence,
+            reviewStatus: updatedState.review_status,
+            currentEnglishLevel: input.record.currentEnglishLevel,
+            dictionaryVersion: input.record.dictionaryVersion,
+            ...(input.record.institutionDecision
+              ? { institutionDecision: input.record.institutionDecision }
+              : {}),
+            ...(input.record.institutionSummary
+              ? { institutionSummary: input.record.institutionSummary }
+              : {}),
+            ...(input.record.institutionCatalogVersion
+              ? { institutionCatalogVersion: input.record.institutionCatalogVersion }
+              : {}),
+            ...(input.record.education ? { education: input.record.education } : {}),
+            reasonCodes: input.record.reasonCodes,
+            evidence: input.record.evidence
+          }
+        });
+      }
+      await enqueueTaskCompletionIfReady(transaction, input.job.taskId);
     });
   }
 
@@ -567,7 +730,12 @@ export class BossForgeRepository {
     workerId: string;
   }): Promise<void> {
     await this.sql.begin(async (transaction) => {
-      await transaction`
+      const taskRows = await transaction<Array<{ status: Task["status"] }>>`
+        SELECT status FROM tasks WHERE id = ${input.taskId} FOR UPDATE
+      `;
+      if (!taskRows[0]) throw new Error("Resume screening task was not found.");
+      if (!["screening", "waiting_review"].includes(taskRows[0].status)) return;
+      const updatedStates = await transaction<Array<{ version: number }>>`
         UPDATE candidate_position_states
         SET rule_decision = 'insufficient', rule_confidence = 0,
           resume_screening_status = 'no_text',
@@ -581,8 +749,13 @@ export class BossForgeRepository {
           END,
           version = version + 1,
           updated_at = now()
-        WHERE id = ${input.stateId} AND resume_screening_status = 'processing'
+        WHERE id = ${input.stateId}
+          AND latest_task_id = ${input.taskId}
+          AND resume_screening_status = 'processing'
+        RETURNING version
       `;
+      const updatedState = updatedStates[0];
+      if (!updatedState) throw new Error("Candidate resume screening claim is no longer active.");
       await transaction`
         INSERT INTO audit_logs (
           id, actor_id, action, resource_type, resource_id, payload
@@ -609,8 +782,31 @@ export class BossForgeRepository {
                 AND resume_screening_status IN ('queued', 'processing')
             ) THEN NULL ELSE now()
           END
-        WHERE id = ${input.taskId}
+        WHERE id = ${input.taskId} AND status IN ('screening', 'waiting_review')
       `;
+      const integration = await loadTaskIntegrationContext(transaction, input.taskId);
+      if (integration) {
+        await enqueueIntegrationEvent(transaction, {
+          deduplicationKey:
+            `task:${input.taskId}:candidate:${input.stateId}:screening-no-text:${updatedState.version}`,
+          correlationId: integration.correlationId,
+          eventType: "candidate.screening_failed.v1",
+          aggregateType: "candidate_state",
+          aggregateId: input.stateId,
+          aggregateVersion: updatedState.version,
+          payload: {
+            taskId: input.taskId,
+            screeningRunId: integration.odooRunId,
+            odooDatabaseUuid: integration.odooDatabaseUuid,
+            odooJobId: integration.odooJobId,
+            candidateStateId: input.stateId,
+            failureCode: "no_text",
+            message: "简历已预览，但未取得可用于自动筛选的 OCR 文本。",
+            recoverable: true
+          }
+        });
+      }
+      await enqueueTaskCompletionIfReady(transaction, input.taskId);
     });
   }
 
@@ -622,7 +818,12 @@ export class BossForgeRepository {
   }): Promise<void> {
     const message = input.message.slice(0, 1_000);
     await this.sql.begin(async (transaction) => {
-      await transaction`
+      const taskRows = await transaction<Array<{ status: Task["status"] }>>`
+        SELECT status FROM tasks WHERE id = ${input.taskId} FOR UPDATE
+      `;
+      if (!taskRows[0]) throw new Error("Resume screening task was not found.");
+      if (!["screening", "waiting_review"].includes(taskRows[0].status)) return;
+      const updatedStates = await transaction<Array<{ version: number }>>`
         UPDATE candidate_position_states
         SET rule_decision = 'insufficient', rule_confidence = 0,
           resume_screening_status = 'failed', resume_screening_error = ${message},
@@ -633,7 +834,16 @@ export class BossForgeRepository {
           version = version + 1,
           updated_at = now()
         WHERE id = ${input.stateId}
+          AND latest_task_id = ${input.taskId}
+          AND EXISTS (
+            SELECT 1 FROM tasks
+            WHERE tasks.id = candidate_position_states.latest_task_id
+              AND tasks.status IN ('screening', 'waiting_review')
+          )
+        RETURNING version
       `;
+      const updatedState = updatedStates[0];
+      if (!updatedState) throw new Error("Candidate state not found during screening failure.");
       await transaction`
         INSERT INTO audit_logs (
           id, actor_id, action, resource_type, resource_id, payload
@@ -660,19 +870,54 @@ export class BossForgeRepository {
                 AND resume_screening_status IN ('queued', 'processing')
             ) THEN NULL ELSE now()
           END
-        WHERE id = ${input.taskId}
+        WHERE id = ${input.taskId} AND status IN ('screening', 'waiting_review')
       `;
+      const integration = await loadTaskIntegrationContext(transaction, input.taskId);
+      if (integration) {
+        await enqueueIntegrationEvent(transaction, {
+          deduplicationKey:
+            `task:${input.taskId}:candidate:${input.stateId}:screening-failed:${updatedState.version}`,
+          correlationId: integration.correlationId,
+          eventType: "candidate.screening_failed.v1",
+          aggregateType: "candidate_state",
+          aggregateId: input.stateId,
+          aggregateVersion: updatedState.version,
+          payload: {
+            taskId: input.taskId,
+            screeningRunId: integration.odooRunId,
+            odooDatabaseUuid: integration.odooDatabaseUuid,
+            odooJobId: integration.odooJobId,
+            candidateStateId: input.stateId,
+            failureCode: "worker_error",
+            message,
+            recoverable: true
+          }
+        });
+      }
+      await enqueueTaskCompletionIfReady(transaction, input.taskId);
     });
   }
 
   async requeueResumeScreening(stateId: string, actorId: string): Promise<void> {
     await this.sql.begin(async (transaction) => {
+      const currentStates = await transaction<Array<{ latest_task_id: string }>>`
+        SELECT latest_task_id FROM candidate_position_states WHERE id = ${stateId}
+      `;
+      const taskId = currentStates[0]?.latest_task_id;
+      if (!taskId) throw new Error("Candidate state was not found.");
+      const taskRows = await transaction<Array<{ status: Task["status"] }>>`
+        SELECT status FROM tasks WHERE id = ${taskId} FOR UPDATE
+      `;
+      if (!taskRows[0] || !["screening", "waiting_review"].includes(taskRows[0].status)) {
+        throw new Error("Candidate screening task is not open for requeue.");
+      }
       const rows = await transaction<{ id: string; latest_task_id: string }[]>`
         UPDATE candidate_position_states
         SET resume_screening_status = 'queued', resume_screening_error = NULL,
           resume_screening_claimed_by = NULL, resume_screening_claimed_at = NULL,
           version = version + 1, updated_at = now()
-        WHERE id = ${stateId} AND resume_screening_status <> 'processing'
+        WHERE id = ${stateId} AND latest_task_id = ${taskId}
+          AND resume_screening_status <> 'processing'
         RETURNING id, latest_task_id
       `;
       const state = rows[0];
@@ -692,11 +937,60 @@ export class BossForgeRepository {
     });
   }
 
-  async failTask(taskId: string, message: string): Promise<void> {
-    await this.sql`
-      UPDATE tasks SET status = 'failed', error_message = ${message}, finished_at = now()
-      WHERE id = ${taskId}
-    `;
+  async failTask(taskId: string, message: string, claimToken: string | null): Promise<void> {
+    const errorMessage = message.slice(0, 1_000);
+    await this.sql.begin(async (transaction) => {
+      const taskRows = await transaction<
+        Array<{
+          status: Task["status"];
+          candidate_count: number;
+          created_by: string;
+          claim_token: string | null;
+        }>
+      >`
+        SELECT status, candidate_count, created_by, claim_token
+        FROM tasks WHERE id = ${taskId} FOR UPDATE
+      `;
+      const task = taskRows[0];
+      if (!task) throw new Error("Task was not found during failure handling.");
+      if (["cancelled", "completed", "failed"].includes(task.status)) return;
+      if (task.status !== "running" || !claimToken || task.claim_token !== claimToken) return;
+      await transaction`
+        UPDATE tasks SET status = 'failed', error_message = ${errorMessage}, finished_at = now(),
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+        WHERE id = ${taskId}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, ${task.created_by}, 'task.failed', 'task', ${taskId},
+          ${transaction.json({ errorMessage })}
+        )
+      `;
+      const integration = await loadTaskIntegrationContext(transaction, taskId);
+      if (integration) {
+        await enqueueIntegrationEvent(transaction, {
+          deduplicationKey: `task:${taskId}:failed`,
+          correlationId: integration.correlationId,
+          eventType: "screening.run.completed.v1",
+          aggregateType: "screening_run",
+          aggregateId: integration.odooRunId,
+          aggregateVersion: 1,
+          payload: {
+            taskId,
+            screeningRunId: integration.odooRunId,
+            odooDatabaseUuid: integration.odooDatabaseUuid,
+            odooJobId: integration.odooJobId,
+            status: "failed",
+            collectedCount: Number(task.candidate_count),
+            matchedCount: 0,
+            failedCount: Number(task.candidate_count),
+            pendingReviewCount: 0,
+            errorMessage
+          }
+        });
+      }
+    });
   }
 
   async getCandidateDetail(stateId: string): Promise<CandidateDetail | null> {
@@ -932,6 +1226,7 @@ export class BossForgeRepository {
           })}
         )
       `;
+      await enqueueTaskCompletionIfReady(transaction, input.stateId);
       const row = rows[0]!;
       return {
         id: row.id,

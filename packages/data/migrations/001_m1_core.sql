@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS candidate_position_states (
   rule_decision text NOT NULL CHECK (rule_decision IN ('matched', 'not_matched', 'ambiguous', 'insufficient')),
   rule_confidence double precision NOT NULL CHECK (rule_confidence >= 0 AND rule_confidence <= 1),
   review_status text NOT NULL DEFAULT 'pending' CHECK (review_status IN ('pending', 'approved', 'rejected')),
-  contact_status text NOT NULL DEFAULT 'not_contacted' CHECK (contact_status IN ('not_contacted', 'queued', 'sent', 'failed', 'uncertain')),
+  contact_status text NOT NULL DEFAULT 'not_contacted' CHECK (contact_status IN ('not_contacted', 'queued', 'sent', 'simulated', 'failed', 'uncertain')),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (position_id, candidate_id)
 );

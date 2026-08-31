@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@boss-forge/contracts": "workspace:*",
     "@boss-forge/data": "workspace:*"
   }
 }

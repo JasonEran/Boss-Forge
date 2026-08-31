@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_boss_forge_rule_set_list" model="ir.ui.view">
+        <field name="name">boss.forge.rule.set.list</field>
+        <field name="model">boss.forge.rule.set</field>
+        <field name="arch" type="xml">
+            <list><field name="name"/><field name="job_id"/><field name="owner_id"/><field name="current_version_id"/><field name="active"/></list>
+        </field>
+    </record>
+    <record id="view_boss_forge_rule_set_form" model="ir.ui.view">
+        <field name="name">boss.forge.rule.set.form</field>
+        <field name="model">boss.forge.rule.set</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title"><label for="name"/><h1><field name="name"/></h1></div>
+                    <group><field name="job_id"/><field name="owner_id"/><field name="current_version_id" readonly="1"/><field name="active"/></group>
+                    <notebook><page string="Versions"><field name="version_ids"><list><field name="version_number"/><field name="state" widget="badge"/><field name="schema_version"/><field name="dictionary_version"/><field name="institution_catalog_id"/><field name="published_at"/></list></field></page></notebook>
+                </sheet><chatter/>
+            </form>
+        </field>
+    </record>
+    <record id="view_boss_forge_rule_version_form" model="ir.ui.view">
+        <field name="name">boss.forge.rule.version.form</field>
+        <field name="model">boss.forge.rule.version</field>
+        <field name="arch" type="xml">
+            <form create="0" delete="0">
+                <header>
+                    <button name="action_start_testing" type="object" string="Start Testing" invisible="state != 'draft'"/>
+                    <button name="action_publish" type="object" string="Publish" class="btn-primary" invisible="state not in ('draft', 'testing')"/>
+                    <button name="action_new_version" type="object" string="New Version" invisible="state not in ('published', 'retired')"/>
+                    <button name="action_retire" type="object" string="Retire" invisible="state != 'published'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group><field name="rule_set_id" readonly="state in ('published', 'retired')"/><field name="version_number" readonly="state in ('published', 'retired')"/><field name="schema_version" readonly="state in ('published', 'retired')"/><field name="dictionary_version" readonly="state in ('published', 'retired')"/></group>
+                        <group><field name="institution_catalog_id" readonly="state in ('published', 'retired')"/><field name="config_hash"/><field name="published_by"/><field name="published_at"/></group>
+                    </group>
+                    <notebook>
+                        <page string="Rule JSON"><field name="config_json" readonly="state in ('published', 'retired')"/></page>
+                        <page string="Publication"><field name="publish_notes" readonly="state in ('published', 'retired')"/><field name="replay_statistics" readonly="1"/></page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_boss_forge_rule_sets" model="ir.actions.act_window">
+        <field name="name">Rule Sets</field><field name="res_model">boss.forge.rule.set</field><field name="view_mode">list,form</field>
+    </record>
+    <record id="action_boss_forge_rule_versions" model="ir.actions.act_window">
+        <field name="name">Rule Versions</field><field name="res_model">boss.forge.rule.version</field><field name="view_mode">list,form</field>
+    </record>
+    <record id="action_boss_forge_capabilities" model="ir.actions.act_window">
+        <field name="name">Capabilities</field><field name="res_model">boss.forge.capability</field><field name="view_mode">list,form</field>
+    </record>
+    <menuitem id="menu_boss_forge_rules_root" name="Rule Center" parent="hr.menu_hr_root" sequence="70" groups="hr_recruitment.group_hr_recruitment_user"/>
+    <menuitem id="menu_boss_forge_rule_sets" name="Job Rules" parent="menu_boss_forge_rules_root" action="action_boss_forge_rule_sets" sequence="10"/>
+    <menuitem id="menu_boss_forge_rule_versions" name="Rule Versions" parent="menu_boss_forge_rules_root" action="action_boss_forge_rule_versions" sequence="20"/>
+    <menuitem id="menu_boss_forge_capabilities" name="Capabilities &amp; Aliases" parent="menu_boss_forge_rules_root" action="action_boss_forge_capabilities" sequence="30"/>
+</odoo>

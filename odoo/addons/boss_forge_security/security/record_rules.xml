@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <!-- Replace Odoo Officer's all-record domain with job assignment for operational users. -->
+    <record id="hr_recruitment.hr_applicant_user_rule" model="ir.rule">
+        <field name="domain_force">[
+            '|', '|',
+            ('job_id.user_id', '=', user.id),
+            ('job_id.bf_collaborator_ids', 'in', user.id),
+            ('user_id', '=', user.id)
+        ]</field>
+    </record>
+    <record id="hr_recruitment.hr_job_user_rule" model="ir.rule">
+        <field name="domain_force">[
+            '|',
+            ('user_id', '=', user.id),
+            ('bf_collaborator_ids', 'in', user.id)
+        ]</field>
+    </record>
+    <record id="hr_recruitment.hr_applicant_interviewer_rule" model="ir.rule">
+        <field name="domain_force">[
+            '|', '|',
+            ('job_id.interviewer_ids', 'in', user.id),
+            ('interviewer_ids', 'in', user.id),
+            ('job_id.bf_hiring_manager_ids', 'in', user.id)
+        ]</field>
+    </record>
+
+    <record id="rule_bf_manager_all_applicants" model="ir.rule">
+        <field name="name">Boss-Forge: recruitment administrators see company applicants</field>
+        <field name="model_id" ref="hr_recruitment.model_hr_applicant"/>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
+        <field name="groups" eval="[(4, ref('hr_recruitment.group_hr_recruitment_manager'))]"/>
+    </record>
+    <record id="rule_bf_manager_all_jobs" model="ir.rule">
+        <field name="name">Boss-Forge: recruitment administrators see company jobs</field>
+        <field name="model_id" ref="hr.model_hr_job"/>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
+        <field name="groups" eval="[(4, ref('hr_recruitment.group_hr_recruitment_manager'))]"/>
+    </record>
+    <record id="rule_bf_team_lead_all_applicants" model="ir.rule">
+        <field name="name">Boss-Forge: team leads see company applicants</field>
+        <field name="model_id" ref="hr_recruitment.model_hr_applicant"/>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
+        <field name="groups" eval="[(4, ref('group_bf_team_lead'))]"/>
+    </record>
+    <record id="rule_bf_team_lead_all_jobs" model="ir.rule">
+        <field name="name">Boss-Forge: team leads see company jobs</field>
+        <field name="model_id" ref="hr.model_hr_job"/>
+        <field name="domain_force">[('company_id', 'in', company_ids + [False])]</field>
+        <field name="groups" eval="[(4, ref('group_bf_team_lead'))]"/>
+    </record>
+
+    <record id="rule_bf_rule_set_recruiter" model="ir.rule">
+        <field name="name">Boss-Forge rule sets: assigned jobs</field>
+        <field name="model_id" ref="boss_forge_rules.model_boss_forge_rule_set"/>
+        <field name="domain_force">['|', ('job_id.user_id', '=', user.id), ('job_id.bf_collaborator_ids', 'in', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_bf_recruiter'))]"/>
+    </record>
+    <record id="rule_bf_rule_version_recruiter" model="ir.rule">
+        <field name="name">Boss-Forge rule versions: assigned jobs</field>
+        <field name="model_id" ref="boss_forge_rules.model_boss_forge_rule_version"/>
+        <field name="domain_force">['|', ('rule_set_id.job_id.user_id', '=', user.id), ('rule_set_id.job_id.bf_collaborator_ids', 'in', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_bf_recruiter'))]"/>
+    </record>
+    <record id="rule_bf_screening_run_recruiter" model="ir.rule">
+        <field name="name">Boss-Forge runs: assigned jobs</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_screening_run"/>
+        <field name="domain_force">['|', ('job_id.user_id', '=', user.id), ('job_id.bf_collaborator_ids', 'in', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_bf_recruiter'))]"/>
+    </record>
+    <record id="rule_bf_schedule_recruiter" model="ir.rule">
+        <field name="name">Boss-Forge schedules: assigned jobs</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_screening_schedule"/>
+        <field name="domain_force">['|', ('job_id.user_id', '=', user.id), ('job_id.bf_collaborator_ids', 'in', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_bf_recruiter'))]"/>
+    </record>
+    <record id="rule_bf_authorization_recruiter" model="ir.rule">
+        <field name="name">Boss-Forge authorizations: assigned jobs</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_contact_authorization"/>
+        <field name="domain_force">['|', ('job_id.user_id', '=', user.id), ('job_id.bf_collaborator_ids', 'in', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_bf_recruiter'))]"/>
+    </record>
+
+    <record id="rule_bf_account_company" model="ir.rule">
+        <field name="name">Boss-Forge accounts: allowed companies</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_boss_account"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="global" eval="True"/>
+    </record>
+    <record id="rule_bf_template_company" model="ir.rule">
+        <field name="name">Boss-Forge templates: allowed companies</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_message_template"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="global" eval="True"/>
+    </record>
+    <record id="rule_bf_policy_company" model="ir.rule">
+        <field name="name">Boss-Forge policies: allowed companies</field>
+        <field name="model_id" ref="boss_forge_recruitment.model_boss_forge_contact_policy"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="global" eval="True"/>
+    </record>
+    <record id="rule_bf_catalog_company" model="ir.rule">
+        <field name="name">Boss-Forge institution catalogs: allowed companies</field>
+        <field name="model_id" ref="boss_forge_rules.model_boss_forge_institution_catalog"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="global" eval="True"/>
+    </record>
+</odoo>

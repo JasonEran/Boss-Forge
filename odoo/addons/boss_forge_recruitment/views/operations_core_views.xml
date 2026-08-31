@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_boss_forge_account_list" model="ir.ui.view">
+        <field name="name">boss.forge.boss.account.list</field>
+        <field name="model">boss.forge.boss.account</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="external_id"/>
+                <field name="department_id"/>
+                <field name="owner_id"/>
+                <field name="worker_name"/>
+                <field name="state" widget="badge"/>
+                <field name="daily_contact_limit"/>
+                <field name="contacts_used_today"/>
+                <field name="last_heartbeat_at"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_boss_forge_account_form" model="ir.ui.view">
+        <field name="name">boss.forge.boss.account.form</field>
+        <field name="model">boss.forge.boss.account</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title"><label for="name"/><h1><field name="name"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="external_id"/>
+                            <field name="company_id"/>
+                            <field name="department_id"/>
+                            <field name="owner_id"/>
+                            <field name="active"/>
+                        </group>
+                        <group>
+                            <field name="state" widget="badge"/>
+                            <field name="worker_name"/>
+                            <field name="daily_contact_limit"/>
+                            <field name="contacts_used_today"/>
+                            <field name="last_heartbeat_at"/>
+                        </group>
+                    </group>
+                    <field name="last_error_summary"/>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+    <record id="action_boss_forge_accounts" model="ir.actions.act_window">
+        <field name="name">BOSS Accounts</field>
+        <field name="res_model">boss.forge.boss.account</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_boss_forge_screening_run_list" model="ir.ui.view">
+        <field name="name">boss.forge.screening.run.list</field>
+        <field name="model">boss.forge.screening.run</field>
+        <field name="arch" type="xml">
+            <list create="0" decoration-danger="state == 'failed'">
+                <field name="run_uuid"/>
+                <field name="job_id"/>
+                <field name="requested_by"/>
+                <field name="mode"/>
+                <field name="source"/>
+                <field name="state" widget="badge"/>
+                <field name="collected_count"/>
+                <field name="screened_count"/>
+                <field name="matched_count"/>
+                <field name="failed_count"/>
+                <field name="requested_at"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_boss_forge_screening_run_form" model="ir.ui.view">
+        <field name="name">boss.forge.screening.run.form</field>
+        <field name="model">boss.forge.screening.run</field>
+        <field name="arch" type="xml">
+            <form create="0" edit="0" delete="0">
+                <header>
+                    <button
+                        name="action_cancel"
+                        type="object"
+                        string="Request Cancellation"
+                        invisible="state in ('completed', 'failed', 'cancelled')"
+                    />
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="run_uuid"/>
+                            <field name="job_id"/>
+                            <field name="requested_by"/>
+                            <field name="requested_at"/>
+                            <field name="mode"/>
+                            <field name="source"/>
+                            <field name="schedule_id"/>
+                        </group>
+                        <group>
+                            <field name="collected_count"/>
+                            <field name="previewed_count"/>
+                            <field name="screened_count"/>
+                            <field name="matched_count"/>
+                            <field name="failed_count"/>
+                            <field name="pending_review_count"/>
+                            <field name="started_at"/>
+                            <field name="completed_at"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Immutable Request Snapshot"><field name="config_snapshot"/></page>
+                        <page string="Integration">
+                            <field name="outbox_event_id"/>
+                            <field name="cancel_outbox_event_id"/>
+                            <field name="error_summary"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+    <record id="action_boss_forge_screening_runs" model="ir.actions.act_window">
+        <field name="name">Screening Runs</field>
+        <field name="res_model">boss.forge.screening.run</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_boss_forge_schedule_list" model="ir.ui.view">
+        <field name="name">boss.forge.screening.schedule.list</field>
+        <field name="model">boss.forge.screening.schedule</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="job_id"/>
+                <field name="source"/>
+                <field name="interval_number"/>
+                <field name="interval_type"/>
+                <field name="next_run_at"/>
+                <field name="last_run_at"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_boss_forge_schedule_form" model="ir.ui.view">
+        <field name="name">boss.forge.screening.schedule.form</field>
+        <field name="model">boss.forge.screening.schedule</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title"><label for="name"/><h1><field name="name"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="job_id"/>
+                            <field name="source"/>
+                            <field name="active"/>
+                        </group>
+                        <group>
+                            <field name="interval_number"/>
+                            <field name="interval_type"/>
+                            <field name="timezone"/>
+                            <field name="next_run_at"/>
+                            <field name="last_run_at"/>
+                            <field name="schedule_version"/>
+                        </group>
+                    </group>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+    <record id="action_boss_forge_schedules" model="ir.actions.act_window">
+        <field name="name">Screening Schedules</field>
+        <field name="res_model">boss.forge.screening.schedule</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

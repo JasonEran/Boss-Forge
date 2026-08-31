@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_boss_forge" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.boss.forge</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="Boss-Forge" name="boss_forge" groups="base.group_system">
+                    <block title="Internal connector">
+                        <setting string="Boss-Forge API URL" help="Internal-only Control API endpoint. No public ingress is required.">
+                            <field name="bf_api_base_url" placeholder="http://boss-forge-api:3100"/>
+                        </setting>
+                        <setting string="Service token">
+                            <field name="bf_api_service_token" password="True"/>
+                        </setting>
+                    </block>
+                    <block title="Contact safety">
+                        <setting string="Transport mode" help="Fake is the mandatory default and never contacts BOSS candidates.">
+                            <field name="bf_contact_transport_mode"/>
+                        </setting>
+                        <setting string="Allow real contact" help="Global circuit breaker. Keep disabled during refactoring and acceptance.">
+                            <field name="bf_real_contact_enabled"/>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -5,6 +5,8 @@
 当前文档：
 
 - [基于 Odoo Community Recruitment 的详细重构设计](docs/ODOO_COMMUNITY_REFACTOR_PLAN.md)
+- [Odoo 重构内网部署、升级与验收手册](docs/ODOO_REFACTOR_RUNBOOK.md)
+- [Odoo 重构实施报告](docs/ODOO_REFACTOR_IMPLEMENTATION_REPORT.md)
 - [HR Dashboard 产品需求文档](docs/HR_DASHBOARD_PRD.md)
 - [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
@@ -17,6 +19,8 @@
 - [Dashboard 设计系统](design-system/boss-forge/MASTER.md)
 
 ## M0 快速验证
+
+当前重构以 Odoo 19 Community Recruitment 作为 HR 主控制面，Boss-Forge 负责 BOSS 渠道执行、规则判定、任务队列和受控联系。旧 Dashboard 与 M0/M1/M2 命令继续保留，用于本地验证、运维诊断和渐进迁移；不会在切换前删除既有能力。
 
 ```bash
 pnpm install

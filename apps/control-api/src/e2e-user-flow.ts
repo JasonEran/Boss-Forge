@@ -22,6 +22,24 @@ async function main(): Promise<void> {
   const accountId = `e2e-account-${suffix}`;
   const fingerprint = `e2e-fingerprint-${suffix}`;
   let positionId: string | null = null;
+  const contactWindowRows = await sql<
+    Array<{ allowed_start_minute: number; allowed_end_minute: number }>
+  >`
+    SELECT allowed_start_minute, allowed_end_minute
+    FROM contact_settings WHERE id = 'global'
+  `;
+  const originalContactWindow = contactWindowRows[0];
+  assert(originalContactWindow, "Global contact settings must exist before E2E.");
+  const shanghaiNow = new Date(Date.now() + 8 * 60 * 60 * 1_000);
+  const shanghaiMinute = shanghaiNow.getUTCHours() * 60 + shanghaiNow.getUTCMinutes();
+  const e2eWindowStart = (shanghaiMinute + 1_435) % 1_440;
+  const e2eWindowEnd = (shanghaiMinute + 60) % 1_440;
+  await sql`
+    UPDATE contact_settings
+    SET allowed_start_minute = ${e2eWindowStart},
+      allowed_end_minute = ${e2eWindowEnd}, updated_at = now()
+    WHERE id = 'global'
+  `;
   try {
     const queued = await sql<{ count: number }[]>`
       SELECT count(*)::int AS count FROM tasks WHERE status = 'queued'
@@ -63,7 +81,7 @@ async function main(): Promise<void> {
         createdBy: "e2e:hr"
       })
     });
-    const task = await repository.claimNextTask("e2e-worker");
+    const task = await repository.claimNextTask("e2e-worker", accountId);
     assert(task);
     assert.equal(task.id, taskPayload.task.id);
     const evaluation: CandidateEvaluationRecord = {
@@ -91,7 +109,7 @@ async function main(): Promise<void> {
         ]
       };
     await repository.completeTask(task, [evaluation]);
-    const resumeJob = await repository.claimNextResumeScreening("e2e-worker");
+    const resumeJob = await repository.claimNextResumeScreening("e2e-worker", accountId);
     assert(resumeJob);
     await repository.completeResumeScreening({
       job: resumeJob,
@@ -203,6 +221,13 @@ async function main(): Promise<void> {
       })
     );
   } finally {
+    await sql`
+      UPDATE contact_settings
+      SET allowed_start_minute = ${originalContactWindow.allowed_start_minute},
+        allowed_end_minute = ${originalContactWindow.allowed_end_minute},
+        updated_at = now()
+      WHERE id = 'global'
+    `;
     if (positionId) {
       await sql.begin(async (transaction) => {
         await transaction`

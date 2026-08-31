@@ -1,0 +1,23 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_bf_auditor_job,bf auditor hr.job,hr.model_hr_job,group_bf_auditor,1,0,0,0
+access_bf_auditor_applicant,bf auditor hr.applicant,hr_recruitment.model_hr_applicant,group_bf_auditor,1,0,0,0
+access_bf_auditor_rule_template,bf auditor rule template,boss_forge_rules.model_boss_forge_rule_template,group_bf_auditor,1,0,0,0
+access_bf_auditor_rule_set,bf auditor rule set,boss_forge_rules.model_boss_forge_rule_set,group_bf_auditor,1,0,0,0
+access_bf_auditor_rule_version,bf auditor rule version,boss_forge_rules.model_boss_forge_rule_version,group_bf_auditor,1,0,0,0
+access_bf_auditor_capability,bf auditor capability,boss_forge_rules.model_boss_forge_capability,group_bf_auditor,1,0,0,0
+access_bf_auditor_capability_alias,bf auditor capability alias,boss_forge_rules.model_boss_forge_capability_alias,group_bf_auditor,1,0,0,0
+access_bf_auditor_institution_category,bf auditor institution category,boss_forge_rules.model_boss_forge_institution_category,group_bf_auditor,1,0,0,0
+access_bf_auditor_institution_catalog,bf auditor institution catalog,boss_forge_rules.model_boss_forge_institution_catalog,group_bf_auditor,1,0,0,0
+access_bf_auditor_institution,bf auditor institution,boss_forge_rules.model_boss_forge_institution,group_bf_auditor,1,0,0,0
+access_bf_auditor_institution_alias,bf auditor institution alias,boss_forge_rules.model_boss_forge_institution_alias,group_bf_auditor,1,0,0,0
+access_bf_auditor_account,bf auditor account,boss_forge_recruitment.model_boss_forge_boss_account,group_bf_auditor,1,0,0,0
+access_bf_auditor_template,bf auditor template,boss_forge_recruitment.model_boss_forge_message_template,group_bf_auditor,1,0,0,0
+access_bf_auditor_policy,bf auditor policy,boss_forge_recruitment.model_boss_forge_contact_policy,group_bf_auditor,1,0,0,0
+access_bf_auditor_run,bf auditor screening run,boss_forge_recruitment.model_boss_forge_screening_run,group_bf_auditor,1,0,0,0
+access_bf_auditor_schedule,bf auditor schedule,boss_forge_recruitment.model_boss_forge_screening_schedule,group_bf_auditor,1,0,0,0
+access_bf_auditor_evidence,bf auditor evidence,boss_forge_recruitment.model_boss_forge_match_evidence,group_bf_auditor,1,0,0,0
+access_bf_auditor_education,bf auditor education,boss_forge_recruitment.model_boss_forge_applicant_education,group_bf_auditor,1,0,0,0
+access_bf_auditor_authorization,bf auditor authorization,boss_forge_recruitment.model_boss_forge_contact_authorization,group_bf_auditor,1,0,0,0
+access_bf_auditor_outbox,bf auditor outbox,boss_forge_connector.model_boss_forge_integration_outbox,group_bf_auditor,1,0,0,0
+access_bf_auditor_inbox,bf auditor inbox,boss_forge_connector.model_boss_forge_integration_inbox,group_bf_auditor,1,0,0,0
+access_bf_auditor_external_map,bf auditor external map,boss_forge_connector.model_boss_forge_external_map,group_bf_auditor,1,0,0,0

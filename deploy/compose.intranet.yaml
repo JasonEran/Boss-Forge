@@ -1,0 +1,253 @@
+name: ${COMPOSE_PROJECT_NAME:-boss-forge-intranet}
+
+x-common-logging: &common-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-odoo-environment: &odoo-environment
+  HOST: odoo-postgres
+  PORT: "5432"
+  USER: ${ODOO_DB_USER:?set ODOO_DB_USER in the env file}
+  PASSWORD: ${ODOO_DB_PASSWORD:?set ODOO_DB_PASSWORD in the env file}
+  PGHOST: odoo-postgres
+  PGPORT: "5432"
+  PGUSER: ${ODOO_DB_USER:?set ODOO_DB_USER in the env file}
+  PGPASSWORD: ${ODOO_DB_PASSWORD:?set ODOO_DB_PASSWORD in the env file}
+  ODOO_DB_NAME: ${ODOO_DB_NAME:?set ODOO_DB_NAME in the env file}
+  ODOO_ADMIN_LOGIN: ${ODOO_ADMIN_LOGIN:?set ODOO_ADMIN_LOGIN in the env file}
+  ODOO_ADMIN_PASSWORD: ${ODOO_ADMIN_PASSWORD:?set ODOO_ADMIN_PASSWORD in the env file}
+  BOSS_FORGE_SERVICE_TOKEN: ${BOSS_FORGE_SERVICE_TOKEN:?set BOSS_FORGE_SERVICE_TOKEN in the env file}
+  TZ: Asia/Shanghai
+
+x-boss-environment: &boss-environment
+  DATABASE_URL: postgres://${BOSS_DB_USER:?set BOSS_DB_USER}:${BOSS_DB_PASSWORD:?set BOSS_DB_PASSWORD}@boss-postgres:5432/${BOSS_DB_NAME:?set BOSS_DB_NAME}
+  BOSS_FORGE_SERVICE_TOKEN: ${BOSS_FORGE_SERVICE_TOKEN:?set BOSS_FORGE_SERVICE_TOKEN in the env file}
+  TZ: Asia/Shanghai
+  # R0-R4 is deliberately fail-closed. Do not turn this into env interpolation.
+  BOSS_FORGE_REAL_GREET_ENABLED: "0"
+
+services:
+  odoo-postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      # Keep the target Odoo DB absent until the idempotency-safe `odoo db init` step.
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${ODOO_DB_USER:?set ODOO_DB_USER in the env file}
+      POSTGRES_PASSWORD: ${ODOO_DB_PASSWORD:?set ODOO_DB_PASSWORD in the env file}
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - odoo_postgres_data:/var/lib/postgresql/data
+    networks: [data]
+    logging: *common-logging
+
+  boss-postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${BOSS_DB_NAME:?set BOSS_DB_NAME in the env file}
+      POSTGRES_USER: ${BOSS_DB_USER:?set BOSS_DB_USER in the env file}
+      POSTGRES_PASSWORD: ${BOSS_DB_PASSWORD:?set BOSS_DB_PASSWORD in the env file}
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - boss_postgres_data:/var/lib/postgresql/data
+    networks: [data]
+    logging: *common-logging
+
+  boss-migrate:
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.boss-forge
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: "no"
+    command: ["pnpm", "db:migrate"]
+    environment: *boss-environment
+    depends_on:
+      boss-postgres:
+        condition: service_healthy
+    networks: [data]
+    logging: *common-logging
+
+  boss-forge-api:
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.boss-forge
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: unless-stopped
+    command: ["pnpm", "api"]
+    environment:
+      <<: *boss-environment
+      CONTROL_API_HOST: 0.0.0.0
+      CONTROL_API_PORT: "3100"
+      CONTROL_WEB_ORIGIN: ${CONTROL_WEB_ORIGIN:-http://127.0.0.1:3000}
+    ports:
+      - "${INTRANET_BIND_IP:-127.0.0.1}:${BOSS_API_PORT:-3100}:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3100/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      boss-postgres:
+        condition: service_healthy
+      boss-migrate:
+        condition: service_completed_successfully
+    networks: [app, data]
+    stop_grace_period: 30s
+    logging: *common-logging
+
+  odoo:
+    image: ${ODOO_IMAGE:-odoo:19.0}
+    restart: unless-stopped
+    command:
+      - odoo
+      - --config=/etc/odoo/odoo.conf
+      - --database=${ODOO_DB_NAME:?set ODOO_DB_NAME in the env file}
+      - --db-filter=^${ODOO_DB_NAME:?set ODOO_DB_NAME in the env file}$$
+    environment: *odoo-environment
+    ports:
+      - "${INTRANET_BIND_IP:-127.0.0.1}:${ODOO_HTTP_PORT:-8069}:8069"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8069/web/health', timeout=3).read()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    depends_on:
+      odoo-postgres:
+        condition: service_healthy
+    volumes:
+      - odoo_filestore:/var/lib/odoo
+      - ../odoo/addons:/mnt/extra-addons:ro
+      - ../odoo/config/odoo.conf.example:/etc/odoo/odoo.conf:ro
+    networks: [app, data]
+    stop_grace_period: 60s
+    logging: *common-logging
+
+  boss-odoo-sync:
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.boss-forge
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: unless-stopped
+    command: ["pnpm", "odoo:sync"]
+    environment:
+      <<: *boss-environment
+      ODOO_EVENTS_URL: http://odoo:8069/boss_forge/api/v1/events
+      ODOO_INTEGRATION_TOKEN: ${ODOO_API_KEY:?set ODOO_API_KEY in the env file}
+      BOSS_FORGE_ODOO_SYNC_WORKER_ID: ${BOSS_FORGE_ODOO_SYNC_WORKER_ID:-odoo-sync-01}
+    depends_on:
+      boss-postgres:
+        condition: service_healthy
+      boss-migrate:
+        condition: service_completed_successfully
+      odoo:
+        condition: service_healthy
+    networks: [app, data]
+    stop_grace_period: 30s
+    logging: *common-logging
+
+  # Always-on simulation worker: consumes only transport_mode=fake and never calls boss-cli.
+  boss-contact-worker-fake:
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.boss-forge
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: unless-stopped
+    command: ["pnpm", "m2:contact-worker:fake", "--", "--loop"]
+    environment:
+      <<: *boss-environment
+      BOSS_FORGE_CONTACT_WORKER_ID: ${BOSS_FORGE_CONTACT_WORKER_ID:-contact-fake-01}
+      BOSS_FORGE_ACCOUNT_ID: ${BOSS_FORGE_ACCOUNT_ID:-boss-account-01}
+    depends_on:
+      boss-postgres:
+        condition: service_healthy
+      boss-migrate:
+        condition: service_completed_successfully
+    networks: [data]
+    stop_grace_period: 30s
+    logging: *common-logging
+
+  # Read/preview/screen Worker is opt-in; normal `up -d` never starts it.
+  boss-worker:
+    profiles: ["boss-worker"]
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.boss-forge
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: unless-stopped
+    command: ["pnpm", "m1:worker"]
+    environment:
+      <<: *boss-environment
+      BOSS_FORGE_WORKER_ID: ${BOSS_FORGE_WORKER_ID:-worker-ubuntu-01}
+      BOSS_FORGE_ACCOUNT_ID: ${BOSS_FORGE_ACCOUNT_ID:-boss-account-01}
+      BOSS_FORGE_RUNTIME_DIR: /var/lib/boss-forge/runtime
+      BOSS_FORGE_RESUME_PREVIEW_ENABLED: ${BOSS_FORGE_RESUME_PREVIEW_ENABLED:-0}
+      BOSS_FORGE_OCR_PROVIDER: ${BOSS_FORGE_OCR_PROVIDER:-tencent}
+      BOSS_RESUME_OCR: ${BOSS_RESUME_OCR:-0}
+      TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
+      TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
+      TENCENTCLOUD_OCR_REGION: ${TENCENTCLOUD_OCR_REGION:-ap-guangzhou}
+      CHROME_PATH: /usr/bin/chromium
+      BOSS_BROWSER_HEADLESS: "true"
+      BOSS_BROWSER_USER_DATA_DIR: /var/lib/boss-forge/browser
+      BOSS_BROWSER_PROFILE_DIRECTORY: ${BOSS_BROWSER_PROFILE_DIRECTORY:-Default}
+      BOSS_BROWSER_REMOTE_DEBUGGING_PORT: ${BOSS_BROWSER_REMOTE_DEBUGGING_PORT:-53470}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const fs=require('fs'); const h=JSON.parse(fs.readFileSync('/var/lib/boss-forge/runtime/worker-heartbeat.json','utf8')); process.exit(h.state === 'stopping' || h.chrome?.available !== true ? 1 : 0)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    depends_on:
+      boss-postgres:
+        condition: service_healthy
+      boss-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - boss_worker_runtime:/var/lib/boss-forge/runtime
+      - boss_browser_profile:/var/lib/boss-forge/browser
+      - boss_cli_data:/home/node/.boss-cli
+    networks: [app, data]
+    stop_grace_period: 60s
+    logging: *common-logging
+
+networks:
+  app:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+  odoo_postgres_data:
+  odoo_filestore:
+  boss_postgres_data:
+  boss_worker_runtime:
+  boss_browser_profile:
+  boss_cli_data:

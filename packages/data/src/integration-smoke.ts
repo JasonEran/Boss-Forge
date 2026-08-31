@@ -139,7 +139,7 @@ async function main(): Promise<void> {
       source: "recommend",
       createdBy: "integration-test"
     });
-    const task = await repository.claimNextTask("integration-worker");
+    const task = await repository.claimNextTask("integration-worker", position.bossAccountId);
     assert(task);
     const evaluation: CandidateEvaluationRecord = {
         sourceReference: `recommend:1:Integration Candidate ${suffix}`,
@@ -184,7 +184,10 @@ async function main(): Promise<void> {
     };
     await repository.completeTask(task, [evaluation, belowTem8Evaluation]);
     for (let index = 0; index < 2; index += 1) {
-      const resumeJob = await repository.claimNextResumeScreening("integration-worker");
+      const resumeJob = await repository.claimNextResumeScreening(
+        "integration-worker",
+        position.bossAccountId
+      );
       assert(resumeJob);
       const record = resumeJob.candidateName.includes("CET6")
         ? belowTem8Evaluation
@@ -258,7 +261,11 @@ async function main(): Promise<void> {
       now: new Date().toISOString()
     });
     assert.equal(intent.status, "ready");
-    const dispatch = await m2Repository.claimContactDispatch("integration-contact-worker");
+    const dispatch = await m2Repository.claimContactDispatch(
+      "integration-contact-worker",
+      "fake",
+      position.bossAccountId
+    );
     assert(dispatch);
     assert.equal(dispatch.id, intent.id);
     await m2Repository.assertContactDispatchAllowed({
@@ -268,9 +275,30 @@ async function main(): Promise<void> {
     });
     await m2Repository.finishContactDispatch({
       job: dispatch,
-      result: "sent",
+      result: "simulated",
       externalMessage: "fake transport only"
     });
+    const fakeCompletion = await sql<
+      Array<{ intent_status: string; candidate_status: string; attempt_result: string }>
+    >`
+      SELECT ci.status AS intent_status, cps.contact_status AS candidate_status,
+        ca.result AS attempt_result
+      FROM contact_intents ci
+      JOIN candidate_position_states cps ON cps.id = ci.candidate_position_state_id
+      JOIN contact_attempts ca ON ca.contact_intent_id = ci.id
+      WHERE ci.id = ${intent.id}
+    `;
+    assert.equal(fakeCompletion[0]?.intent_status, "simulated");
+    assert.equal(fakeCompletion[0]?.candidate_status, "simulated");
+    assert.equal(fakeCompletion[0]?.attempt_result, "simulated");
+    const fakeQuota = await sql<Array<{ used: number }>>`
+      SELECT COALESCE(SUM(used), 0)::int AS used
+      FROM quota_counters
+      WHERE (scope_type = 'account' AND scope_id = ${position.bossAccountId})
+        OR (scope_type = 'position' AND scope_id = ${position.id})
+        OR (scope_type = 'task' AND scope_id = ${task.id})
+    `;
+    assert.equal(fakeQuota[0]?.used, 0);
     const schedule = await m2Repository.createSchedule({
       idempotencyKey: `integration-schedule-${suffix}`,
       positionId: position.id,

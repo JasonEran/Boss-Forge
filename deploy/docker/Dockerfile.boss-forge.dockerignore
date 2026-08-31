@@ -1,0 +1,15 @@
+.git
+.boss-forge
+node_modules
+coverage
+dist
+*.log
+.DS_Store
+.env
+.env.*
+docs
+odoo
+deploy
+apps/web/.vinext
+apps/web/dist
+apps/web/tsconfig.tsbuildinfo

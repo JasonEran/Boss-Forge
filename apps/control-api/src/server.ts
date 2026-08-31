@@ -1,9 +1,13 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { parseOdooInboundEvent } from "@boss-forge/contracts";
 import {
   BossForgeRepository,
   M2Repository,
+  OdooIntegrationRepository,
   OptimisticLockError,
   createDatabase,
+  parseRuleConfig,
   type RuleConfig
 } from "@boss-forge/data";
 
@@ -13,6 +17,7 @@ const webOrigin = process.env.CONTROL_WEB_ORIGIN?.trim() || "http://localhost:30
 const sql = createDatabase();
 const repository = new BossForgeRepository(sql);
 const m2Repository = new M2Repository(sql);
+const odooIntegrationRepository = new OdooIntegrationRepository(sql);
 
 type JsonObject = Record<string, unknown>;
 
@@ -44,6 +49,21 @@ function integer(value: unknown, field: string): number {
   return value;
 }
 
+function integrationAuthorized(request: IncomingMessage): boolean {
+  const configured =
+    process.env.ODOO_INTEGRATION_TOKEN?.trim() ||
+    process.env.BOSS_FORGE_SERVICE_TOKEN?.trim();
+  if (!configured) {
+    throw new Error("ODOO_INTEGRATION_TOKEN or BOSS_FORGE_SERVICE_TOKEN is required.");
+  }
+  const header = request.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return false;
+  const received = header.slice("Bearer ".length).trim();
+  const left = Buffer.from(configured);
+  const right = Buffer.from(received);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
 function shanghaiMinuteOfDay(date: Date): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Shanghai",
@@ -57,35 +77,19 @@ function shanghaiMinuteOfDay(date: Date): number {
 }
 
 function ruleConfig(value: unknown): RuleConfig {
-  if (!value || typeof value !== "object") throw new Error("config is required.");
-  const capabilities = (value as JsonObject).requiredCapabilities;
-  if (!Array.isArray(capabilities) || capabilities.length === 0) {
-    throw new Error("config.requiredCapabilities must not be empty.");
-  }
-  const parsed = capabilities.map((item) => {
-    if (!item || typeof item !== "object") throw new Error("Invalid capability rule.");
-    const capability = (item as JsonObject).capability;
-    const minimumConfidence = (item as JsonObject).minimumConfidence;
-    if (capability !== "tem8") throw new Error("M1 currently supports only the tem8 capability.");
-    if (
-      typeof minimumConfidence !== "number" ||
-      minimumConfidence < 0 ||
-      minimumConfidence > 1
-    ) {
-      throw new Error("minimumConfidence must be between 0 and 1.");
-    }
-    return { capability: "tem8" as const, minimumConfidence };
-  });
-  return { requiredCapabilities: parsed };
+  return parseRuleConfig(value);
 }
 
-async function readJson(request: IncomingMessage): Promise<JsonObject> {
+async function readJson(
+  request: IncomingMessage,
+  maxBytes = 64 * 1024
+): Promise<JsonObject> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     bytes += buffer.byteLength;
-    if (bytes > 64 * 1024) throw new Error("Request body exceeds 64 KiB.");
+    if (bytes > maxBytes) throw new Error(`Request body exceeds ${maxBytes} bytes.`);
     chunks.push(buffer);
   }
   if (chunks.length === 0) return {};
@@ -101,7 +105,8 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     response.writeHead(204, {
       "access-control-allow-origin": webOrigin,
       "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-headers": "content-type,idempotency-key",
+      "access-control-allow-headers":
+        "content-type,idempotency-key,authorization,x-correlation-id",
       vary: "origin"
     });
     response.end();
@@ -111,6 +116,37 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (request.method === "GET" && url.pathname === "/health") {
     await sql`SELECT 1`;
     send(response, 200, { ok: true, service: "boss-forge-control-api" });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/integration/odoo/v1/health") {
+    await sql`SELECT 1`;
+    send(response, 200, {
+      ok: true,
+      service: "boss-forge-odoo-integration",
+      contractVersion: "1",
+      realGreetingEnabled: process.env.BOSS_FORGE_REAL_GREET_ENABLED === "1"
+    });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/integration/odoo/v1/events") {
+    if (!integrationAuthorized(request)) {
+      send(response, 401, { error: "unauthorized", message: "Invalid integration token." });
+      return;
+    }
+    // Published institution catalogs are immutable snapshots and can exceed normal UI payloads.
+    const body = await readJson(request, 10 * 1024 * 1024);
+    let parsed;
+    try {
+      parsed = parseOdooInboundEvent(body);
+    } catch {
+      throw new Error("Odoo event must match the supported v1 integration schema.");
+    }
+    const result = await odooIntegrationRepository.handleInboundEvent(parsed);
+    send(response, result.replayed ? 200 : 202, {
+      accepted: true,
+      result,
+      realGreetingEnabled: process.env.BOSS_FORGE_REAL_GREET_ENABLED === "1"
+    });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
@@ -324,16 +360,22 @@ const server = createServer((request, response) => {
     const status =
       error instanceof OptimisticLockError
         ? 409
+        : message === "Invalid integration token."
+          ? 401
         : message.includes("policy blocked") || message.includes("version conflict")
           ? 409
           : message.includes("not found")
             ? 404
-            : message.includes("required") || message.includes("must")
+            : message.includes("required") ||
+                message.includes("must") ||
+                message.includes("exceeds")
               ? 400
               : 500;
     const code =
       error instanceof OptimisticLockError
         ? "version_conflict"
+        : status === 401
+          ? "unauthorized"
         : status === 409
           ? "conflict"
           : status === 404

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_boss_forge_outbox_list" model="ir.ui.view">
+        <field name="name">boss.forge.integration.outbox.list</field>
+        <field name="model">boss.forge.integration.outbox</field>
+        <field name="arch" type="xml">
+            <list create="0" delete="0" decoration-danger="state in ('failed', 'dead_letter')" decoration-success="state == 'delivered'">
+                <field name="event_id"/>
+                <field name="event_type"/>
+                <field name="aggregate_type" optional="hide"/>
+                <field name="aggregate_id"/>
+                <field name="aggregate_version" optional="hide"/>
+                <field name="state" widget="badge"/>
+                <field name="attempt_count"/>
+                <field name="locked_at" optional="hide"/>
+                <field name="next_attempt_at"/>
+                <field name="delivered_at"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_boss_forge_outbox_form" model="ir.ui.view">
+        <field name="name">boss.forge.integration.outbox.form</field>
+        <field name="model">boss.forge.integration.outbox</field>
+        <field name="arch" type="xml">
+            <form create="0" delete="0" edit="0">
+                <header>
+                    <button name="action_retry" type="object" string="Retry" invisible="state not in ('failed', 'dead_letter')" class="btn-primary"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="event_id"/>
+                            <field name="event_type"/>
+                            <field name="correlation_id"/>
+                        </group>
+                        <group>
+                            <field name="aggregate_type"/>
+                            <field name="aggregate_id"/>
+                            <field name="aggregate_version"/>
+                            <field name="occurred_at"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Payload"><field name="payload" widget="json"/></page>
+                        <page string="Delivery">
+                            <group>
+                                <field name="attempt_count"/>
+                                <field name="max_attempts"/>
+                                <field name="locked_at"/>
+                                <field name="next_attempt_at"/>
+                                <field name="delivered_at"/>
+                            </group>
+                            <field name="error_summary"/>
+                            <field name="response_payload" widget="json"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_boss_forge_outbox" model="ir.actions.act_window">
+        <field name="name">Integration Outbox</field>
+        <field name="res_model">boss.forge.integration.outbox</field>
+        <field name="view_mode">list,form</field>
+    </record>
+    <record id="view_boss_forge_inbox_list" model="ir.ui.view">
+        <field name="name">boss.forge.integration.inbox.list</field>
+        <field name="model">boss.forge.integration.inbox</field>
+        <field name="arch" type="xml">
+            <list create="0" edit="0" delete="0" decoration-danger="state == 'failed'">
+                <field name="event_id"/>
+                <field name="event_type"/>
+                <field name="aggregate_id"/>
+                <field name="state" widget="badge"/>
+                <field name="occurred_at"/>
+                <field name="processed_at"/>
+            </list>
+        </field>
+    </record>
+    <record id="action_boss_forge_inbox" model="ir.actions.act_window">
+        <field name="name">Integration Inbox</field>
+        <field name="res_model">boss.forge.integration.inbox</field>
+        <field name="view_mode">list,form</field>
+    </record>
+    <menuitem id="menu_boss_forge_technical_root" name="Boss-Forge" sequence="95" groups="base.group_system"/>
+    <menuitem id="menu_boss_forge_integration" name="Integration" parent="menu_boss_forge_technical_root" sequence="90" groups="base.group_system"/>
+    <menuitem id="menu_boss_forge_outbox" name="Outbox" parent="menu_boss_forge_integration" action="action_boss_forge_outbox" sequence="10"/>
+    <menuitem id="menu_boss_forge_inbox" name="Inbox" parent="menu_boss_forge_integration" action="action_boss_forge_inbox" sequence="20"/>
+</odoo>

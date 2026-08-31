@@ -9,6 +9,7 @@ import {
   type BossCliRunResult
 } from "@boss-forge/boss-cli-adapter";
 import { withAccountLock } from "./account-lock.js";
+import { assertRealGreetExecutionAllowed } from "./contact-safety.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { effectiveOcrEnabled, resolveChromePath, workerBossEnvironment } from "./runtime.js";
 
@@ -69,7 +70,7 @@ function printUsage(): void {
 
 Safety:
   preview consumes the platform resume-view quota and requires --approve-preview.
-  greet sends a real greeting and requires --approve-greet.
+  greet sends a real greeting and requires --approve-greet plus BOSS_FORGE_REAL_GREET_ENABLED=1.
   OCR defaults to disabled (BOSS_RESUME_OCR=0).`);
 }
 
@@ -160,6 +161,7 @@ function liveCommand(args: ParsedArgs): { preflight?: BossCommand; command: Boss
       if (!flag(args, "approve-greet")) {
         throw new Error("greet requires the explicit --approve-greet flag because it contacts a real person.");
       }
+      assertRealGreetExecutionAllowed(["--approve-real-greet"], process.env);
       const jobKeyword = requireOption(args, "job");
       return {
         preflight: { type: "recommend", jobKeyword },
