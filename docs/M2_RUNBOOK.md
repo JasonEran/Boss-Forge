@@ -54,7 +54,12 @@ pnpm typecheck
 pnpm lint:web
 pnpm test
 pnpm test:integration:data
+pnpm test:e2e:user
 pnpm web:build
 ```
 
 数据集成测试使用合成候选人和假传输，只验证联系状态从 `ready` 到 `sent` 的数据库闭环，不调用 `boss-cli greet` 或 `send`。
+
+`test:e2e:user` 按 HR 用户路径调用与 Dashboard 相同的控制 API，覆盖岗位、规则、立即筛选任务、候选人证据、人工审核、消息预览、联系意图、定时任务和审计日志。测试断言真实打招呼未执行，并在结束后自动清理所有合成数据。
+
+完整验收结果参见 [M1/M2 验收清单与测试报告](M1_M2_ACCEPTANCE.md)。

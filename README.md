@@ -9,6 +9,7 @@
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
 - [M1 数据闭环运行手册](docs/M1_RUNBOOK.md)
 - [M2 定时筛选与受控联系运行手册](docs/M2_RUNBOOK.md)
+- [M1/M2 验收清单与测试报告](docs/M1_M2_ACCEPTANCE.md)
 - [两阶段交付计划](docs/TWO_PHASE_DELIVERY_PLAN.md)
 - [boss-cli 能力复用清单](docs/BOSS_CLI_REUSE_MATRIX.md)
 - [HR Dashboard 需求思维导图](docs/HR_DASHBOARD_MINDMAP.md)
@@ -63,3 +64,9 @@ pnpm web:dev
 ## M2 安全边界
 
 M2 已实现定时筛选、人工审核后的消息预览、显式联系确认、Outbox、限额/时段/冷却策略、失败与不确定结果恢复和审计日志。真实 `boss-cli greet` 执行需要 `--approve-real-greet` 与 `BOSS_FORGE_REAL_GREET_ENABLED=1` 同时存在；本轮没有进行真实打招呼测试，详见 [M2 运行手册](docs/M2_RUNBOOK.md)。
+
+无真实发送的完整用户流程可重复执行：
+
+```bash
+pnpm test:e2e:user
+```

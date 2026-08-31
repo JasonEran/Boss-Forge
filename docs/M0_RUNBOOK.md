@@ -145,7 +145,7 @@ pnpm m0 -- live greet \
 
 ## 9. 当前边界
 
-- M0 只验证执行链路，不包含 Dashboard、数据库、Redis 或完整任务队列。
+- M0 阶段本身只验证执行链路，不包含后续已交付的 Dashboard、PostgreSQL 控制面或完整任务队列。
 - 输出解析器严格绑定 `boss-cli@0.6.6`；升级版本必须增加契约样本并通过测试。
-- M0 心跳写本地文件；M1 接入 API/数据库后改为上报控制面。
+- M0/M1 Worker 心跳当前仍写本地文件；任务状态、候选人结果和审计记录已经写入 PostgreSQL 控制面。
 - 多 Boss 账号一期应使用独立 Worker 或独立 macOS 用户。

@@ -1,10 +1,12 @@
 # Boss-Forge 系统架构设计
 
-> 文档版本：V0.1（评审稿）
+> 文档版本：V0.3（M1/M2 实现同步版）
 >
 > 编写日期：2026-08-31
 >
-> 关联文档：[产品需求文档](HR_DASHBOARD_PRD.md) · [boss-cli 能力复用清单](BOSS_CLI_REUSE_MATRIX.md)
+> 关联文档：[产品需求文档](HR_DASHBOARD_PRD.md) · [boss-cli 能力复用清单](BOSS_CLI_REUSE_MATRIX.md) · [M1/M2 验收报告](M1_M2_ACCEPTANCE.md)
+
+本文中 M1/M2 部分描述当前已实现架构，M3/M4 部分描述后续演进目标。
 
 ## 1. 架构目标
 
@@ -53,9 +55,7 @@ flowchart LR
     AUDITOR[审计人员] -->|只读访问| WEB
     WEB --> API[Boss-Forge API]
     API --> DB[(PostgreSQL)]
-    API --> QUEUE[(Redis / BullMQ)]
-    WORKER[Boss Worker] -->|领取任务/上报结果| QUEUE
-    WORKER --> DB
+    WORKER[Boss Worker] -->|轮询任务/上报结果| DB
     WORKER --> CLI[boss-cli 锁定版本]
     CLI --> CHROME[本机 Chrome + Boss 登录态]
     CHROME --> BOSS[Boss 直聘]
@@ -141,27 +141,26 @@ flowchart TB
 
 ### 5.3 任务调度与队列
 
-建议使用 Redis + BullMQ：
+M1/M2 当前使用 PostgreSQL 作为任务与 Outbox 的事实来源：
 
-- `schedule-dispatch`：将到期计划转换成任务实例。
-- `candidate-fetch`：获取推荐、搜索或深搜候选人。
-- `resume-preview`：按预算获取简历截图/OCR。
-- `candidate-evaluate`：标准化和规则判断。
-- `contact-dispatch`：人工批准或自动策略批准后的打招呼/消息操作。
-- `sync-position`：同步岗位和 JD。
+- M1 Worker 轮询 `tasks`，通过 `FOR UPDATE SKIP LOCKED` 原子领取立即或定时筛选任务。
+- 调度循环扫描到期 `schedules`，按 `schedule_id + scheduled_for` 幂等生成任务实例。
+- 联系确认在同一事务内写入 `contact_intents` 与 `outbox_events`。
+- 联系 Worker 原子领取 Outbox，执行前再次检查时段、限额、冷却期和紧急停止。
+- 同一 Boss 账号通过本地进程锁串行调用 `boss-cli`。
 
-队列只传 ID，不传完整简历、Cookie、密钥或大文本。Worker 通过 ID 从数据库读取锁定的任务快照。
+当前规模无需 Redis/BullMQ。未来扩展到多 Worker、多主机或更高吞吐量时，可在不改变 PostgreSQL 业务事实来源的前提下增加消息队列。
 
 ### 5.4 Boss Worker
 
 Worker 部署在能够运行本机 Chrome 的受控节点。职责：
 
 - 向控制面定期上报在线状态、CLI 版本、Chrome 状态和可用 Boss 账号。
-- 获取账号级分布式锁，保证一个账号同一时间只有一个页面操作任务。
+- 获取账号级锁；当前使用 Worker 本地文件锁，多主机部署前升级为分布式锁。
 - 按“命令配方”执行一组有前置关系的 CLI 命令。
 - 捕获退出码、标准输出、标准错误、超时和取消信号。
 - 保存脱敏原始输出，由版本化解析器转换成内部 DTO。
-- 上传简历截图/OCR 文本，返回产物引用。
+- 如后续批准简历截图/OCR，再上传产物并返回引用；当前流程默认关闭该能力。
 - 任何验证码、登录失效、页面异常或不确定发送结果立即停止。
 
 ### 5.5 `boss-cli` 适配器
@@ -243,7 +242,6 @@ flowchart LR
       APIAPP[API 应用]
       SCHED[调度进程]
       PG[(PostgreSQL)]
-      REDIS[(Redis)]
       MINIO[(MinIO / 内网对象存储)]
     end
 
@@ -257,10 +255,7 @@ flowchart LR
     PROXY --> WEBAPP
     PROXY --> APIAPP
     APIAPP --> PG
-    APIAPP --> REDIS
     SCHED --> PG
-    SCHED --> REDIS
-    AGENT --> REDIS
     AGENT --> PG
     AGENT --> MINIO
     AGENT --> BCLI --> CHROME2
@@ -269,7 +264,7 @@ flowchart LR
 
 ### 6.2 一期最小部署
 
-一期可在一台内网服务器部署 Web、API、PostgreSQL、Redis 和对象存储，在一台专用 macOS 机器运行 Worker、Chrome 和 `boss-cli`。
+一期可在一台内网服务器部署 Web、API 和 PostgreSQL，在一台专用 macOS 机器运行 Worker、Chrome 和 `boss-cli`。只有启用简历截图时才需要内网对象存储。
 
 如果技术验证只有一个用户，也可以临时把 API 和 Worker 部署在同一台 macOS 上，但代码仍保持控制面/执行面边界，避免后续迁移时重写。
 
@@ -463,13 +458,13 @@ draft → approved → queued → dispatching → succeeded
 执行页面操作时统一按以下顺序加锁，避免死锁：
 
 1. 联系意图或任务步骤数据库行锁。
-2. Boss 账号分布式锁。
+2. Boss 账号锁；当前为 Worker 本地文件锁，多主机部署前升级为分布式锁。
 3. Worker 本地进程互斥锁。
 4. 调用 `boss-cli`，并尊重其会话锁。
 
 ### 11.3 Outbox
 
-业务状态和 `outbox_events` 在同一 PostgreSQL 事务中提交。独立投递器把事件发送到 BullMQ，成功后标记已投递。消费者重复收到同一事件时根据幂等键直接返回已有结果。
+业务状态和 `outbox_events` 在同一 PostgreSQL 事务中提交。联系 Worker 通过行锁领取待处理事件，完成后写入联系尝试、候选人状态、额度计数和审计日志。消费者重复收到同一幂等键时直接返回已有结果，不再次执行外部操作。
 
 ## 12. 安全设计
 
@@ -576,15 +571,15 @@ draft → approved → queued → dispatching → succeeded
 
 | 层 | 推荐选型 | 原因 |
 |---|---|---|
-| Web | React + TypeScript + Vite | 适合内网管理台，前后端边界清晰 |
-| API | Node.js 20+ + TypeScript + NestJS/Fastify | 与 `boss-cli` 同生态，子进程和类型契约简单 |
-| Worker | Node.js 20+ + TypeScript | 直接管理 CLI 子进程，复用 DTO 和校验代码 |
+| Web | React + TypeScript + Vinext/Vite | 当前 Dashboard 技术栈，适合内网管理台 |
+| API | Node.js 22+ + TypeScript `node:http` | 当前轻量控制 API，与 Worker 共享类型和数据访问层 |
+| Worker | Node.js 22+ + TypeScript | 直接管理 CLI 子进程，复用 DTO 和校验代码 |
 | 数据库 | PostgreSQL 16+ | 事务、JSONB、锁和审计查询可靠 |
-| 队列/锁 | Redis 7+ + BullMQ | 定时任务、重试、账号分区和分布式锁 |
+| 队列/锁 | PostgreSQL 行锁 + Worker 本地账号锁 | 当前 M1/M2 实现，无额外队列基础设施 |
 | 对象存储 | MinIO 或公司已有 S3 兼容存储 | 简历截图与产物不进入数据库 |
 | 认证 | 公司 OIDC/SSO | 统一身份和离职回收 |
-| 数据校验 | Zod 或同类 schema | API、队列和 CLI 解析结果共用契约 |
-| 数据迁移 | Prisma/Drizzle/TypeORM 之一 | 版本化数据库结构，项目选定一种即可 |
+| 数据校验 | TypeScript 类型 + API 边界校验 | 当前控制 API 和 CLI 解析结果共享类型契约 |
+| 数据迁移 | SQL migration + `postgres` 客户端 | 当前版本化数据库结构与仓储实现 |
 | 可观测性 | OpenTelemetry + Prometheus/Grafana + 集中日志 | 统一请求、任务和 CLI 步骤追踪 |
 
 一期不建议引入 Kubernetes。使用 Docker Compose 部署控制面，Worker 作为受控 macOS 服务运行即可。业务量和运维需求明确增长后再评估容器编排。
@@ -595,23 +590,17 @@ draft → approved → queued → dispatching → succeeded
 Boss-Forge/
 ├── apps/
 │   ├── web/                  # React Dashboard
-│   ├── api/                  # 模块化业务 API
-│   ├── scheduler/            # 计划扫描与 Outbox 投递
-│   └── boss-worker/          # macOS Worker 与 CLI 子进程执行
+│   ├── control-api/          # 控制 API、seed 与用户流程 E2E
+│   └── boss-worker/          # M0/M1 Worker 与受控联系执行器
 ├── packages/
-│   ├── contracts/            # API、队列和 DTO schema
+│   ├── contracts/            # 共享契约
 │   ├── boss-cli-adapter/     # argv 构造、版本化解析器、命令配方
-│   ├── rule-engine/          # 标准化和确定性规则
-│   ├── database/             # schema、migration 和 repositories
-│   └── observability/        # 日志、指标和 tracing
-├── deploy/
-│   ├── compose.yaml
-│   └── worker/               # macOS 服务配置示例
-├── docs/
-└── tests/
-    ├── contract/             # boss-cli 输出契约样本
-    ├── rule-fixtures/        # TEM8 等正反例回归样本
-    └── e2e/                  # 不真实发送的端到端测试
+│   ├── rule-engine/          # TEM8 标准化和确定性规则
+│   ├── m1-core/              # 候选人评估流程
+│   ├── contact-policy/       # 联系安全策略
+│   └── data/                 # SQL migration、类型与 repositories
+├── docs/                     # PRD、架构、运行与验收文档
+└── design-system/            # Dashboard 设计规范
 ```
 
 ## 18. 测试策略
@@ -633,7 +622,7 @@ Boss-Forge/
 ### 18.3 集成测试
 
 - PostgreSQL 事务 Outbox 与重复消费。
-- Redis 队列重试、取消和账号锁。
+- PostgreSQL 任务领取、定时物化、Outbox、重复消费和账号锁。
 - Worker 离线/恢复与任务续跑。
 - 对象存储权限和过期删除。
 
@@ -641,7 +630,7 @@ Boss-Forge/
 
 - 默认使用不发送模式和专用测试账号。
 - 真实 `greet`、`send`、`not-fit`、`wechat` 等有外部影响的动作必须由测试负责人单独批准。
-- 第一期上线前验证未经人工二次确认无法创建可执行联系意图。
+- 真实联系验收前验证未经人工二次确认无法创建可执行联系意图。
 
 ## 19. 分阶段实施
 
@@ -649,7 +638,7 @@ Boss-Forge/
 
 - 安装并锁定 `boss-cli` 版本。
 - 跑通 Worker 心跳、账号锁、命令执行和版本化输出解析。
-- 验证岗位、推荐/搜索、简历截图和一次人工批准的打招呼。
+- 验证岗位、推荐/搜索和真实操作的显式批准机制；简历截图与真实打招呼按安全边界暂不执行。
 - 确认 OCR 是否获批，未获批则关闭。
 
 ### M1：数据与规则闭环
@@ -658,13 +647,19 @@ Boss-Forge/
 - 立即任务、候选人采集、标准化、去重和审核台。
 - TEM8 等首批规则测试集。
 
-### M2：第一期上线
+### M2：定时筛选与受控联系
 
-- 定时计划、任务中心、人工审核和人工确认联系。
-- Outbox、幂等、额度、审计、告警和故障恢复。
-- 连续试运行 2～4 周。
+- 定时计划、任务中心、人工审核、消息预览和人工确认联系意图。
+- Outbox、幂等、限额、允许时段、冷却期、审计和故障恢复。
+- 真实执行必须同时具备命令行批准参数和环境总开关；默认关闭。
 
-### M3：第二期自动化
+### M3：第一阶段试运行
+
+- 连续试运行 2～4 周，统计准确率、召回率、有歧义率和重复联系率。
+- 审核 HR 纠错数据并发布新词典版本，历史结果保持可追溯。
+- 达到验收指标后进入自动联系上线审批。
+
+### M4：第二期受控自动化
 
 - 全局/岗位/任务三级开关。
 - 自动策略批准、冷却期、熔断和紧急停止。
@@ -678,7 +673,7 @@ Boss-Forge/
 | 应用形态 | Web + 模块化单体 API + 独立 Worker |
 | 服务拆分 | 一期不采用微服务 |
 | 数据库 | 单一 PostgreSQL 作为业务事实来源 |
-| 异步执行 | Redis/BullMQ + PostgreSQL Outbox |
+| 异步执行 | PostgreSQL 任务表 + PostgreSQL Outbox；未来按规模可增加消息队列 |
 | CLI 并发 | 同一 Boss 账号严格串行 |
 | 浏览器登录态 | 只保存在绑定 Worker 的 Chrome Profile |
 | 简历文件 | 内网对象存储，数据库保存引用和哈希 |
@@ -689,7 +684,7 @@ Boss-Forge/
 
 ## 21. 待确认问题
 
-1. 公司是否已有 OIDC/SSO、PostgreSQL、Redis 和对象存储，可直接复用。
+1. 公司是否已有 OIDC/SSO、PostgreSQL 和对象存储，可直接复用。
 2. 首期管理一个还是多个 Boss 账号，以及账号与岗位的归属关系。
 3. Worker 是否有专用 macOS 设备，是否允许长期保持 Chrome 登录态。
 4. 百度 OCR 是否通过隐私与安全审批；若不通过，一期是否接受仅截图人工查看。
