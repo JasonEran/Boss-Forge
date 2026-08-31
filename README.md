@@ -68,7 +68,9 @@ pnpm m1:worker
 pnpm web:dev
 ```
 
-此时 Dashboard 的“立即执行筛选”会创建幂等任务，Worker 从 BOSS 读取推荐候选人，去重、评估 TEM8 规则后写入 PostgreSQL 待审核列表。
+此时 Dashboard 的“立即执行筛选”会创建幂等任务，Worker 先读取推荐候选人并去重，再将候选人排入完整简历精筛队列。精筛通过 `boss-cli preview` 复用现有简历截图/OCR 能力，识别 TEM8 及候选人明确写出的 TEM4、CET4/6、IELTS、TOEFL、BEC 等证书或成绩；完成精筛后才允许 HR 审核。
+
+真实简历预览默认关闭。只有同时设置 `BOSS_FORGE_RESUME_PREVIEW_ENABLED=1`、`BOSS_RESUME_OCR=1` 并配置经过公司批准的 OCR 凭据时，Worker 才会处理预览队列。该开关与真实打招呼开关完全独立。
 
 ## M2 安全边界
 

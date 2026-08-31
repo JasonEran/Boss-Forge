@@ -78,6 +78,7 @@ type Task = {
   status:
     | 'queued'
     | 'running'
+    | 'screening'
     | 'waiting_review'
     | 'completed'
     | 'failed'
@@ -94,6 +95,16 @@ type Candidate = {
   ruleDecision: 'matched' | 'not_matched' | 'ambiguous' | 'insufficient';
   ruleConfidence: number;
   stateVersion: number;
+  resumeScreeningStatus:
+    | 'not_requested'
+    | 'queued'
+    | 'processing'
+    | 'screened'
+    | 'no_text'
+    | 'failed';
+  currentEnglishLevel: string | null;
+  resumeScreenedAt: string | null;
+  resumeScreeningError: string | null;
   evidence: string[];
   fields: Record<string, string>;
   reviewStatus: 'pending' | 'approved' | 'rejected' | 'not_required';
@@ -237,6 +248,7 @@ const pageCopy: Record<
 const taskStatus: Record<Task['status'], string> = {
   queued: '等待 Worker',
   running: '读取候选人',
+  screening: '完整简历精筛',
   waiting_review: '待人工审核',
   completed: '已完成',
   failed: '执行失败',
@@ -247,6 +259,14 @@ const decisionLabel: Record<Candidate['ruleDecision'], string> = {
   not_matched: '不符合',
   ambiguous: '有歧义',
   insufficient: '信息不足',
+};
+const resumeScreeningLabel: Record<Candidate['resumeScreeningStatus'], string> = {
+  not_requested: '未安排',
+  queued: '等待预览',
+  processing: '精筛中',
+  screened: '已精筛',
+  no_text: 'OCR 无正文',
+  failed: '精筛失败',
 };
 const frequencyLabel: Record<Schedule['frequency'], string> = {
   once: '仅一次',
@@ -375,6 +395,13 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
   const approvedCandidates =
     data?.candidates.filter(
       (candidate) => candidate.reviewStatus === 'approved',
+    ) ?? [];
+  const screenedOutCandidates =
+    data?.candidates.filter(
+      (candidate) =>
+        candidate.reviewStatus === 'not_required' &&
+        (candidatePositionFilter === 'all' ||
+          candidate.positionName === candidatePositionFilter),
     ) ?? [];
   const activeSchedules = data?.schedules.filter((item) => item.enabled) ?? [];
   const pageInfo = pageCopy[page];
@@ -948,7 +975,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                         <p className="text-xs text-muted-foreground">
                           词典版本
                         </p>
-                        <p className="mt-1 font-medium">2026.08.1</p>
+                        <p className="mt-1 font-medium">2026.08.2</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">
@@ -1034,7 +1061,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                       </div>
                       <div>
                         <p className="text-muted-foreground">规则版本</p>
-                        <p className="mt-1 font-medium">TEM8 · 2026.08.1</p>
+                        <p className="mt-1 font-medium">TEM8 · 2026.08.2</p>
                       </div>
                     </div>
                     {latestTask?.errorMessage ? (
@@ -1157,10 +1184,11 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
           ) : null}
 
           {page === 'candidates' ? (
+            <>
             <Card>
               <CardHeader className="border-b">
                 <CardTitle>待审核候选人</CardTitle>
-                <CardDescription>查看原文证据后逐位作出决定</CardDescription>
+                <CardDescription>完整简历精筛完成后查看原文证据并作出决定</CardDescription>
                 <CardAction>
                   <Badge variant="outline">{pendingCandidates.length} 人</Badge>
                 </CardAction>
@@ -1177,7 +1205,8 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                       <TableRow>
                         <TableHead className="pl-4">候选人</TableHead>
                         <TableHead>匹配岗位</TableHead>
-                        <TableHead>原文证据</TableHead>
+                        <TableHead>识别英语等级</TableHead>
+                        <TableHead>简历精筛</TableHead>
                         <TableHead>置信度</TableHead>
                         <TableHead>结论</TableHead>
                         <TableHead className="pr-4 text-right">操作</TableHead>
@@ -1193,10 +1222,13 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                             </p>
                           </TableCell>
                           <TableCell>{candidate.positionName}</TableCell>
-                          <TableCell className="max-w-[420px] whitespace-normal">
-                            <span className="line-clamp-3 text-xs leading-5">
-                              {candidate.evidence[0] ?? '未发现 TEM8 相关原文'}
-                            </span>
+                          <TableCell className="max-w-[300px] whitespace-normal text-xs">
+                            {candidate.currentEnglishLevel ?? '未识别到明确等级'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">
+                              {resumeScreeningLabel[candidate.resumeScreeningStatus]}
+                            </Badge>
                           </TableCell>
                           <TableCell className="font-medium tabular-nums">
                             {Math.round(candidate.ruleConfidence * 100)}%
@@ -1231,6 +1263,66 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                 )}
               </CardContent>
             </Card>
+            <Card>
+              <CardHeader className="border-b">
+                <CardTitle>未达到 TEM8</CardTitle>
+                <CardDescription>
+                  保留完整简历精筛结论，并标出简历中明确写出的当前英语等级
+                </CardDescription>
+                <CardAction>
+                  <Badge variant="outline">{screenedOutCandidates.length} 人</Badge>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="px-0">
+                {screenedOutCandidates.length === 0 ? (
+                  <SectionEmpty
+                    title="暂无未达标候选人"
+                    description="完整简历精筛后，不符合 TEM8 的候选人会显示在这里。"
+                  />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="pl-4">候选人</TableHead>
+                        <TableHead>匹配岗位</TableHead>
+                        <TableHead>识别英语等级</TableHead>
+                        <TableHead>结论</TableHead>
+                        <TableHead className="pr-4 text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {screenedOutCandidates.map((candidate) => (
+                        <TableRow key={candidate.stateId}>
+                          <TableCell className="pl-4 font-medium">
+                            {candidate.name}
+                          </TableCell>
+                          <TableCell>{candidate.positionName}</TableCell>
+                          <TableCell>
+                            {candidate.currentEnglishLevel ?? '未识别到明确等级'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">
+                              {decisionLabel[candidate.ruleDecision]}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="pr-4 text-right">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openCandidateReview(candidate.stateId)}
+                            >
+                              <Eye />
+                              查看证据
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+            </>
           ) : null}
 
           {page === 'contacts' ? (

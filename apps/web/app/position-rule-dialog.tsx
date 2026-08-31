@@ -77,7 +77,7 @@ export function PositionRuleDialog({
                 { capability: 'tem8', minimumConfidence: confidence },
               ],
             },
-            dictionaryVersion: '2026.08.1',
+            dictionaryVersion: '2026.08.2',
             createdBy: 'hr:dashboard',
           }),
         },

@@ -96,7 +96,7 @@ export function ScheduleDialog({
             新建定时筛选
           </DialogTitle>
           <DialogDescription>
-            按上海时区生成筛选任务；Worker 只读取候选人，不会打招呼。
+            按上海时区生成筛选任务；启用精筛开关后会读取完整简历，但不会打招呼。
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void submit(event)}>

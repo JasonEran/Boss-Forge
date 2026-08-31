@@ -30,6 +30,17 @@ type CandidateDetail = {
   ruleDecision: 'matched' | 'not_matched' | 'ambiguous' | 'insufficient';
   ruleConfidence: number;
   reviewStatus: 'pending' | 'approved' | 'rejected' | 'not_required';
+  resumeScreeningStatus:
+    | 'not_requested'
+    | 'queued'
+    | 'processing'
+    | 'screened'
+    | 'no_text'
+    | 'failed';
+  currentEnglishLevel: string | null;
+  resumeScreenedAt: string | null;
+  resumeScreeningError: string | null;
+  resumeScreenshotAvailable: boolean;
   fields: Record<string, string>;
   evidence: string[];
   rawText: string;
@@ -73,6 +84,15 @@ const decisionLabel = {
   ambiguous: '有歧义',
   insufficient: '信息不足',
 } as const;
+
+const screeningLabel: Record<CandidateDetail['resumeScreeningStatus'], string> = {
+  not_requested: '未安排简历精筛',
+  queued: '等待简历预览',
+  processing: '正在读取完整简历',
+  screened: '完整简历已精筛',
+  no_text: '简历已预览，OCR 无正文',
+  failed: '简历精筛失败',
+};
 
 export function CandidateReviewDialog({
   open,
@@ -153,6 +173,33 @@ export function CandidateReviewDialog({
     }
   }
 
+  async function requeueResumeScreening() {
+    if (!candidate || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${controlApi}/api/candidate-position-states/${candidate.stateId}/resume-screenings`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ actorId: 'hr:dashboard' }),
+        },
+      );
+      await responseJson(response);
+      await onReviewed();
+      onOpenChange(false);
+    } catch (screeningError) {
+      setError(
+        screeningError instanceof Error
+          ? screeningError.message
+          : String(screeningError),
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
       setNote('');
@@ -197,7 +244,26 @@ export function CandidateReviewDialog({
               <span className="text-xs text-muted-foreground">
                 状态版本 {candidate.stateVersion}
               </span>
+              <Badge variant="outline">
+                {screeningLabel[candidate.resumeScreeningStatus]}
+              </Badge>
             </div>
+
+            <section className="rounded-lg border bg-muted/30 p-3">
+              <h3 className="text-sm font-semibold">识别到的英语等级</h3>
+              <p className="mt-1 text-sm">
+                {candidate.currentEnglishLevel ?? '完整简历中未识别到明确的英语证书或成绩'}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                仅展示简历明确写出的考试等级/成绩，不在 TEM、CET、IELTS、TOEFL 之间进行等值换算。
+                {candidate.resumeScreenshotAvailable ? ' 已保存简历预览截图。' : ''}
+              </p>
+              {candidate.resumeScreeningError ? (
+                <p className="mt-2 text-xs text-destructive">
+                  {candidate.resumeScreeningError}
+                </p>
+              ) : null}
+            </section>
 
             <section>
               <h3 className="mb-2 text-sm font-semibold">候选人列表字段</h3>
@@ -339,10 +405,27 @@ export function CandidateReviewDialog({
         ) : null}
 
         <DialogFooter>
+          {candidate &&
+          !['queued', 'processing'].includes(candidate.resumeScreeningStatus) ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={submitting}
+              onClick={() => void requeueResumeScreening()}
+            >
+              重新精筛简历
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="destructive"
-            disabled={!candidate || submitting}
+            disabled={
+              !candidate ||
+              submitting ||
+              ['not_requested', 'queued', 'processing'].includes(
+                candidate.resumeScreeningStatus,
+              )
+            }
             onClick={() => void review('rejected')}
           >
             <XCircle aria-hidden="true" />
@@ -350,7 +433,13 @@ export function CandidateReviewDialog({
           </Button>
           <Button
             type="button"
-            disabled={!candidate || submitting}
+            disabled={
+              !candidate ||
+              submitting ||
+              ['not_requested', 'queued', 'processing'].includes(
+                candidate.resumeScreeningStatus,
+              )
+            }
             onClick={() => void review('approved')}
           >
             {submitting ? (

@@ -8,6 +8,7 @@ import type {
   Position,
   RuleConfig,
   RuleVersion,
+  ResumeScreeningJob,
   ReviewRecord,
   Task
 } from "./types.js";
@@ -284,50 +285,77 @@ export class BossForgeRepository {
           RETURNING id
         `;
         const snapshotId = snapshotRows[0]!.id;
-        const stateRows = await transaction<{ id: string }[]>`
+        const stateRows = await transaction<
+          Array<{ id: string; resume_screening_status: string }>
+        >`
           INSERT INTO candidate_position_states (
             id, position_id, candidate_id, latest_task_id, latest_snapshot_id,
-            rule_version_id, rule_decision, rule_confidence, review_status
+            rule_version_id, rule_decision, rule_confidence, review_status,
+            resume_screening_status, current_english_level
           ) VALUES (
             ${randomUUID()}, ${task.positionId}, ${candidateId}, ${task.id}, ${snapshotId},
             ${task.ruleVersionId}, ${record.decision}, ${record.confidence},
-            ${record.decision === "not_matched" ? "not_required" : "pending"}
+            ${record.decision === "not_matched" ? "not_required" : "pending"},
+            'queued', ${record.currentEnglishLevel}
           )
           ON CONFLICT (position_id, candidate_id) DO UPDATE SET
             latest_task_id = EXCLUDED.latest_task_id,
             latest_snapshot_id = EXCLUDED.latest_snapshot_id,
             rule_version_id = EXCLUDED.rule_version_id,
-            rule_decision = EXCLUDED.rule_decision,
-            rule_confidence = EXCLUDED.rule_confidence,
+            rule_decision = CASE
+              WHEN candidate_position_states.resume_screening_status = 'screened'
+                THEN candidate_position_states.rule_decision
+              ELSE EXCLUDED.rule_decision
+            END,
+            rule_confidence = CASE
+              WHEN candidate_position_states.resume_screening_status = 'screened'
+                THEN candidate_position_states.rule_confidence
+              ELSE EXCLUDED.rule_confidence
+            END,
+            current_english_level = CASE
+              WHEN candidate_position_states.resume_screening_status = 'screened'
+                THEN candidate_position_states.current_english_level
+              ELSE EXCLUDED.current_english_level
+            END,
+            resume_screening_status = CASE
+              WHEN candidate_position_states.resume_screening_status = 'screened'
+                THEN 'screened'
+              ELSE 'queued'
+            END,
+            resume_screening_error = NULL,
             review_status = CASE
               WHEN candidate_position_states.review_status IN ('approved', 'rejected')
+                THEN candidate_position_states.review_status
+              WHEN candidate_position_states.resume_screening_status = 'screened'
                 THEN candidate_position_states.review_status
               ELSE EXCLUDED.review_status
             END,
             version = candidate_position_states.version + 1,
             updated_at = now()
-          RETURNING id
+          RETURNING id, resume_screening_status
         `;
         const stateId = stateRows[0]!.id;
-        await transaction`DELETE FROM match_evidence WHERE candidate_position_state_id = ${stateId}`;
-        for (const evidence of record.evidence) {
-          await transaction`
-            INSERT INTO match_evidence (
-              id, candidate_position_state_id, capability_id, canonical_label,
-              dictionary_version, source_text, normalized_alias, evidence_status,
-              confidence, reason_codes
-            ) VALUES (
-              ${randomUUID()}, ${stateId}, ${record.capabilityId}, ${record.canonicalLabel},
-              ${record.dictionaryVersion}, ${evidence.sourceText}, ${evidence.normalizedAlias},
-              ${evidence.status}, ${evidence.confidence}, ${transaction.json(record.reasonCodes)}
-            )
-          `;
+        if (stateRows[0]!.resume_screening_status !== "screened") {
+          await transaction`DELETE FROM match_evidence WHERE candidate_position_state_id = ${stateId}`;
+          for (const evidence of record.evidence) {
+            await transaction`
+              INSERT INTO match_evidence (
+                id, candidate_position_state_id, capability_id, canonical_label,
+                dictionary_version, source_text, normalized_alias, evidence_status,
+                confidence, reason_codes
+              ) VALUES (
+                ${randomUUID()}, ${stateId}, ${record.capabilityId}, ${record.canonicalLabel},
+                ${record.dictionaryVersion}, ${evidence.sourceText}, ${evidence.normalizedAlias},
+                ${evidence.status}, ${evidence.confidence}, ${transaction.json(record.reasonCodes)}
+              )
+            `;
+          }
         }
       }
-      const status = records.length > 0 ? "waiting_review" : "completed";
+      const status = records.length > 0 ? "screening" : "completed";
       await transaction`
         UPDATE tasks SET status = ${status}, candidate_count = ${records.length},
-          finished_at = now(), error_message = NULL
+          finished_at = ${records.length > 0 ? null : new Date()}, error_message = NULL
         WHERE id = ${task.id}
       `;
       await transaction`
@@ -336,6 +364,296 @@ export class BossForgeRepository {
         ) VALUES (
           ${randomUUID()}, ${task.createdBy}, 'task.collection.completed',
           'task', ${task.id}, ${transaction.json({ candidateCount: records.length })}
+        )
+      `;
+    });
+  }
+
+  async claimNextResumeScreening(workerId: string): Promise<ResumeScreeningJob | null> {
+    return this.sql.begin(async (transaction) => {
+      const selected = await transaction<{ id: string }[]>`
+        SELECT id FROM candidate_position_states
+        WHERE resume_screening_status = 'queued'
+          OR (
+            resume_screening_status = 'processing'
+            AND resume_screening_claimed_at < now() - interval '15 minutes'
+          )
+        ORDER BY updated_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      `;
+      const stateId = selected[0]?.id;
+      if (!stateId) return null;
+      await transaction`
+        UPDATE candidate_position_states
+        SET resume_screening_status = 'processing',
+          resume_screening_claimed_by = ${workerId},
+          resume_screening_claimed_at = now(),
+          resume_screening_attempts = resume_screening_attempts + 1,
+          resume_screening_error = NULL,
+          updated_at = now()
+        WHERE id = ${stateId}
+      `;
+      const rows = await transaction<
+        Array<{
+          state_id: string;
+          task_id: string;
+          candidate_name: string;
+          boss_job_keyword: string | null;
+          source: "recommend" | "search";
+          search_keyword: string | null;
+          rule_config: RuleConfig;
+          source_reference: string;
+          raw_fields: Record<string, string>;
+          source_evidence: string[];
+          raw_text: string;
+        }>
+      >`
+        SELECT cps.id AS state_id, t.id AS task_id, c.display_name AS candidate_name,
+          p.boss_job_keyword, t.source, t.search_keyword, rv.config AS rule_config,
+          cs.source_reference, cs.raw_fields, cs.source_evidence, cs.raw_text
+        FROM candidate_position_states cps
+        JOIN candidates c ON c.id = cps.candidate_id
+        JOIN positions p ON p.id = cps.position_id
+        JOIN tasks t ON t.id = cps.latest_task_id
+        JOIN rule_versions rv ON rv.id = cps.rule_version_id
+        JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
+        WHERE cps.id = ${stateId}
+      `;
+      const row = rows[0];
+      if (!row) return null;
+      const indexMatch = row.source_reference.match(/^[^:]+:(\d+):/u);
+      return {
+        stateId: row.state_id,
+        taskId: row.task_id,
+        candidateName: row.candidate_name,
+        bossJobKeyword: row.boss_job_keyword,
+        source: row.source,
+        searchKeyword: row.search_keyword,
+        ruleConfig: row.rule_config,
+        candidate: {
+          index: Number(indexMatch?.[1] ?? "1"),
+          name: row.candidate_name,
+          source: row.source,
+          fields: row.raw_fields,
+          evidence: row.source_evidence,
+          raw: row.raw_text
+        }
+      };
+    });
+  }
+
+  async completeResumeScreening(input: {
+    job: ResumeScreeningJob;
+    record: CandidateEvaluationRecord;
+    screenshotPath: string | null;
+    resumeTextHash: string;
+    workerId: string;
+  }): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE candidate_position_states
+        SET rule_decision = ${input.record.decision},
+          rule_confidence = ${input.record.confidence},
+          current_english_level = ${input.record.currentEnglishLevel},
+          resume_screening_status = 'screened',
+          resume_screenshot_path = ${input.screenshotPath},
+          resume_text_hash = ${input.resumeTextHash},
+          resume_screened_at = now(),
+          resume_screening_error = NULL,
+          resume_screening_claimed_by = NULL,
+          resume_screening_claimed_at = NULL,
+          review_status = CASE
+            WHEN review_status IN ('approved', 'rejected') THEN review_status
+            WHEN ${input.record.decision} = 'not_matched' THEN 'not_required'
+            ELSE 'pending'
+          END,
+          version = version + 1,
+          updated_at = now()
+        WHERE id = ${input.job.stateId} AND resume_screening_status = 'processing'
+      `;
+      await transaction`
+        DELETE FROM match_evidence WHERE candidate_position_state_id = ${input.job.stateId}
+      `;
+      for (const evidence of input.record.evidence) {
+        await transaction`
+          INSERT INTO match_evidence (
+            id, candidate_position_state_id, capability_id, canonical_label,
+            dictionary_version, source_text, normalized_alias, evidence_status,
+            confidence, reason_codes
+          ) VALUES (
+            ${randomUUID()}, ${input.job.stateId}, ${input.record.capabilityId},
+            ${input.record.canonicalLabel}, ${input.record.dictionaryVersion},
+            ${evidence.sourceText}, ${evidence.normalizedAlias}, ${evidence.status},
+            ${evidence.confidence}, ${transaction.json(input.record.reasonCodes)}
+          )
+        `;
+      }
+      await transaction`
+        INSERT INTO audit_logs (
+          id, actor_id, action, resource_type, resource_id, payload
+        ) VALUES (
+          ${randomUUID()}, ${input.workerId}, 'candidate.resume_screened',
+          'candidate_position_state', ${input.job.stateId},
+          ${transaction.json({
+            taskId: input.job.taskId,
+            decision: input.record.decision,
+            confidence: input.record.confidence,
+            currentEnglishLevel: input.record.currentEnglishLevel,
+            screenshotAvailable: Boolean(input.screenshotPath),
+            resumeTextHash: input.resumeTextHash
+          })}
+        )
+      `;
+      await transaction`
+        UPDATE tasks
+        SET status = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.job.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN 'screening'
+            ELSE 'waiting_review'
+          END,
+          finished_at = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.job.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN NULL ELSE now()
+          END
+        WHERE id = ${input.job.taskId}
+      `;
+    });
+  }
+
+  async completeResumeScreeningWithoutText(input: {
+    stateId: string;
+    taskId: string;
+    screenshotPath: string | null;
+    workerId: string;
+  }): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE candidate_position_states
+        SET rule_decision = 'insufficient', rule_confidence = 0,
+          resume_screening_status = 'no_text',
+          resume_screenshot_path = ${input.screenshotPath},
+          resume_screened_at = now(),
+          resume_screening_error = '简历已预览，但未取得可用于自动筛选的 OCR 文本。',
+          resume_screening_claimed_by = NULL,
+          resume_screening_claimed_at = NULL,
+          review_status = CASE
+            WHEN review_status IN ('approved', 'rejected') THEN review_status ELSE 'pending'
+          END,
+          version = version + 1,
+          updated_at = now()
+        WHERE id = ${input.stateId} AND resume_screening_status = 'processing'
+      `;
+      await transaction`
+        INSERT INTO audit_logs (
+          id, actor_id, action, resource_type, resource_id, payload
+        ) VALUES (
+          ${randomUUID()}, ${input.workerId}, 'candidate.resume_screening.no_text',
+          'candidate_position_state', ${input.stateId},
+          ${transaction.json({ taskId: input.taskId, screenshotAvailable: Boolean(input.screenshotPath) })}
+        )
+      `;
+      await transaction`
+        UPDATE tasks
+        SET status = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN 'screening'
+            ELSE 'waiting_review'
+          END,
+          finished_at = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN NULL ELSE now()
+          END
+        WHERE id = ${input.taskId}
+      `;
+    });
+  }
+
+  async failResumeScreening(input: {
+    stateId: string;
+    taskId: string;
+    message: string;
+    workerId: string;
+  }): Promise<void> {
+    const message = input.message.slice(0, 1_000);
+    await this.sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE candidate_position_states
+        SET rule_decision = 'insufficient', rule_confidence = 0,
+          resume_screening_status = 'failed', resume_screening_error = ${message},
+          resume_screening_claimed_by = NULL, resume_screening_claimed_at = NULL,
+          review_status = CASE
+            WHEN review_status IN ('approved', 'rejected') THEN review_status ELSE 'pending'
+          END,
+          version = version + 1,
+          updated_at = now()
+        WHERE id = ${input.stateId}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (
+          id, actor_id, action, resource_type, resource_id, payload
+        ) VALUES (
+          ${randomUUID()}, ${input.workerId}, 'candidate.resume_screening.failed',
+          'candidate_position_state', ${input.stateId},
+          ${transaction.json({ taskId: input.taskId, message })}
+        )
+      `;
+      await transaction`
+        UPDATE tasks
+        SET status = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN 'screening'
+            ELSE 'waiting_review'
+          END,
+          finished_at = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM candidate_position_states
+              WHERE latest_task_id = ${input.taskId}
+                AND resume_screening_status IN ('queued', 'processing')
+            ) THEN NULL ELSE now()
+          END
+        WHERE id = ${input.taskId}
+      `;
+    });
+  }
+
+  async requeueResumeScreening(stateId: string, actorId: string): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      const rows = await transaction<{ id: string; latest_task_id: string }[]>`
+        UPDATE candidate_position_states
+        SET resume_screening_status = 'queued', resume_screening_error = NULL,
+          resume_screening_claimed_by = NULL, resume_screening_claimed_at = NULL,
+          version = version + 1, updated_at = now()
+        WHERE id = ${stateId} AND resume_screening_status <> 'processing'
+        RETURNING id, latest_task_id
+      `;
+      const state = rows[0];
+      if (!state) throw new Error("Candidate state was not found or is currently processing.");
+      await transaction`
+        UPDATE tasks SET status = 'screening', finished_at = NULL
+        WHERE id = ${state.latest_task_id}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, ${actorId}, 'candidate.resume_screening.requeued',
+          'candidate_position_state', ${stateId},
+          ${transaction.json({ taskId: state.latest_task_id })}
         )
       `;
     });
@@ -360,6 +678,11 @@ export class BossForgeRepository {
         review_status: DashboardCandidate["reviewStatus"];
         contact_status: DashboardCandidate["contactStatus"];
         state_version: number;
+        resume_screening_status: DashboardCandidate["resumeScreeningStatus"];
+        current_english_level: string | null;
+        resume_screened_at: Date | null;
+        resume_screening_error: string | null;
+        resume_screenshot_path: string | null;
         source_evidence: string[];
         raw_fields: Record<string, string>;
         raw_text: string;
@@ -373,6 +696,8 @@ export class BossForgeRepository {
       SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
         p.name AS position_name, cps.rule_decision, cps.rule_confidence,
         cps.review_status, cps.contact_status, cps.version AS state_version,
+        cps.resume_screening_status, cps.current_english_level,
+        cps.resume_screened_at, cps.resume_screening_error, cps.resume_screenshot_path,
         cs.source_evidence, cs.raw_fields, cs.raw_text, cs.source, cs.collected_at,
         cps.updated_at, rv.version AS rule_version, rv.dictionary_version
       FROM candidate_position_states cps
@@ -433,6 +758,11 @@ export class BossForgeRepository {
       reviewStatus: row.review_status,
       contactStatus: row.contact_status,
       stateVersion: row.state_version,
+      resumeScreeningStatus: row.resume_screening_status,
+      currentEnglishLevel: row.current_english_level,
+      resumeScreenedAt: row.resume_screened_at ? iso(row.resume_screened_at) : null,
+      resumeScreeningError: row.resume_screening_error,
+      resumeScreenshotAvailable: Boolean(row.resume_screenshot_path),
       evidence: row.source_evidence,
       fields: row.raw_fields,
       updatedAt: iso(row.updated_at),
@@ -508,14 +838,21 @@ export class BossForgeRepository {
         };
       }
       const stateRows = await transaction<
-        Array<{ version: number; review_status: ReviewRecord["previousStatus"] }>
+        Array<{
+          version: number;
+          review_status: ReviewRecord["previousStatus"];
+          resume_screening_status: DashboardCandidate["resumeScreeningStatus"];
+        }>
       >`
-        SELECT version, review_status FROM candidate_position_states
+        SELECT version, review_status, resume_screening_status FROM candidate_position_states
         WHERE id = ${input.stateId}
         FOR UPDATE
       `;
       const state = stateRows[0];
       if (!state) throw new Error("Candidate state was not found.");
+      if (["not_requested", "queued", "processing"].includes(state.resume_screening_status)) {
+        throw new Error("Candidate resume screening must finish before human review.");
+      }
       if (state.version !== input.expectedVersion) {
         throw new OptimisticLockError(input.expectedVersion, state.version);
       }
@@ -591,6 +928,10 @@ export class BossForgeRepository {
           review_status: DashboardCandidate["reviewStatus"];
           contact_status: DashboardCandidate["contactStatus"];
           state_version: number;
+          resume_screening_status: DashboardCandidate["resumeScreeningStatus"];
+          current_english_level: string | null;
+          resume_screened_at: Date | null;
+          resume_screening_error: string | null;
           source_evidence: string[];
           raw_fields: Record<string, string>;
           updated_at: Date;
@@ -599,13 +940,15 @@ export class BossForgeRepository {
         SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
           p.name AS position_name, cps.rule_decision, cps.rule_confidence,
           cps.review_status, cps.contact_status, cps.version AS state_version,
+          cps.resume_screening_status, cps.current_english_level,
+          cps.resume_screened_at, cps.resume_screening_error,
           cs.source_evidence, cs.raw_fields,
           cps.updated_at
         FROM candidate_position_states cps
         JOIN candidates c ON c.id = cps.candidate_id
         JOIN positions p ON p.id = cps.position_id
         JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
-        WHERE cps.review_status IN ('pending', 'approved')
+        WHERE cps.review_status IN ('pending', 'approved', 'not_required')
         ORDER BY
           CASE cps.rule_decision WHEN 'matched' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,
           cps.rule_confidence DESC, cps.updated_at DESC
@@ -621,8 +964,13 @@ export class BossForgeRepository {
       >`
         SELECT
           COUNT(*)::int AS total_candidates,
-          COUNT(*) FILTER (WHERE rule_decision = 'matched')::int AS matched_candidates,
-          COUNT(*) FILTER (WHERE review_status = 'pending')::int AS pending_review,
+          COUNT(*) FILTER (
+            WHERE rule_decision = 'matched' AND resume_screening_status = 'screened'
+          )::int AS matched_candidates,
+          COUNT(*) FILTER (
+            WHERE review_status = 'pending'
+              AND resume_screening_status IN ('screened', 'no_text', 'failed')
+          )::int AS pending_review,
           COUNT(*) FILTER (
             WHERE contact_status = 'sent' AND updated_at >= date_trunc('day', now())
           )::int AS contacted_today
@@ -649,6 +997,10 @@ export class BossForgeRepository {
         reviewStatus: row.review_status,
         contactStatus: row.contact_status,
         stateVersion: row.state_version,
+        resumeScreeningStatus: row.resume_screening_status,
+        currentEnglishLevel: row.current_english_level,
+        resumeScreenedAt: row.resume_screened_at ? iso(row.resume_screened_at) : null,
+        resumeScreeningError: row.resume_screening_error,
         evidence: row.source_evidence,
         fields: row.raw_fields,
         updatedAt: iso(row.updated_at)

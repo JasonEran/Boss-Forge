@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { BossForgeRepository, createDatabase } from "@boss-forge/data";
+import {
+  BossForgeRepository,
+  createDatabase,
+  type CandidateEvaluationRecord
+} from "@boss-forge/data";
 
 const api = process.env.CONTROL_API_URL?.trim() || "http://127.0.0.1:3100";
 
@@ -62,8 +66,7 @@ async function main(): Promise<void> {
     const task = await repository.claimNextTask("e2e-worker");
     assert(task);
     assert.equal(task.id, taskPayload.task.id);
-    await repository.completeTask(task, [
-      {
+    const evaluation: CandidateEvaluationRecord = {
         sourceReference: `e2e:${suffix}`,
         source: "recommend",
         displayName: "E2E 候选人",
@@ -76,6 +79,7 @@ async function main(): Promise<void> {
         capabilityId: "language.english.tem8",
         canonicalLabel: "TEM-8",
         dictionaryVersion: "e2e.1",
+        currentEnglishLevel: "TEM-8（英语专业八级）",
         reasonCodes: ["confirmed_alias"],
         evidence: [
           {
@@ -85,15 +89,33 @@ async function main(): Promise<void> {
             confidence: 0.99
           }
         ]
-      }
-    ]);
+      };
+    await repository.completeTask(task, [evaluation]);
+    const resumeJob = await repository.claimNextResumeScreening("e2e-worker");
+    assert(resumeJob);
+    await repository.completeResumeScreening({
+      job: resumeJob,
+      record: evaluation,
+      screenshotPath: "/tmp/e2e-resume.png",
+      resumeTextHash: `e2e-resume-hash-${suffix}`,
+      workerId: "e2e-worker"
+    });
 
     const dashboardBefore = await request<{
-      candidates: Array<{ stateId: string; name: string; stateVersion: number; reviewStatus: string }>;
+      candidates: Array<{
+        stateId: string;
+        name: string;
+        stateVersion: number;
+        reviewStatus: string;
+        resumeScreeningStatus: string;
+        currentEnglishLevel: string | null;
+      }>;
     }>("/api/dashboard");
     const candidate = dashboardBefore.candidates.find((item) => item.name === "E2E 候选人");
     assert(candidate);
     assert.equal(candidate.reviewStatus, "pending");
+    assert.equal(candidate.resumeScreeningStatus, "screened");
+    assert.equal(candidate.currentEnglishLevel, "TEM-8（英语专业八级）");
 
     const detail = await request<{ candidate: { evidence: string[]; rawText: string } }>(
       `/api/candidate-position-states/${candidate.stateId}`

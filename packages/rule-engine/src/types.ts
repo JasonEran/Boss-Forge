@@ -18,6 +18,13 @@ export type CapabilityEvidence = {
   confidence: number;
 };
 
+export type DetectedEnglishLevel = {
+  code: "tem8" | "tem4" | "cet6" | "cet4" | "ielts" | "toefl" | "bec";
+  label: string;
+  sourceText: string;
+  confidence: number;
+};
+
 export type CapabilityEvaluation = {
   capabilityId: string;
   canonicalLabel: string;
@@ -26,4 +33,5 @@ export type CapabilityEvaluation = {
   confidence: number;
   reasonCodes: CapabilityReasonCode[];
   evidence: CapabilityEvidence[];
+  detectedEnglishLevels: DetectedEnglishLevel[];
 };

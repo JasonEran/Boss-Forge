@@ -30,6 +30,7 @@ export type RuleVersion = {
 export type TaskStatus =
   | "queued"
   | "running"
+  | "screening"
   | "waiting_review"
   | "completed"
   | "failed"
@@ -66,6 +67,7 @@ export type CandidateEvaluationRecord = {
   capabilityId: string;
   canonicalLabel: string;
   dictionaryVersion: string;
+  currentEnglishLevel: string | null;
   reasonCodes: string[];
   evidence: Array<{
     sourceText: string;
@@ -74,6 +76,14 @@ export type CandidateEvaluationRecord = {
     confidence: number;
   }>;
 };
+
+export type ResumeScreeningStatus =
+  | "not_requested"
+  | "queued"
+  | "processing"
+  | "screened"
+  | "no_text"
+  | "failed";
 
 export type DashboardCandidate = {
   stateId: string;
@@ -85,6 +95,10 @@ export type DashboardCandidate = {
   reviewStatus: "pending" | "approved" | "rejected" | "not_required";
   contactStatus: "not_contacted" | "queued" | "sent" | "failed" | "uncertain";
   stateVersion: number;
+  resumeScreeningStatus: ResumeScreeningStatus;
+  currentEnglishLevel: string | null;
+  resumeScreenedAt: string | null;
+  resumeScreeningError: string | null;
   evidence: string[];
   fields: Record<string, string>;
   updatedAt: string;
@@ -118,8 +132,27 @@ export type CandidateDetail = DashboardCandidate & {
   collectedAt: string;
   ruleVersion: number;
   dictionaryVersion: string;
+  resumeScreenshotAvailable: boolean;
   matchEvidence: MatchEvidenceRecord[];
   reviews: ReviewRecord[];
+};
+
+export type ResumeScreeningJob = {
+  stateId: string;
+  taskId: string;
+  candidateName: string;
+  bossJobKeyword: string | null;
+  source: "recommend" | "search";
+  searchKeyword: string | null;
+  ruleConfig: RuleConfig;
+  candidate: {
+    index: number;
+    name: string;
+    source: "recommend" | "search";
+    fields: Record<string, string>;
+    evidence: string[];
+    raw: string;
+  };
 };
 
 export type ScheduleFrequency = "once" | "daily" | "weekdays" | "weekly";

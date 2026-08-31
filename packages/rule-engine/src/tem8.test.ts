@@ -38,7 +38,7 @@ describe("TEM-8 capability normalization", () => {
     }
   );
 
-  it.each(["CET-6", "大学英语六级", "雅思 8 分", "IELTS 8.0"]) (
+  it.each(["CET-6", "大学英语六级", "英语专业四级", "雅思 8 分", "IELTS 8.0"]) (
     "does not confuse a different credential with TEM-8: %s",
     (text) => {
       const result = evaluateTem8(text);
@@ -46,6 +46,20 @@ describe("TEM-8 capability normalization", () => {
       expect(result.reasonCodes).toEqual(["confusable_credential"]);
     }
   );
+
+  it.each([
+    ["大学英语六级 520 分", "CET-6（大学英语六级）"],
+    ["英语专业四级，IELTS 7.5", "TEM-4（英语专业四级） / IELTS 7.5"],
+    ["TOEFL 103", "TOEFL 103"],
+    ["BEC Higher", "BEC Higher"]
+  ])("reports explicit current English credentials: %s", (text, expected) => {
+    const result = evaluateTem8(text);
+    expect(result.detectedEnglishLevels.map((item) => item.label).join(" / ")).toBe(expected);
+  });
+
+  it("does not report a credential that was not passed", () => {
+    expect(evaluateTem8("CET-6 未通过").detectedEnglishLevels).toEqual([]);
+  });
 
   it("marks conflicting evidence as ambiguous", () => {
     const result = evaluateTem8("2024年通过TEM8；备注：专八未通过，待核实");

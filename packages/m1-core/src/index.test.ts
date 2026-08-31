@@ -28,7 +28,7 @@ describe("M1 candidate pipeline", () => {
   it("stores a matched TEM8 result with original evidence", () => {
     const result = evaluateCandidate(candidate(), rule);
     expect(result.decision).toBe("matched");
-    expect(result.dictionaryVersion).toBe("2026.08.1");
+    expect(result.dictionaryVersion).toBe("2026.08.2");
     expect(result.evidence[0]?.sourceText).toContain("TEM-8");
   });
 
@@ -38,5 +38,22 @@ describe("M1 candidate pipeline", () => {
       rule
     );
     expect(result.decision).toBe("ambiguous");
+  });
+
+  it("uses full resume text and reports the candidate's explicit current level", () => {
+    const result = evaluateCandidate(
+      candidate({ evidence: [], raw: "候选人卡片未展示证书" }),
+      rule,
+      "语言证书：大学英语六级 560 分"
+    );
+    expect(result.decision).toBe("not_matched");
+    expect(result.currentEnglishLevel).toBe("CET-6（大学英语六级）");
+    expect(result.rawText).toContain("完整简历");
+  });
+
+  it("lets confirmed TEM8 evidence in the full resume override missing card evidence", () => {
+    const result = evaluateCandidate(candidate({ evidence: [] }), rule, "已取得 TEM-8 证书");
+    expect(result.decision).toBe("matched");
+    expect(result.currentEnglishLevel).toContain("TEM-8");
   });
 });

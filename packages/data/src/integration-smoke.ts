@@ -4,7 +4,8 @@ import {
   BossForgeRepository,
   M2Repository,
   OptimisticLockError,
-  createDatabase
+  createDatabase,
+  type CandidateEvaluationRecord
 } from "./index.js";
 
 async function cleanupIntegrationData(sql: ReturnType<typeof createDatabase>): Promise<void> {
@@ -140,8 +141,7 @@ async function main(): Promise<void> {
     });
     const task = await repository.claimNextTask("integration-worker");
     assert(task);
-    await repository.completeTask(task, [
-      {
+    const evaluation: CandidateEvaluationRecord = {
         sourceReference: `recommend:1:Integration Candidate ${suffix}`,
         source: "recommend",
         displayName: `Integration Candidate ${suffix}`,
@@ -154,6 +154,7 @@ async function main(): Promise<void> {
         capabilityId: "language.english.tem8",
         canonicalLabel: "TEM-8",
         dictionaryVersion: "integration.1",
+        currentEnglishLevel: "TEM-8（英语专业八级）",
         reasonCodes: ["confirmed_alias"],
         evidence: [
           {
@@ -163,11 +164,50 @@ async function main(): Promise<void> {
             confidence: 0.99
           }
         ]
-      }
-    ]);
+      };
+    const belowTem8Evaluation: CandidateEvaluationRecord = {
+      sourceReference: `recommend:2:Integration CET6 Candidate ${suffix}`,
+      source: "recommend",
+      displayName: `Integration CET6 Candidate ${suffix}`,
+      fingerprint: `integration-fingerprint-cet6-${suffix}`,
+      rawFields: { experience: "4 years", credential: "CET-6" },
+      sourceEvidence: ["大学英语六级 560 分"],
+      rawText: "大学英语六级 560 分",
+      decision: "not_matched",
+      confidence: 0.98,
+      capabilityId: "language.english.tem8",
+      canonicalLabel: "TEM-8",
+      dictionaryVersion: "integration.1",
+      currentEnglishLevel: "CET-6（大学英语六级）",
+      reasonCodes: ["confusable_credential"],
+      evidence: []
+    };
+    await repository.completeTask(task, [evaluation, belowTem8Evaluation]);
+    for (let index = 0; index < 2; index += 1) {
+      const resumeJob = await repository.claimNextResumeScreening("integration-worker");
+      assert(resumeJob);
+      const record = resumeJob.candidateName.includes("CET6")
+        ? belowTem8Evaluation
+        : evaluation;
+      await repository.completeResumeScreening({
+        job: resumeJob,
+        record,
+        screenshotPath: `/tmp/integration-resume-${index}.png`,
+        resumeTextHash: `integration-resume-hash-${index}-${suffix}`,
+        workerId: "integration-worker"
+      });
+    }
     const dashboard = await repository.getDashboard();
     const state = dashboard.candidates.find((candidate) => candidate.name.endsWith(suffix));
     assert(state);
+    assert.equal(state.resumeScreeningStatus, "screened");
+    assert.equal(state.currentEnglishLevel, "TEM-8（英语专业八级）");
+    const belowTem8State = dashboard.candidates.find((candidate) =>
+      candidate.name.startsWith("Integration CET6 Candidate")
+    );
+    assert(belowTem8State);
+    assert.equal(belowTem8State.reviewStatus, "not_required");
+    assert.equal(belowTem8State.currentEnglishLevel, "CET-6（大学英语六级）");
     const first = await repository.reviewCandidate({
       stateId: state.stateId,
       idempotencyKey: `integration-review-${suffix}`,

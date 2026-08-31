@@ -231,6 +231,18 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     send(response, 200, { candidate });
     return;
   }
+  const resumeScreeningMatch = url.pathname.match(
+    /^\/api\/candidate-position-states\/([0-9a-f-]+)\/resume-screenings$/i
+  );
+  if (request.method === "POST" && resumeScreeningMatch) {
+    const body = await readJson(request);
+    await repository.requeueResumeScreening(
+      resumeScreeningMatch[1]!,
+      text(body.actorId, "actorId")
+    );
+    send(response, 202, { queued: true });
+    return;
+  }
   const previewMatch = url.pathname.match(
     /^\/api\/candidate-position-states\/([0-9a-f-]+)\/message-preview$/i
   );

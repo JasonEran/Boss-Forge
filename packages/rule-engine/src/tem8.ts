@@ -2,12 +2,13 @@ import type {
   CapabilityEvaluation,
   CapabilityEvidence,
   CapabilityEvidenceStatus,
-  CapabilityReasonCode
+  CapabilityReasonCode,
+  DetectedEnglishLevel
 } from "./types.js";
 
 const CAPABILITY_ID = "language.english.tem8";
 const CANONICAL_LABEL = "TEM-8（英语专业八级）";
-const DICTIONARY_VERSION = "2026.08.1";
+const DICTIONARY_VERSION = "2026.08.2";
 const CONTEXT_RADIUS = 14;
 
 type AliasPattern = {
@@ -63,7 +64,53 @@ const PLANNED_CONTEXT =
   /备考|准备|计划|报考|即将\s*(?:参加|考试)|将\s*(?:参加|考试)|正在\s*(?:考|准备)|待考|目标|争取/iu;
 const SUBJECTIVE_CONTEXT = /水平|接近|相当于|媲美|能力\s*(?:达到|接近)/iu;
 const CONFUSABLE_CREDENTIAL =
-  /\bCET[\s-]*(?:4|6)\b|大学英语\s*(?:四|六|4|6)\s*级|雅思\s*8(?:\.0)?\s*分?|IELTS\s*8(?:\.0)?/iu;
+  /\b(?:CET|TEM)[\s-]*(?:4|6)\b|大学英语\s*(?:四|六|4|6)\s*级|英语\s*专业\s*(?:四|4)\s*级|英语专四|专四|雅思|IELTS|托福|TOEFL|BEC|剑桥商务英语/iu;
+
+type EnglishLevelPattern = {
+  code: DetectedEnglishLevel["code"];
+  pattern: RegExp;
+  label: (match: RegExpMatchArray) => string;
+  confidence: number;
+};
+
+const ENGLISH_LEVEL_PATTERNS: readonly EnglishLevelPattern[] = [
+  {
+    code: "tem4",
+    pattern: /\bTEM[\s‐‑‒–—−-]*4\b|英语\s*专业\s*(?:四|4)\s*级|英语\s*专\s*(?:四|4)|专\s*(?:四|4)(?!\s*级)/giu,
+    label: () => "TEM-4（英语专业四级）",
+    confidence: 0.98
+  },
+  {
+    code: "cet6",
+    pattern: /\bCET[\s‐‑‒–—−-]*6\b|大学英语\s*(?:六|6)\s*级/giu,
+    label: () => "CET-6（大学英语六级）",
+    confidence: 0.98
+  },
+  {
+    code: "cet4",
+    pattern: /\bCET[\s‐‑‒–—−-]*4\b|大学英语\s*(?:四|4)\s*级/giu,
+    label: () => "CET-4（大学英语四级）",
+    confidence: 0.98
+  },
+  {
+    code: "ielts",
+    pattern: /(?:雅思|IELTS)(?:\s*总分)?\s*[:：]?\s*([0-9](?:\.5|\.0)?)(?:\s*分)?/giu,
+    label: (match) => `IELTS ${match[1]}`,
+    confidence: 0.96
+  },
+  {
+    code: "toefl",
+    pattern: /(?:托福|TOEFL)(?:\s*总分)?\s*[:：]?\s*(1?[0-9]{2})(?:\s*分)?/giu,
+    label: (match) => `TOEFL ${match[1]}`,
+    confidence: 0.96
+  },
+  {
+    code: "bec",
+    pattern: /(?:BEC|剑桥商务英语)\s*(高级|中级|初级|Higher|Vantage|Preliminary)/giu,
+    label: (match) => `BEC ${match[1]}`,
+    confidence: 0.94
+  }
+] as const;
 
 function normalizeInput(text: string): string {
   return text.normalize("NFKC").replace(/[\u00a0\u2000-\u200d\u202f\u205f\u3000]/gu, " ");
@@ -135,12 +182,55 @@ function uniqueReasons(reasons: CapabilityReasonCode[]): CapabilityReasonCode[] 
   return [...new Set(reasons)];
 }
 
+function detectEnglishLevels(
+  text: string,
+  tem8Evidence: CapabilityEvidence[]
+): DetectedEnglishLevel[] {
+  const levels: DetectedEnglishLevel[] = [];
+  if (tem8Evidence.some((item) => item.status === "positive")) {
+    const sourceText = tem8Evidence.find((item) => item.status === "positive")!.sourceText;
+    levels.push({
+      code: "tem8",
+      label: CANONICAL_LABEL,
+      sourceText,
+      confidence: 0.99
+    });
+  }
+  for (const definition of ENGLISH_LEVEL_PATTERNS) {
+    definition.pattern.lastIndex = 0;
+    for (const match of text.matchAll(definition.pattern)) {
+      if (match.index === undefined || !match[0]) continue;
+      const located: LocatedAlias = {
+        normalizedAlias: definition.label(match),
+        pattern: definition.pattern,
+        confidence: definition.confidence,
+        index: match.index,
+        length: match[0].length
+      };
+      const sourceText = evidenceWindow(text, located);
+      if (NEGATIVE_CONTEXT.test(sourceText) || PLANNED_CONTEXT.test(sourceText)) continue;
+      levels.push({
+        code: definition.code,
+        label: definition.label(match),
+        sourceText,
+        confidence: definition.confidence
+      });
+    }
+  }
+  return levels.filter(
+    (item, index, all) =>
+      all.findIndex((candidate) => candidate.code === item.code && candidate.label === item.label) ===
+      index
+  );
+}
+
 export function evaluateTem8(rawText: string): CapabilityEvaluation {
   const text = normalizeInput(rawText);
   const evidence = locateAliases(text).map((item) => buildEvidence(text, item));
   const positive = evidence.filter((item) => item.status === "positive");
   const negative = evidence.filter((item) => item.status === "negative");
   const ambiguous = evidence.filter((item) => item.status === "ambiguous");
+  const detectedEnglishLevels = detectEnglishLevels(text, evidence);
 
   if (positive.length > 0 && negative.length > 0) {
     return {
@@ -150,7 +240,8 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
       decision: "ambiguous",
       confidence: 0.5,
       reasonCodes: ["conflicting_evidence"],
-      evidence
+      evidence,
+      detectedEnglishLevels
     };
   }
 
@@ -162,7 +253,8 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
       decision: "matched",
       confidence: Math.max(...positive.map((item) => item.confidence)),
       reasonCodes: ["confirmed_alias"],
-      evidence
+      evidence,
+      detectedEnglishLevels
     };
   }
 
@@ -179,7 +271,8 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
       decision: "ambiguous",
       confidence: 0.6,
       reasonCodes: uniqueReasons(reasons),
-      evidence
+      evidence,
+      detectedEnglishLevels
     };
   }
 
@@ -191,7 +284,8 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
       decision: "not_matched",
       confidence: 0.99,
       reasonCodes: ["negative_context"],
-      evidence
+      evidence,
+      detectedEnglishLevels
     };
   }
 
@@ -203,6 +297,7 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
     decision: hasConfusableCredential ? "not_matched" : "insufficient",
     confidence: hasConfusableCredential ? 0.98 : 0,
     reasonCodes: [hasConfusableCredential ? "confusable_credential" : "no_evidence"],
-    evidence: []
+    evidence: [],
+    detectedEnglishLevels
   };
 }

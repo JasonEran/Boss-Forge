@@ -5,7 +5,7 @@
 M2 已实现：
 
 - 一次性、每日、工作日、每周定时筛选；统一使用 `Asia/Shanghai` 时区。
-- 定时器只生成与“立即执行”相同的筛选任务，由 M1 Worker 串行调用 `boss-cli recommend/search`。
+- 定时器只生成与“立即执行”相同的筛选任务，由 M1 Worker 串行调用 `boss-cli recommend/search`，并在简历精筛开关开启时继续执行 `boss-cli preview`。
 - 审核通过后生成服务端消息预览，HR 显式确认后写入联系意图与 Outbox。
 - 联系意图具备幂等、同岗位去重、跨岗位冷却、允许时段、账号/岗位/任务限额和紧急停止策略。
 - 执行前再次检查策略；超时或中断记为 `uncertain` 并停止自动重试。

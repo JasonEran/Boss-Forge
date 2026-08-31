@@ -29,7 +29,8 @@ export function candidateRuleText(candidate: ParsedCandidate): string {
 
 export function evaluateCandidate(
   candidate: ParsedCandidate,
-  ruleConfig: RuleConfig
+  ruleConfig: RuleConfig,
+  resumeText?: string | null
 ): CandidateEvaluationRecord {
   const tem8Requirement = ruleConfig.requiredCapabilities.find(
     (item) => item.capability === "tem8"
@@ -37,7 +38,8 @@ export function evaluateCandidate(
   if (!tem8Requirement) {
     throw new Error("M1 currently requires a TEM8 capability rule.");
   }
-  const ruleText = candidateRuleText(candidate);
+  const listText = candidateRuleText(candidate);
+  const ruleText = [listText, resumeText?.trim()].filter(Boolean).join("。完整简历：");
   const evaluation = evaluateTem8(ruleText);
   const belowConfiguredConfidence =
     evaluation.decision === "matched" && evaluation.confidence < tem8Requirement.minimumConfidence;
@@ -54,6 +56,8 @@ export function evaluateCandidate(
     capabilityId: evaluation.capabilityId,
     canonicalLabel: evaluation.canonicalLabel,
     dictionaryVersion: evaluation.dictionaryVersion,
+    currentEnglishLevel:
+      evaluation.detectedEnglishLevels.map((item) => item.label).join(" / ") || null,
     reasonCodes: belowConfiguredConfidence
       ? [...evaluation.reasonCodes, "below_configured_confidence"]
       : evaluation.reasonCodes,
