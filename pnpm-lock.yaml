@@ -32,6 +32,18 @@ importers:
       '@boss-forge/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@boss-forge/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@boss-forge/m1-core':
+        specifier: workspace:*
+        version: link:../../packages/m1-core
+
+  apps/control-api:
+    dependencies:
+      '@boss-forge/data':
+        specifier: workspace:*
+        version: link:../../packages/data
 
   apps/web:
     dependencies:
@@ -158,6 +170,24 @@ importers:
       zod:
         specifier: 4.5.4
         version: 4.5.4
+
+  packages/data:
+    dependencies:
+      postgres:
+        specifier: 3.4.7
+        version: 3.4.7
+
+  packages/m1-core:
+    dependencies:
+      '@boss-forge/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@boss-forge/data':
+        specifier: workspace:*
+        version: link:../data
+      '@boss-forge/rule-engine':
+        specifier: workspace:*
+        version: link:../rule-engine
 
   packages/rule-engine: {}
 
@@ -3398,6 +3428,10 @@ packages:
   postcss@8.5.26:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
+
+  postgres@3.4.7:
+    resolution: {integrity: sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw==}
+    engines: {node: '>=12'}
 
   powershell-utils@0.1.0:
     resolution: {integrity: sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==}
@@ -6825,6 +6859,8 @@ snapshots:
       nanoid: 3.3.18
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  postgres@3.4.7: {}
 
   powershell-utils@0.1.0: {}
 

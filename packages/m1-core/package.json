@@ -1,12 +1,12 @@
 {
-  "name": "@boss-forge/boss-worker",
+  "name": "@boss-forge/m1-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": "./src/index.ts",
   "dependencies": {
-    "@boss-forge/boss-cli-adapter": "workspace:*",
     "@boss-forge/contracts": "workspace:*",
     "@boss-forge/data": "workspace:*",
-    "@boss-forge/m1-core": "workspace:*"
+    "@boss-forge/rule-engine": "workspace:*"
   }
 }

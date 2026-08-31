@@ -7,6 +7,7 @@
 - [HR Dashboard 产品需求文档](docs/HR_DASHBOARD_PRD.md)
 - [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
+- [M1 数据闭环运行手册](docs/M1_RUNBOOK.md)
 - [两阶段交付计划](docs/TWO_PHASE_DELIVERY_PLAN.md)
 - [boss-cli 能力复用清单](docs/BOSS_CLI_REUSE_MATRIX.md)
 - [HR Dashboard 需求思维导图](docs/HR_DASHBOARD_MINDMAP.md)
@@ -37,4 +38,23 @@ pnpm m0 -- live positions
 pnpm web:dev
 ```
 
-浏览器打开 `http://localhost:3000`。当前是两阶段工作台的首个可视化切片；真实任务、审核和联系操作需在 M1/M2 数据闭环接入后才会开放。
+浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1 控制 API，可创建立即筛选任务并查看真实采集结果；人工审核和联系操作在 M2 开放。
+
+## M1 本地数据闭环
+
+```bash
+cp .env.example .env
+pnpm db:up
+pnpm db:migrate
+pnpm m1:seed
+```
+
+分别在三个终端启动控制 API、采集 Worker 和 Dashboard：
+
+```bash
+pnpm api
+pnpm m1:worker
+pnpm web:dev
+```
+
+此时 Dashboard 的“立即执行筛选”会创建幂等任务，Worker 从 BOSS 读取推荐候选人，去重、评估 TEM8 规则后写入 PostgreSQL 待审核列表。

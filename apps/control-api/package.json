@@ -1,0 +1,9 @@
+{
+  "name": "@boss-forge/control-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@boss-forge/data": "workspace:*"
+  }
+}
