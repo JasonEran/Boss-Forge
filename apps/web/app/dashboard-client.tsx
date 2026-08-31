@@ -1,11 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   Activity,
+  ArrowRight,
+  BriefcaseBusiness,
   CalendarClock,
   CheckCircle2,
   CircleGauge,
+  Clock3,
   Eye,
   FileSearch,
   ListChecks,
@@ -54,7 +58,20 @@ import { ContactPreviewDialog } from './contact-preview-dialog';
 import { PositionRuleDialog } from './position-rule-dialog';
 import { ScheduleDialog } from './schedule-dialog';
 
-type Position = { id: string; name: string };
+export type DashboardPage =
+  | 'overview'
+  | 'positions'
+  | 'tasks'
+  | 'candidates'
+  | 'contacts'
+  | 'audit';
+
+type Position = {
+  id: string;
+  name: string;
+  bossJobKeyword?: string | null;
+  ownerName?: string;
+};
 type Task = {
   id: string;
   positionName: string;
@@ -66,6 +83,7 @@ type Task = {
     | 'failed'
     | 'cancelled';
   source: 'recommend' | 'search';
+  executionMode?: 'immediate' | 'scheduled';
   candidateCount: number;
   errorMessage: string | null;
 };
@@ -84,7 +102,6 @@ type Candidate = {
 type Schedule = {
   id: string;
   positionName: string;
-  source: 'recommend' | 'search';
   frequency: 'once' | 'daily' | 'weekdays' | 'weekly';
   nextRunAt: string;
   enabled: boolean;
@@ -92,13 +109,26 @@ type Schedule = {
 };
 type ContactIntent = {
   id: string;
+  candidateStateId: string;
   candidateName: string;
   positionName: string;
-  status: 'ready' | 'processing' | 'sent' | 'failed' | 'uncertain' | 'cancelled';
+  status:
+    | 'ready'
+    | 'processing'
+    | 'sent'
+    | 'failed'
+    | 'uncertain'
+    | 'cancelled';
   createdAt: string;
   lastError: string | null;
 };
-type AuditLog = { id: string; actorId: string; action: string; createdAt: string };
+type AuditLog = {
+  id: string;
+  actorId: string;
+  action: string;
+  resourceType?: string;
+  createdAt: string;
+};
 type DashboardData = {
   metrics: {
     totalCandidates: number;
@@ -116,14 +146,94 @@ type DashboardData = {
 
 const controlApi =
   process.env.NEXT_PUBLIC_CONTROL_API_URL ?? 'http://127.0.0.1:3100';
-const navigation = [
-  { label: '总览', icon: CircleGauge, href: '#overview', active: true },
-  { label: '岗位与规则', icon: SlidersHorizontal, href: '#rules' },
-  { label: '任务中心', icon: ListChecks, href: '#tasks' },
-  { label: '候选人审核', icon: UsersRound, href: '#candidates' },
-  { label: '自动化控制', icon: ShieldCheck, href: '#automation' },
-  { label: '审计日志', icon: FileSearch, href: '#audit' },
+
+const navigation: Array<{
+  page: DashboardPage;
+  label: string;
+  shortLabel: string;
+  icon: typeof CircleGauge;
+  href: string;
+}> = [
+  {
+    page: 'overview',
+    label: '工作台总览',
+    shortLabel: '总览',
+    icon: CircleGauge,
+    href: '/',
+  },
+  {
+    page: 'positions',
+    label: '岗位与规则',
+    shortLabel: '岗位',
+    icon: SlidersHorizontal,
+    href: '/positions',
+  },
+  {
+    page: 'tasks',
+    label: '任务与计划',
+    shortLabel: '任务',
+    icon: ListChecks,
+    href: '/tasks',
+  },
+  {
+    page: 'candidates',
+    label: '候选人审核',
+    shortLabel: '审核',
+    icon: UsersRound,
+    href: '/candidates',
+  },
+  {
+    page: 'contacts',
+    label: '联系执行',
+    shortLabel: '联系',
+    icon: MessageSquareText,
+    href: '/contacts',
+  },
+  {
+    page: 'audit',
+    label: '审计与安全',
+    shortLabel: '审计',
+    icon: FileSearch,
+    href: '/audit',
+  },
 ];
+
+const pageCopy: Record<
+  DashboardPage,
+  { eyebrow: string; title: string; description: string }
+> = {
+  overview: {
+    eyebrow: '今日招聘运营',
+    title: '工作台总览',
+    description: '集中查看筛选进度、待办事项和联系安全状态。',
+  },
+  positions: {
+    eyebrow: '招聘配置',
+    title: '岗位与筛选规则',
+    description: '管理岗位、BOSS 岗位关键词和版本化 TEM8 规则。',
+  },
+  tasks: {
+    eyebrow: '执行中心',
+    title: '筛选任务与计划',
+    description: '立即执行筛选，或安排一次、每日、工作日和每周任务。',
+  },
+  candidates: {
+    eyebrow: '人工决策',
+    title: '候选人审核',
+    description: '依据原文证据和规则结论逐位审核候选人。',
+  },
+  contacts: {
+    eyebrow: '受控联系',
+    title: '联系执行',
+    description: '审核消息预览、创建联系意图并跟踪执行结果。',
+  },
+  audit: {
+    eyebrow: '风险与追溯',
+    title: '审计与安全',
+    description: '查看关键动作记录和当前自动化安全边界。',
+  },
+};
+
 const taskStatus: Record<Task['status'], string> = {
   queued: '等待 Worker',
   running: '读取候选人',
@@ -137,6 +247,38 @@ const decisionLabel: Record<Candidate['ruleDecision'], string> = {
   not_matched: '不符合',
   ambiguous: '有歧义',
   insufficient: '信息不足',
+};
+const frequencyLabel: Record<Schedule['frequency'], string> = {
+  once: '仅一次',
+  daily: '每天',
+  weekdays: '工作日',
+  weekly: '每周',
+};
+const contactStatusLabel: Record<
+  ContactIntent['status'] | Candidate['contactStatus'],
+  string
+> = {
+  not_contacted: '未联系',
+  queued: '等待执行',
+  ready: '等待执行',
+  processing: '执行中',
+  sent: '已联系',
+  failed: '失败',
+  uncertain: '待人工核验',
+  cancelled: '已取消',
+};
+const auditActionLabel: Record<string, string> = {
+  'rule.version.created': '创建规则版本',
+  'task.immediate.requested': '创建立即筛选任务',
+  'task.collection.completed': '完成候选人采集',
+  'candidate.review.approved': '审核通过候选人',
+  'candidate.review.rejected': '审核拒绝候选人',
+  'schedule.created': '创建定时计划',
+  'schedule.cancelled': '停用定时计划',
+  'contact.intent.created': '创建联系意图',
+  'contact.sent': '联系成功',
+  'contact.failed': '联系失败',
+  'contact.uncertain': '联系结果待核验',
 };
 
 async function responseJson<T>(response: Response): Promise<T> {
@@ -161,11 +303,27 @@ function candidateSummary(candidate: Candidate): string {
     .join(' · ');
 }
 
-export function DashboardClient() {
+function SectionEmpty({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="px-4 py-12 text-center">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+export function DashboardClient({ page }: { page: DashboardPage }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
   const [selectedPositionId, setSelectedPositionId] = useState('');
+  const [candidatePositionFilter, setCandidatePositionFilter] = useState('all');
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
@@ -203,10 +361,23 @@ export function DashboardClient() {
     };
   }, [loadDashboard]);
 
-  const latestTask = data?.tasks[0];
   const position =
     data?.positions.find((item) => item.id === selectedPositionId) ??
     data?.positions[0];
+  const latestTask = data?.tasks[0];
+  const pendingCandidates =
+    data?.candidates.filter(
+      (candidate) =>
+        candidate.reviewStatus === 'pending' &&
+        (candidatePositionFilter === 'all' ||
+          candidate.positionName === candidatePositionFilter),
+    ) ?? [];
+  const approvedCandidates =
+    data?.candidates.filter(
+      (candidate) => candidate.reviewStatus === 'approved',
+    ) ?? [];
+  const activeSchedules = data?.schedules.filter((item) => item.enabled) ?? [];
+  const pageInfo = pageCopy[page];
   const metrics = useMemo(
     () => [
       {
@@ -236,8 +407,6 @@ export function DashboardClient() {
     ],
     [data],
   );
-  const pendingCandidates = data?.candidates.filter((candidate) => candidate.reviewStatus === 'pending') ?? [];
-  const approvedCandidates = data?.candidates.filter((candidate) => candidate.reviewStatus === 'approved') ?? [];
 
   async function createImmediateTask() {
     if (!position || creatingTask) return;
@@ -271,12 +440,10 @@ export function DashboardClient() {
     setSelectedPositionId(positionId);
     await loadDashboard();
   }
-
   function openCandidateReview(stateId: string) {
     setSelectedCandidateStateId(stateId);
     setReviewDialogOpen(true);
   }
-
   function openContactPreview(stateId: string) {
     setSelectedCandidateStateId(stateId);
     setContactDialogOpen(true);
@@ -284,22 +451,81 @@ export function DashboardClient() {
 
   async function cancelSchedule(schedule: Schedule) {
     try {
-      const response = await fetch(`${controlApi}/api/schedules/${schedule.id}/cancel`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedVersion: schedule.version, actorId: 'hr:dashboard' }),
-      });
+      const response = await fetch(
+        `${controlApi}/api/schedules/${schedule.id}/cancel`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            expectedVersion: schedule.version,
+            actorId: 'hr:dashboard',
+          }),
+        },
+      );
       await responseJson(response);
       await loadDashboard();
     } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
+      setError(
+        cancelError instanceof Error
+          ? cancelError.message
+          : String(cancelError),
+      );
     }
+  }
+
+  function positionSelect() {
+    return (
+      <Select
+        value={position?.id ?? null}
+        onValueChange={(value) => setSelectedPositionId(value ?? '')}
+      >
+        <SelectTrigger className="h-9 min-w-44">
+          <SelectValue placeholder="选择岗位" />
+        </SelectTrigger>
+        <SelectContent>
+          {data?.positions.map((item) => (
+            <SelectItem key={item.id} value={item.id}>
+              {item.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+
+  function taskActions() {
+    return (
+      <div className="flex flex-wrap gap-2">
+        {positionSelect()}
+        <Button
+          variant="outline"
+          size="lg"
+          disabled={!position}
+          onClick={() => setScheduleDialogOpen(true)}
+        >
+          <CalendarClock data-icon="inline-start" />
+          定时筛选
+        </Button>
+        <Button
+          size="lg"
+          disabled={!position || creatingTask}
+          onClick={() => void createImmediateTask()}
+        >
+          {creatingTask ? <LoaderCircle className="animate-spin" /> : <Play />}
+          {creatingTask ? '正在创建' : '立即执行'}
+        </Button>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-20 flex h-16 items-center border-b bg-card/95 px-4 backdrop-blur sm:px-6">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="sticky top-0 z-30 flex h-16 items-center border-b bg-card/95 px-4 backdrop-blur sm:px-6">
+        <Link
+          href="/"
+          className="flex min-w-0 items-center gap-3"
+          aria-label="返回工作台总览"
+        >
           <LogoMark />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold tracking-tight">
@@ -309,7 +535,7 @@ export function DashboardClient() {
               HR 招聘工作台
             </p>
           </div>
-        </div>
+        </Link>
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           <Badge
             variant="secondary"
@@ -327,41 +553,47 @@ export function DashboardClient() {
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-[1600px] grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <nav
+        aria-label="移动端主导航"
+        className="sticky top-16 z-20 flex gap-1 overflow-x-auto border-b bg-card px-3 py-2 lg:hidden"
+      >
+        {navigation.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.page}
+              href={item.href}
+              aria-current={page === item.page ? 'page' : undefined}
+              className={`flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-medium ${page === item.page ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}`}
+            >
+              <Icon className="size-3.5" />
+              {item.shortLabel}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div className="mx-auto grid w-full max-w-[1600px] grid-cols-1 lg:grid-cols-[228px_minmax(0,1fr)]">
         <aside className="hidden min-h-[calc(100vh-4rem)] border-r bg-card px-3 py-5 lg:block">
           <nav aria-label="主导航" className="space-y-1">
             {navigation.map((item) => {
               const Icon = item.icon;
-              const content = (
-                <>
-                  <Icon className="size-4" aria-hidden="true" />
-                  <span>{item.label}</span>
-                </>
-              );
-              const className = `flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium ${item.active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`;
-              return item.href ? (
-                <a
-                  key={item.label}
+              return (
+                <Link
+                  key={item.page}
                   href={item.href}
-                  aria-current={item.active ? 'page' : undefined}
-                  className={className}
+                  aria-current={page === item.page ? 'page' : undefined}
+                  className={`flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium ${page === item.page ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
                 >
-                  {content}
-                </a>
-              ) : (
-                <span
-                  key={item.label}
-                  aria-disabled="true"
-                  className={`${className} cursor-not-allowed opacity-50`}
-                >
-                  {content}
-                </span>
+                  <Icon className="size-4" />
+                  <span>{item.label}</span>
+                </Link>
               );
             })}
           </nav>
           <div className="mt-8 rounded-xl border bg-muted/45 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
-              <ShieldCheck className="size-4 text-success" aria-hidden="true" />
+              <ShieldCheck className="size-4 text-success" />
               安全模式
             </div>
             <p className="text-xs leading-5 text-muted-foreground">
@@ -370,70 +602,59 @@ export function DashboardClient() {
           </div>
         </aside>
 
-        <main
-          id="overview"
-          className="min-w-0 scroll-mt-20 px-4 py-5 sm:px-6 sm:py-7 xl:px-8"
-        >
-          <div
-            id="rules"
-            className="mb-6 scroll-mt-20 flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
-          >
+        <main className="min-w-0 px-4 py-5 sm:px-6 sm:py-7 xl:px-8">
+          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div>
-              <p className="mb-1 text-xs font-medium text-muted-foreground">
-                岗位与规则 · {position?.name ?? '正在连接控制面'}
+              <p className="mb-1 text-xs font-medium text-primary">
+                {pageInfo.eyebrow}
               </p>
               <h1 className="text-2xl font-semibold tracking-tight">
-                候选人筛选与审核
+                {pageInfo.title}
               </h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                当前规则：TEM-8（英语专业八级）· 词典 2026.08.1
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                {pageInfo.description}
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            {page === 'positions' ? (
+              <div className="flex flex-wrap gap-2">
+                {positionSelect()}
+                <Button size="lg" onClick={() => setPositionDialogOpen(true)}>
+                  <Plus />
+                  新建岗位规则
+                </Button>
+              </div>
+            ) : null}
+            {page === 'tasks' ? taskActions() : null}
+            {page === 'candidates' ? (
               <Select
-                value={position?.id ?? null}
-                onValueChange={(value) => setSelectedPositionId(value ?? '')}
+                value={candidatePositionFilter}
+                onValueChange={(value) =>
+                  setCandidatePositionFilter(value ?? 'all')
+                }
               >
                 <SelectTrigger className="h-9 min-w-44">
-                  <SelectValue placeholder="选择岗位" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="all">全部岗位</SelectItem>
                   {data?.positions.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
+                    <SelectItem key={item.id} value={item.name}>
                       {item.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+            ) : null}
+            {page === 'audit' ? (
               <Button
                 variant="outline"
                 size="lg"
-                onClick={() => setPositionDialogOpen(true)}
+                onClick={() => void loadDashboard()}
               >
-                <Plus data-icon="inline-start" aria-hidden="true" />
-                新建岗位规则
+                <RefreshCw />
+                刷新日志
               </Button>
-              <Button variant="outline" size="lg" disabled={!position} onClick={() => setScheduleDialogOpen(true)}>
-                <CalendarClock data-icon="inline-start" aria-hidden="true" />
-                定时筛选
-              </Button>
-              <Button
-                size="lg"
-                disabled={!position || creatingTask}
-                onClick={() => void createImmediateTask()}
-              >
-                {creatingTask ? (
-                  <LoaderCircle
-                    className="animate-spin"
-                    data-icon="inline-start"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <Play data-icon="inline-start" aria-hidden="true" />
-                )}
-                {creatingTask ? '正在创建任务' : '立即执行筛选'}
-              </Button>
-            </div>
+            ) : null}
           </div>
 
           {error ? (
@@ -447,202 +668,509 @@ export function DashboardClient() {
                 size="sm"
                 onClick={() => void loadDashboard()}
               >
-                <RefreshCw aria-hidden="true" />
+                <RefreshCw />
                 重试
               </Button>
             </section>
           ) : null}
 
-          <section
-            aria-label="自动化状态"
-            className="mb-5 flex flex-col gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3 sm:flex-row sm:items-center"
-          >
-            <ShieldCheck
-              className="size-5 shrink-0 text-warning-foreground"
-              aria-hidden="true"
-            />
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">自动打招呼总开关已关闭</p>
-              <p className="text-xs leading-5 text-muted-foreground">
-                筛选、审核和消息预览可用；当前不会调用 BOSS 打招呼命令。
-              </p>
-            </div>
-            <Badge variant="outline" className="sm:ml-auto">
-              安全默认值
-            </Badge>
-          </section>
-
-          <section
-            aria-label="招聘指标"
-            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-          >
-            {metrics.map((metric) => {
-              const Icon = metric.icon;
-              return (
-                <Card key={metric.label} size="sm">
+          {page === 'overview' ? (
+            <>
+              <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {metrics.map((metric) => {
+                  const Icon = metric.icon;
+                  return (
+                    <Card key={metric.label} size="sm">
+                      <CardHeader>
+                        <CardDescription>{metric.label}</CardDescription>
+                        <CardAction>
+                          <Icon className="size-4 text-muted-foreground" />
+                        </CardAction>
+                        <CardTitle className="text-2xl tabular-nums">
+                          {metric.value}
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <span className="text-xs font-medium text-primary">
+                          {metric.note}
+                        </span>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </section>
+              <section className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+                <Card>
                   <CardHeader>
-                    <CardDescription>{metric.label}</CardDescription>
+                    <CardTitle>当前招聘进度</CardTitle>
+                    <CardDescription>
+                      {position?.name ?? '尚未创建岗位'} · TEM8 规则
+                    </CardDescription>
                     <CardAction>
-                      <Icon
-                        className="size-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
+                      {latestTask ? (
+                        <Badge variant="secondary">
+                          {taskStatus[latestTask.status]}
+                        </Badge>
+                      ) : null}
                     </CardAction>
-                    <CardTitle className="text-2xl font-semibold tabular-nums">
-                      {metric.value}
-                    </CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <span className="text-xs font-medium text-primary">
-                      {metric.note}
-                    </span>
+                  <CardContent className="space-y-4">
+                    <Progress
+                      value={
+                        latestTask?.status === 'waiting_review' ||
+                        latestTask?.status === 'completed'
+                          ? 100
+                          : latestTask?.status === 'running'
+                            ? 55
+                            : latestTask
+                              ? 15
+                              : 0
+                      }
+                    />
+                    <div className="grid grid-cols-3 gap-3 text-xs">
+                      <div>
+                        <p className="text-muted-foreground">最新任务</p>
+                        <p className="mt-1 font-medium">
+                          {latestTask
+                            ? taskStatus[latestTask.status]
+                            : '暂无任务'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">已采集</p>
+                        <p className="mt-1 font-medium tabular-nums">
+                          {latestTask?.candidateCount ?? 0} 人
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">启用计划</p>
+                        <p className="mt-1 font-medium tabular-nums">
+                          {activeSchedules.length} 个
+                        </p>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
-              );
-            })}
-          </section>
-
-          <section
-            id="tasks"
-            className="mt-4 grid scroll-mt-20 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,.6fr)]"
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>最新任务</CardTitle>
-                <CardDescription>
-                  {latestTask
-                    ? `${latestTask.positionName} · 推荐候选人`
-                    : '尚未创建筛选任务'}
-                </CardDescription>
-                <CardAction>
-                  <Badge variant="secondary">
-                    {latestTask ? taskStatus[latestTask.status] : '等待任务'}
-                  </Badge>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Progress
-                  value={
-                    latestTask?.status === 'waiting_review' ||
-                    latestTask?.status === 'completed'
-                      ? 100
-                      : latestTask?.status === 'running'
-                        ? 55
-                        : latestTask
-                          ? 15
-                          : 0
-                  }
-                  aria-label="最新任务进度"
-                />
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  <div>
-                    <p className="text-muted-foreground">执行方式</p>
-                    <p className="mt-1 font-medium">{latestTask?.source === 'search' ? '搜索' : '推荐'}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">已采集</p>
-                    <p className="mt-1 font-medium tabular-nums">
-                      {latestTask?.candidateCount ?? 0} 人
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">规则版本</p>
-                    <p className="mt-1 font-medium">TEM8 · 2026.08.1</p>
-                  </div>
-                </div>
-                {latestTask?.errorMessage ? (
-                  <p className="text-xs text-destructive">
-                    {latestTask.errorMessage}
-                  </p>
-                ) : null}
-              </CardContent>
-            </Card>
-            <Card id="automation" className="scroll-mt-20">
-              <CardHeader>
-                <CardTitle>自动化控制</CardTitle>
-                <CardDescription>第二阶段已就绪，真实发送默认关闭</CardDescription>
-                <CardAction>
-                  <Settings2
-                    className="size-4 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                </CardAction>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {['全局自动开关', '岗位自动开关', '本任务自动开关'].map(
-                  (label) => (
-                    <div
-                      key={label}
-                      className="flex min-h-9 items-center justify-between gap-3"
+                <Card>
+                  <CardHeader>
+                    <CardTitle>快捷操作</CardTitle>
+                    <CardDescription>从最常用的工作开始</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <Link
+                      href="/tasks"
+                      className="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
                     >
-                      <span className="text-sm">{label}</span>
-                      <Switch disabled aria-label={`${label}，当前关闭`} />
+                      <Play className="size-4 text-primary" />
+                      执行候选人筛选
+                      <ArrowRight className="ml-auto size-4 text-muted-foreground" />
+                    </Link>
+                    <Link
+                      href="/candidates"
+                      className="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
+                    >
+                      <UsersRound className="size-4 text-primary" />
+                      处理 {data?.metrics.pendingReview ?? 0} 位待审核
+                      <ArrowRight className="ml-auto size-4 text-muted-foreground" />
+                    </Link>
+                    <Link
+                      href="/contacts"
+                      className="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
+                    >
+                      <MessageSquareText className="size-4 text-primary" />
+                      查看联系执行
+                      <ArrowRight className="ml-auto size-4 text-muted-foreground" />
+                    </Link>
+                  </CardContent>
+                </Card>
+              </section>
+              <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
+                <Card>
+                  <CardHeader className="border-b">
+                    <CardTitle>待审核优先队列</CardTitle>
+                    <CardDescription>按规则结论和置信度排序</CardDescription>
+                    <CardAction>
+                      <Link
+                        href="/candidates"
+                        className="text-xs font-medium text-primary"
+                      >
+                        查看全部
+                      </Link>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {data && data.metrics.pendingReview === 0 ? (
+                      <SectionEmpty
+                        title="暂无待审核候选人"
+                        description="创建筛选任务后，候选人会出现在这里。"
+                      />
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-4">候选人</TableHead>
+                            <TableHead>岗位</TableHead>
+                            <TableHead>结论</TableHead>
+                            <TableHead className="pr-4 text-right">
+                              置信度
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {data?.candidates
+                            .filter((item) => item.reviewStatus === 'pending')
+                            .slice(0, 5)
+                            .map((candidate) => (
+                              <TableRow key={candidate.stateId}>
+                                <TableCell className="pl-4 font-medium">
+                                  {candidate.name}
+                                </TableCell>
+                                <TableCell>{candidate.positionName}</TableCell>
+                                <TableCell>
+                                  <Badge variant="outline">
+                                    {decisionLabel[candidate.ruleDecision]}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="pr-4 text-right tabular-nums">
+                                  {Math.round(candidate.ruleConfidence * 100)}%
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>联系安全状态</CardTitle>
+                    <CardDescription>所有真实外部操作默认关闭</CardDescription>
+                    <CardAction>
+                      <ShieldCheck className="size-4 text-success" />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>真实打招呼总开关</span>
+                      <Badge variant="outline">关闭</Badge>
                     </div>
-                  ),
-                )}
-              </CardContent>
-            </Card>
-          </section>
-
-          <section className="mt-4 grid gap-4 xl:grid-cols-2">
-            <Card>
-              <CardHeader className="border-b">
-                <CardTitle>定时筛选</CardTitle>
-                <CardDescription>按上海时区生成筛选任务</CardDescription>
-                <CardAction><Badge variant="outline">{data?.schedules.filter((item) => item.enabled).length ?? 0} 个启用</Badge></CardAction>
-              </CardHeader>
-              <CardContent className="space-y-2 pt-4">
-                {data?.schedules.length ? data.schedules.slice(0, 5).map((schedule) => (
-                  <div key={schedule.id} className="flex items-center gap-3 rounded-lg border px-3 py-2">
-                    <CalendarClock className="size-4 text-muted-foreground" aria-hidden="true" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{schedule.positionName}</p>
-                      <p className="text-xs text-muted-foreground">{schedule.frequency} · {new Date(schedule.nextRunAt).toLocaleString('zh-CN')}</p>
+                    <div className="flex items-center justify-between">
+                      <span>待执行联系意图</span>
+                      <span className="font-medium">
+                        {data?.contactIntents.filter(
+                          (item) => item.status === 'ready',
+                        ).length ?? 0}
+                      </span>
                     </div>
-                    {schedule.enabled ? <Button variant="ghost" size="sm" onClick={() => void cancelSchedule(schedule)}><XCircle />停用</Button> : <Badge variant="outline">已停用</Badge>}
-                  </div>
-                )) : <p className="py-6 text-center text-sm text-muted-foreground">暂无定时任务</p>}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="border-b">
-                <CardTitle>联系执行记录</CardTitle>
-                <CardDescription>消息状态与失败原因可追踪</CardDescription>
-                <CardAction><Badge variant="outline">真实发送关闭</Badge></CardAction>
-              </CardHeader>
-              <CardContent className="space-y-2 pt-4">
-                {data?.contactIntents.length ? data.contactIntents.slice(0, 5).map((intent) => (
-                  <div key={intent.id} className="flex items-center gap-3 rounded-lg border px-3 py-2">
-                    <MessageSquareText className="size-4 text-muted-foreground" aria-hidden="true" />
-                    <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{intent.candidateName} · {intent.positionName}</p><p className="truncate text-xs text-muted-foreground">{intent.lastError ?? new Date(intent.createdAt).toLocaleString('zh-CN')}</p></div>
-                    <Badge variant={intent.status === 'sent' ? 'secondary' : 'outline'}>{intent.status}</Badge>
-                  </div>
-                )) : <p className="py-6 text-center text-sm text-muted-foreground">暂无联系任务</p>}
-              </CardContent>
-            </Card>
-          </section>
+                    <div className="flex items-center justify-between">
+                      <span>待人工核验</span>
+                      <span className="font-medium">
+                        {data?.contactIntents.filter(
+                          (item) => item.status === 'uncertain',
+                        ).length ?? 0}
+                      </span>
+                    </div>
+                    <Link
+                      href="/audit"
+                      className="flex items-center text-xs font-medium text-primary"
+                    >
+                      查看安全与审计
+                      <ArrowRight className="ml-1 size-3.5" />
+                    </Link>
+                  </CardContent>
+                </Card>
+              </section>
+            </>
+          ) : null}
 
-          <section id="candidates" className="mt-4 scroll-mt-20">
+          {page === 'positions' ? (
+            <section className="grid gap-4 xl:grid-cols-[1fr_.72fr]">
+              <Card>
+                <CardHeader className="border-b">
+                  <CardTitle>岗位列表</CardTitle>
+                  <CardDescription>当前 BOSS 账号下的招聘岗位</CardDescription>
+                  <CardAction>
+                    <Badge variant="outline">
+                      {data?.positions.length ?? 0} 个
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-4">
+                  {data?.positions.length ? (
+                    data.positions.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSelectedPositionId(item.id)}
+                        className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors ${position?.id === item.id ? 'border-primary/40 bg-primary/5' : 'hover:bg-muted/60'}`}
+                      >
+                        <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary">
+                          <BriefcaseBusiness className="size-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold">
+                            {item.name}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {item.bossJobKeyword || '使用当前 BOSS 岗位'} ·{' '}
+                            {item.ownerName || 'HR 管理员'}
+                          </p>
+                        </div>
+                        <Badge variant="outline">启用</Badge>
+                      </button>
+                    ))
+                  ) : (
+                    <SectionEmpty
+                      title="暂无岗位"
+                      description="创建第一个岗位和筛选规则后即可开始。"
+                    />
+                  )}
+                </CardContent>
+              </Card>
+              <div className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>当前规则</CardTitle>
+                    <CardDescription>
+                      {position?.name ?? '请选择岗位'}
+                    </CardDescription>
+                    <CardAction>
+                      <Badge variant="secondary">已发布</Badge>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="rounded-lg border bg-muted/35 p-3">
+                      <p className="text-xs text-muted-foreground">硬性能力</p>
+                      <p className="mt-1 font-semibold">TEM-8 · 英语专业八级</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          词典版本
+                        </p>
+                        <p className="mt-1 font-medium">2026.08.1</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          最低置信度
+                        </p>
+                        <p className="mt-1 font-medium">86%</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>表达适配</CardTitle>
+                    <CardDescription>同义表达与风险上下文</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    {[
+                      '英语专业八级',
+                      'TEM8',
+                      'TEM-8',
+                      '英语8级',
+                      '专八',
+                      '否定检测',
+                      '备考识别',
+                      'CET 混淆',
+                    ].map((item) => (
+                      <Badge key={item} variant="outline">
+                        {item}
+                      </Badge>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
+            </section>
+          ) : null}
+
+          {page === 'tasks' ? (
+            <>
+              <section className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>最新筛选任务</CardTitle>
+                    <CardDescription>
+                      {latestTask
+                        ? `${latestTask.positionName} · ${latestTask.source === 'search' ? '搜索' : '推荐'}候选人`
+                        : '尚未创建任务'}
+                    </CardDescription>
+                    <CardAction>
+                      {latestTask ? (
+                        <Badge variant="secondary">
+                          {taskStatus[latestTask.status]}
+                        </Badge>
+                      ) : null}
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <Progress
+                      value={
+                        latestTask?.status === 'waiting_review' ||
+                        latestTask?.status === 'completed'
+                          ? 100
+                          : latestTask?.status === 'running'
+                            ? 55
+                            : latestTask
+                              ? 15
+                              : 0
+                      }
+                    />
+                    <div className="grid grid-cols-3 gap-3 text-xs">
+                      <div>
+                        <p className="text-muted-foreground">执行方式</p>
+                        <p className="mt-1 font-medium">
+                          {latestTask?.executionMode === 'scheduled'
+                            ? '定时'
+                            : '立即'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">已采集</p>
+                        <p className="mt-1 font-medium">
+                          {latestTask?.candidateCount ?? 0} 人
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">规则版本</p>
+                        <p className="mt-1 font-medium">TEM8 · 2026.08.1</p>
+                      </div>
+                    </div>
+                    {latestTask?.errorMessage ? (
+                      <p className="text-xs text-destructive">
+                        {latestTask.errorMessage}
+                      </p>
+                    ) : null}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="border-b">
+                    <CardTitle>定时计划</CardTitle>
+                    <CardDescription>
+                      统一使用 Asia/Shanghai 时区
+                    </CardDescription>
+                    <CardAction>
+                      <Badge variant="outline">
+                        {activeSchedules.length} 个启用
+                      </Badge>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-2 pt-4">
+                    {data?.schedules.length ? (
+                      data.schedules.slice(0, 6).map((schedule) => (
+                        <div
+                          key={schedule.id}
+                          className="flex items-center gap-3 rounded-lg border px-3 py-2.5"
+                        >
+                          <CalendarClock className="size-4 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">
+                              {schedule.positionName}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {frequencyLabel[schedule.frequency]} ·{' '}
+                              {new Date(schedule.nextRunAt).toLocaleString(
+                                'zh-CN',
+                              )}
+                            </p>
+                          </div>
+                          {schedule.enabled ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void cancelSchedule(schedule)}
+                            >
+                              <XCircle />
+                              停用
+                            </Button>
+                          ) : (
+                            <Badge variant="outline">已停用</Badge>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <SectionEmpty
+                        title="暂无定时计划"
+                        description="点击“定时筛选”创建计划。"
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+              </section>
+              <section className="mt-4">
+                <Card>
+                  <CardHeader className="border-b">
+                    <CardTitle>最近任务</CardTitle>
+                    <CardDescription>
+                      立即与定时筛选任务统一追踪
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {data?.tasks.length ? (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-4">岗位</TableHead>
+                            <TableHead>来源</TableHead>
+                            <TableHead>执行方式</TableHead>
+                            <TableHead>候选人</TableHead>
+                            <TableHead className="pr-4 text-right">
+                              状态
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {data.tasks.map((task) => (
+                            <TableRow key={task.id}>
+                              <TableCell className="pl-4 font-medium">
+                                {task.positionName}
+                              </TableCell>
+                              <TableCell>
+                                {task.source === 'search' ? '搜索' : '推荐'}
+                              </TableCell>
+                              <TableCell>
+                                {task.executionMode === 'scheduled'
+                                  ? '定时'
+                                  : '立即'}
+                              </TableCell>
+                              <TableCell>{task.candidateCount} 人</TableCell>
+                              <TableCell className="pr-4 text-right">
+                                <Badge variant="outline">
+                                  {taskStatus[task.status]}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
+                      <SectionEmpty
+                        title="暂无任务"
+                        description="从页面右上角开始第一次筛选。"
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+              </section>
+            </>
+          ) : null}
+
+          {page === 'candidates' ? (
             <Card>
               <CardHeader className="border-b">
                 <CardTitle>待审核候选人</CardTitle>
-                <CardDescription>
-                  实际采集结果，保留原文证据和规则结论
-                </CardDescription>
+                <CardDescription>查看原文证据后逐位作出决定</CardDescription>
                 <CardAction>
-                  <Badge variant="outline">
-                    {data?.metrics.pendingReview ?? 0} 人
-                  </Badge>
+                  <Badge variant="outline">{pendingCandidates.length} 人</Badge>
                 </CardAction>
               </CardHeader>
               <CardContent className="px-0">
                 {data && pendingCandidates.length === 0 ? (
-                  <div className="px-4 py-12 text-center">
-                    <p className="text-sm font-medium">暂无待审核候选人</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      创建任务后由 Worker 执行采集。
-                    </p>
-                  </div>
+                  <SectionEmpty
+                    title="暂无待审核候选人"
+                    description="创建筛选任务后由 Worker 采集候选人。"
+                  />
                 ) : (
                   <Table>
                     <TableHeader>
@@ -656,11 +1184,11 @@ export function DashboardClient() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {pendingCandidates.slice(0, 12).map((candidate) => (
+                      {pendingCandidates.map((candidate) => (
                         <TableRow key={candidate.stateId}>
                           <TableCell className="pl-4">
                             <p className="font-medium">{candidate.name}</p>
-                            <p className="mt-0.5 max-w-[260px] truncate text-xs text-muted-foreground">
+                            <p className="mt-0.5 max-w-[250px] truncate text-xs text-muted-foreground">
                               {candidateSummary(candidate) || '候选人列表数据'}
                             </p>
                           </TableCell>
@@ -692,7 +1220,7 @@ export function DashboardClient() {
                                 openCandidateReview(candidate.stateId)
                               }
                             >
-                              <Eye aria-hidden="true" />
+                              <Eye />
                               审核
                             </Button>
                           </TableCell>
@@ -703,32 +1231,283 @@ export function DashboardClient() {
                 )}
               </CardContent>
             </Card>
-          </section>
+          ) : null}
 
-          <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
-            <Card>
-              <CardHeader className="border-b">
-                <CardTitle>已通过人工审核</CardTitle>
-                <CardDescription>先预览消息，再显式创建联系任务</CardDescription>
-                <CardAction><Badge variant="outline">{approvedCandidates.length} 人</Badge></CardAction>
-              </CardHeader>
-              <CardContent className="px-0">
-                {approvedCandidates.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">暂无已通过候选人</p> : (
-                  <Table><TableHeader><TableRow><TableHead className="pl-4">候选人</TableHead><TableHead>岗位</TableHead><TableHead>联系状态</TableHead><TableHead className="pr-4 text-right">操作</TableHead></TableRow></TableHeader>
-                    <TableBody>{approvedCandidates.slice(0, 12).map((candidate) => <TableRow key={candidate.stateId}><TableCell className="pl-4 font-medium">{candidate.name}</TableCell><TableCell>{candidate.positionName}</TableCell><TableCell><Badge variant="outline">{candidate.contactStatus}</Badge></TableCell><TableCell className="pr-4 text-right"><Button size="sm" variant="outline" disabled={candidate.contactStatus !== 'not_contacted' && candidate.contactStatus !== 'failed'} onClick={() => openContactPreview(candidate.stateId)}><MessageSquareText />消息预览</Button></TableCell></TableRow>)}</TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-            <Card id="audit" className="scroll-mt-20">
-              <CardHeader className="border-b"><CardTitle>审计日志</CardTitle><CardDescription>关键动作留痕</CardDescription></CardHeader>
-              <CardContent className="space-y-2 pt-4">
-                {data?.auditLogs.slice(0, 8).map((log) => <div key={log.id} className="rounded-lg border px-3 py-2"><p className="text-xs font-medium">{log.action}</p><p className="mt-1 text-[11px] text-muted-foreground">{log.actorId} · {new Date(log.createdAt).toLocaleString('zh-CN')}</p></div>)}
-              </CardContent>
-            </Card>
-          </section>
+          {page === 'contacts' ? (
+            <>
+              <section className="mb-4 flex flex-col gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3 sm:flex-row sm:items-center">
+                <ShieldCheck className="size-5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">
+                    真实打招呼总开关已关闭
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    可以预览并创建联系意图，当前不会调用 BOSS 打招呼命令。
+                  </p>
+                </div>
+                <Badge variant="outline" className="sm:ml-auto">
+                  安全默认值
+                </Badge>
+              </section>
+              <section className="grid gap-4 xl:grid-cols-[1.25fr_.75fr]">
+                <Card>
+                  <CardHeader className="border-b">
+                    <CardTitle>已通过人工审核</CardTitle>
+                    <CardDescription>
+                      先预览消息，再显式创建联系任务
+                    </CardDescription>
+                    <CardAction>
+                      <Badge variant="outline">
+                        {approvedCandidates.length} 人
+                      </Badge>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {approvedCandidates.length === 0 ? (
+                      <SectionEmpty
+                        title="暂无已通过候选人"
+                        description="候选人审核通过后会进入这里。"
+                      />
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-4">候选人</TableHead>
+                            <TableHead>岗位</TableHead>
+                            <TableHead>联系状态</TableHead>
+                            <TableHead className="pr-4 text-right">
+                              操作
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {approvedCandidates.map((candidate) => (
+                            <TableRow key={candidate.stateId}>
+                              <TableCell className="pl-4 font-medium">
+                                {candidate.name}
+                              </TableCell>
+                              <TableCell>{candidate.positionName}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline">
+                                  {contactStatusLabel[candidate.contactStatus]}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="pr-4 text-right">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    candidate.contactStatus !==
+                                      'not_contacted' &&
+                                    candidate.contactStatus !== 'failed'
+                                  }
+                                  onClick={() =>
+                                    openContactPreview(candidate.stateId)
+                                  }
+                                >
+                                  <MessageSquareText />
+                                  消息预览
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>自动化控制</CardTitle>
+                    <CardDescription>M4 能力预留，当前全部关闭</CardDescription>
+                    <CardAction>
+                      <Settings2 className="size-4 text-muted-foreground" />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {['全局自动开关', '岗位自动开关', '本任务自动开关'].map(
+                      (label) => (
+                        <div
+                          key={label}
+                          className="flex min-h-9 items-center justify-between gap-3"
+                        >
+                          <span className="text-sm">{label}</span>
+                          <Switch disabled aria-label={`${label}，当前关闭`} />
+                        </div>
+                      ),
+                    )}
+                  </CardContent>
+                </Card>
+              </section>
+              <section className="mt-4">
+                <Card>
+                  <CardHeader className="border-b">
+                    <CardTitle>联系执行记录</CardTitle>
+                    <CardDescription>
+                      跟踪等待、成功、失败与不确定结果
+                    </CardDescription>
+                    <CardAction>
+                      <Badge variant="outline">
+                        {data?.contactIntents.length ?? 0} 条
+                      </Badge>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {data?.contactIntents.length ? (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="pl-4">候选人</TableHead>
+                            <TableHead>岗位</TableHead>
+                            <TableHead>创建时间</TableHead>
+                            <TableHead>错误信息</TableHead>
+                            <TableHead className="pr-4 text-right">
+                              状态
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {data.contactIntents.map((intent) => (
+                            <TableRow key={intent.id}>
+                              <TableCell className="pl-4 font-medium">
+                                {intent.candidateName}
+                              </TableCell>
+                              <TableCell>{intent.positionName}</TableCell>
+                              <TableCell>
+                                {new Date(intent.createdAt).toLocaleString(
+                                  'zh-CN',
+                                )}
+                              </TableCell>
+                              <TableCell className="max-w-[320px] truncate text-xs text-muted-foreground">
+                                {intent.lastError ?? '—'}
+                              </TableCell>
+                              <TableCell className="pr-4 text-right">
+                                <Badge
+                                  variant={
+                                    intent.status === 'sent'
+                                      ? 'secondary'
+                                      : 'outline'
+                                  }
+                                >
+                                  {contactStatusLabel[intent.status]}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
+                      <SectionEmpty
+                        title="暂无联系记录"
+                        description="确认消息预览后会生成联系意图。"
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+              </section>
+            </>
+          ) : null}
+
+          {page === 'audit' ? (
+            <section className="grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
+              <Card>
+                <CardHeader className="border-b">
+                  <CardTitle>审计日志</CardTitle>
+                  <CardDescription>最近 100 条关键业务动作</CardDescription>
+                  <CardAction>
+                    <Badge variant="outline">
+                      {data?.auditLogs.length ?? 0} 条
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="space-y-2 pt-4">
+                  {data?.auditLogs.length ? (
+                    data.auditLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="flex items-center gap-3 rounded-lg border px-3 py-2.5"
+                      >
+                        <div className="grid size-8 place-items-center rounded-lg bg-muted">
+                          <Clock3 className="size-4 text-muted-foreground" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium">
+                            {auditActionLabel[log.action] ?? log.action}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {log.actorId} ·{' '}
+                            {new Date(log.createdAt).toLocaleString('zh-CN')}
+                          </p>
+                        </div>
+                        <Badge variant="outline">
+                          {log.resourceType ?? '业务记录'}
+                        </Badge>
+                      </div>
+                    ))
+                  ) : (
+                    <SectionEmpty
+                      title="暂无审计日志"
+                      description="关键操作完成后会自动记录。"
+                    />
+                  )}
+                </CardContent>
+              </Card>
+              <div className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>安全边界</CardTitle>
+                    <CardDescription>当前运行时保护</CardDescription>
+                    <CardAction>
+                      <ShieldCheck className="size-4 text-success" />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>环境总开关</span>
+                      <Badge variant="outline">关闭</Badge>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>命令行显式批准</span>
+                      <Badge variant="outline">未提供</Badge>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>真实 greet/send</span>
+                      <Badge variant="outline">禁止</Badge>
+                    </div>
+                    <p className="rounded-lg border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">
+                      必须同时开启环境总开关并提供命令行批准参数，联系 Worker
+                      才可能执行真实打招呼。
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>策略保护</CardTitle>
+                    <CardDescription>每次执行前重新检查</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    {[
+                      '人工审核',
+                      '允许时段',
+                      '账号限额',
+                      '岗位限额',
+                      '任务限额',
+                      '跨岗位冷却',
+                      '重复联系',
+                      '结果不确定停止',
+                    ].map((item) => (
+                      <Badge key={item} variant="outline">
+                        {item}
+                      </Badge>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
+            </section>
+          ) : null}
         </main>
       </div>
+
       <PositionRuleDialog
         open={positionDialogOpen}
         onOpenChange={setPositionDialogOpen}
