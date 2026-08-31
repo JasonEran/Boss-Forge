@@ -1,5 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { BossForgeRepository, createDatabase, type RuleConfig } from "@boss-forge/data";
+import {
+  BossForgeRepository,
+  OptimisticLockError,
+  createDatabase,
+  type RuleConfig
+} from "@boss-forge/data";
 
 const host = process.env.CONTROL_API_HOST?.trim() || "127.0.0.1";
 const port = Number(process.env.CONTROL_API_PORT ?? "3100");
@@ -28,6 +33,13 @@ function optionalText(value: unknown, field: string): string | null {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string") throw new Error(`${field} must be a string.`);
   return value.trim() || null;
+}
+
+function integer(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${field} must be a positive integer.`);
+  }
+  return value;
 }
 
 function ruleConfig(value: unknown): RuleConfig {
@@ -143,14 +155,76 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     send(response, 201, { task });
     return;
   }
+  const candidateMatch = url.pathname.match(
+    /^\/api\/candidate-position-states\/([0-9a-f-]+)$/i
+  );
+  if (request.method === "GET" && candidateMatch) {
+    const candidate = await repository.getCandidateDetail(candidateMatch[1]!);
+    if (!candidate) {
+      send(response, 404, { error: "not_found", message: "Candidate state was not found." });
+      return;
+    }
+    send(response, 200, { candidate });
+    return;
+  }
+  const reviewMatch = url.pathname.match(
+    /^\/api\/candidate-position-states\/([0-9a-f-]+)\/reviews$/i
+  );
+  if (request.method === "POST" && reviewMatch) {
+    const idempotencyKey = request.headers["idempotency-key"];
+    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+      throw new Error("Idempotency-Key header is required.");
+    }
+    const body = await readJson(request);
+    const decision = text(body.decision, "decision");
+    if (decision !== "approved" && decision !== "rejected") {
+      throw new Error("decision must be approved or rejected.");
+    }
+    const correctionCode = optionalText(body.correctionCode, "correctionCode");
+    const allowedCorrectionCodes = [
+      "alias_missing",
+      "negative_detection",
+      "concept_confusion",
+      "other"
+    ];
+    if (correctionCode && !allowedCorrectionCodes.includes(correctionCode)) {
+      throw new Error("correctionCode must be a supported correction code.");
+    }
+    const review = await repository.reviewCandidate({
+      stateId: reviewMatch[1]!,
+      idempotencyKey: idempotencyKey.trim(),
+      decision,
+      note: optionalText(body.note, "note") ?? "",
+      correctionCode,
+      reviewerId: text(body.reviewerId, "reviewerId"),
+      expectedVersion: integer(body.expectedVersion, "expectedVersion")
+    });
+    send(response, 201, { review });
+    return;
+  }
   send(response, 404, { error: "not_found" });
 }
 
 const server = createServer((request, response) => {
   void route(request, response).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes("required") || message.includes("must") ? 400 : 500;
-    send(response, status, { error: status === 400 ? "invalid_request" : "internal_error", message });
+    const status =
+      error instanceof OptimisticLockError
+        ? 409
+        : message.includes("not found")
+          ? 404
+          : message.includes("required") || message.includes("must")
+            ? 400
+            : 500;
+    const code =
+      status === 409
+        ? "version_conflict"
+        : status === 404
+          ? "not_found"
+          : status === 400
+            ? "invalid_request"
+            : "internal_error";
+    send(response, status, { error: code, message });
   });
 });
 

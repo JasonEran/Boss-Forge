@@ -84,9 +84,42 @@ export type DashboardCandidate = {
   ruleConfidence: number;
   reviewStatus: "pending" | "approved" | "rejected" | "not_required";
   contactStatus: "not_contacted" | "queued" | "sent" | "failed" | "uncertain";
+  stateVersion: number;
   evidence: string[];
   fields: Record<string, string>;
   updatedAt: string;
+};
+
+export type ReviewRecord = {
+  id: string;
+  decision: "approved" | "rejected";
+  note: string;
+  correctionCode: string | null;
+  reviewerId: string;
+  previousStatus: DashboardCandidate["reviewStatus"];
+  resultingVersion: number;
+  createdAt: string;
+};
+
+export type MatchEvidenceRecord = {
+  capabilityId: string;
+  canonicalLabel: string;
+  dictionaryVersion: string;
+  sourceText: string;
+  normalizedAlias: string;
+  status: "positive" | "negative" | "ambiguous";
+  confidence: number;
+  reasonCodes: string[];
+};
+
+export type CandidateDetail = DashboardCandidate & {
+  rawText: string;
+  source: string;
+  collectedAt: string;
+  ruleVersion: number;
+  dictionaryVersion: string;
+  matchEvidence: MatchEvidenceRecord[];
+  reviews: ReviewRecord[];
 };
 
 export type DashboardSnapshot = {

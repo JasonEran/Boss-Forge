@@ -6,11 +6,13 @@ import {
   CalendarClock,
   CheckCircle2,
   CircleGauge,
+  Eye,
   FileSearch,
   ListChecks,
   LoaderCircle,
   MessageSquareText,
   Play,
+  Plus,
   RefreshCw,
   SearchCheck,
   Settings2,
@@ -30,6 +32,13 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import {
   Table,
@@ -39,6 +48,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { CandidateReviewDialog } from './candidate-review-dialog';
+import { PositionRuleDialog } from './position-rule-dialog';
 
 type Position = { id: string; name: string };
 type Task = {
@@ -61,6 +72,7 @@ type Candidate = {
   positionName: string;
   ruleDecision: 'matched' | 'not_matched' | 'ambiguous' | 'insufficient';
   ruleConfidence: number;
+  stateVersion: number;
   evidence: string[];
   fields: Record<string, string>;
 };
@@ -127,13 +139,25 @@ export function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [selectedPositionId, setSelectedPositionId] = useState('');
+  const [positionDialogOpen, setPositionDialogOpen] = useState(false);
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [selectedCandidateStateId, setSelectedCandidateStateId] = useState<
+    string | null
+  >(null);
 
   const loadDashboard = useCallback(async () => {
     try {
       const response = await fetch(`${controlApi}/api/dashboard`, {
         cache: 'no-store',
       });
-      setData(await responseJson<DashboardData>(response));
+      const nextData = await responseJson<DashboardData>(response);
+      setData(nextData);
+      setSelectedPositionId((current) =>
+        current && nextData.positions.some((item) => item.id === current)
+          ? current
+          : (nextData.positions[0]?.id ?? ''),
+      );
       setError(null);
     } catch (loadError) {
       setError(
@@ -152,7 +176,9 @@ export function DashboardClient() {
   }, [loadDashboard]);
 
   const latestTask = data?.tasks[0];
-  const position = data?.positions[0];
+  const position =
+    data?.positions.find((item) => item.id === selectedPositionId) ??
+    data?.positions[0];
   const metrics = useMemo(
     () => [
       {
@@ -209,6 +235,16 @@ export function DashboardClient() {
     } finally {
       setCreatingTask(false);
     }
+  }
+
+  async function positionCreated(positionId: string) {
+    setSelectedPositionId(positionId);
+    await loadDashboard();
+  }
+
+  function openCandidateReview(stateId: string) {
+    setSelectedCandidateStateId(stateId);
+    setReviewDialogOpen(true);
   }
 
   return (
@@ -305,6 +341,29 @@ export function DashboardClient() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Select
+                value={position?.id ?? null}
+                onValueChange={(value) => setSelectedPositionId(value ?? '')}
+              >
+                <SelectTrigger className="h-9 min-w-44">
+                  <SelectValue placeholder="选择岗位" />
+                </SelectTrigger>
+                <SelectContent>
+                  {data?.positions.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => setPositionDialogOpen(true)}
+              >
+                <Plus data-icon="inline-start" aria-hidden="true" />
+                新建岗位规则
+              </Button>
               <Button variant="outline" size="lg" disabled>
                 <CalendarClock data-icon="inline-start" aria-hidden="true" />
                 定时任务·M2
@@ -505,7 +564,8 @@ export function DashboardClient() {
                         <TableHead>匹配岗位</TableHead>
                         <TableHead>原文证据</TableHead>
                         <TableHead>置信度</TableHead>
-                        <TableHead className="pr-4">结论</TableHead>
+                        <TableHead>结论</TableHead>
+                        <TableHead className="pr-4 text-right">操作</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -526,7 +586,7 @@ export function DashboardClient() {
                           <TableCell className="font-medium tabular-nums">
                             {Math.round(candidate.ruleConfidence * 100)}%
                           </TableCell>
-                          <TableCell className="pr-4">
+                          <TableCell>
                             <Badge
                               variant={
                                 candidate.ruleDecision === 'matched'
@@ -536,6 +596,18 @@ export function DashboardClient() {
                             >
                               {decisionLabel[candidate.ruleDecision]}
                             </Badge>
+                          </TableCell>
+                          <TableCell className="pr-4 text-right">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                openCandidateReview(candidate.stateId)
+                              }
+                            >
+                              <Eye aria-hidden="true" />
+                              审核
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -547,6 +619,19 @@ export function DashboardClient() {
           </section>
         </main>
       </div>
+      <PositionRuleDialog
+        open={positionDialogOpen}
+        onOpenChange={setPositionDialogOpen}
+        controlApi={controlApi}
+        onCreated={positionCreated}
+      />
+      <CandidateReviewDialog
+        open={reviewDialogOpen}
+        stateId={selectedCandidateStateId}
+        controlApi={controlApi}
+        onOpenChange={setReviewDialogOpen}
+        onReviewed={loadDashboard}
+      />
     </div>
   );
 }

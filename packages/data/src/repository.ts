@@ -2,13 +2,25 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "./client.js";
 import type {
   CandidateEvaluationRecord,
+  CandidateDetail,
   DashboardCandidate,
   DashboardSnapshot,
   Position,
   RuleConfig,
   RuleVersion,
+  ReviewRecord,
   Task
 } from "./types.js";
+
+export class OptimisticLockError extends Error {
+  constructor(
+    readonly expectedVersion: number,
+    readonly actualVersion: number
+  ) {
+    super(`State version conflict: expected ${expectedVersion}, actual ${actualVersion}.`);
+    this.name = "OptimisticLockError";
+  }
+}
 
 type PositionRow = {
   id: string;
@@ -287,7 +299,12 @@ export class BossForgeRepository {
             rule_version_id = EXCLUDED.rule_version_id,
             rule_decision = EXCLUDED.rule_decision,
             rule_confidence = EXCLUDED.rule_confidence,
-            review_status = EXCLUDED.review_status,
+            review_status = CASE
+              WHEN candidate_position_states.review_status IN ('approved', 'rejected')
+                THEN candidate_position_states.review_status
+              ELSE EXCLUDED.review_status
+            END,
+            version = candidate_position_states.version + 1,
             updated_at = now()
           RETURNING id
         `;
@@ -331,6 +348,234 @@ export class BossForgeRepository {
     `;
   }
 
+  async getCandidateDetail(stateId: string): Promise<CandidateDetail | null> {
+    const rows = await this.sql<
+      Array<{
+        state_id: string;
+        candidate_id: string;
+        display_name: string;
+        position_name: string;
+        rule_decision: DashboardCandidate["ruleDecision"];
+        rule_confidence: number;
+        review_status: DashboardCandidate["reviewStatus"];
+        contact_status: DashboardCandidate["contactStatus"];
+        state_version: number;
+        source_evidence: string[];
+        raw_fields: Record<string, string>;
+        raw_text: string;
+        source: string;
+        collected_at: Date;
+        updated_at: Date;
+        rule_version: number;
+        dictionary_version: string;
+      }>
+    >`
+      SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
+        p.name AS position_name, cps.rule_decision, cps.rule_confidence,
+        cps.review_status, cps.contact_status, cps.version AS state_version,
+        cs.source_evidence, cs.raw_fields, cs.raw_text, cs.source, cs.collected_at,
+        cps.updated_at, rv.version AS rule_version, rv.dictionary_version
+      FROM candidate_position_states cps
+      JOIN candidates c ON c.id = cps.candidate_id
+      JOIN positions p ON p.id = cps.position_id
+      JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
+      JOIN rule_versions rv ON rv.id = cps.rule_version_id
+      WHERE cps.id = ${stateId}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const [evidenceRows, reviewRows] = await Promise.all([
+      this.sql<
+        Array<{
+          capability_id: string;
+          canonical_label: string;
+          dictionary_version: string;
+          source_text: string;
+          normalized_alias: string;
+          evidence_status: "positive" | "negative" | "ambiguous";
+          confidence: number;
+          reason_codes: string[];
+        }>
+      >`
+        SELECT capability_id, canonical_label, dictionary_version, source_text,
+          normalized_alias, evidence_status, confidence, reason_codes
+        FROM match_evidence
+        WHERE candidate_position_state_id = ${stateId}
+        ORDER BY created_at ASC
+      `,
+      this.sql<
+        Array<{
+          id: string;
+          candidate_position_state_id: string;
+          decision: ReviewRecord["decision"];
+          note: string;
+          correction_code: string | null;
+          reviewer_id: string;
+          previous_status: ReviewRecord["previousStatus"];
+          resulting_version: number;
+          created_at: Date;
+        }>
+      >`
+        SELECT id, candidate_position_state_id, decision, note, correction_code, reviewer_id,
+          previous_status, resulting_version, created_at
+        FROM reviews
+        WHERE candidate_position_state_id = ${stateId}
+        ORDER BY created_at DESC
+      `
+    ]);
+    return {
+      stateId: row.state_id,
+      candidateId: row.candidate_id,
+      name: row.display_name,
+      positionName: row.position_name,
+      ruleDecision: row.rule_decision,
+      ruleConfidence: row.rule_confidence,
+      reviewStatus: row.review_status,
+      contactStatus: row.contact_status,
+      stateVersion: row.state_version,
+      evidence: row.source_evidence,
+      fields: row.raw_fields,
+      updatedAt: iso(row.updated_at),
+      rawText: row.raw_text,
+      source: row.source,
+      collectedAt: iso(row.collected_at),
+      ruleVersion: row.rule_version,
+      dictionaryVersion: row.dictionary_version,
+      matchEvidence: evidenceRows.map((item) => ({
+        capabilityId: item.capability_id,
+        canonicalLabel: item.canonical_label,
+        dictionaryVersion: item.dictionary_version,
+        sourceText: item.source_text,
+        normalizedAlias: item.normalized_alias,
+        status: item.evidence_status,
+        confidence: item.confidence,
+        reasonCodes: item.reason_codes
+      })),
+      reviews: reviewRows.map((item) => ({
+        id: item.id,
+        decision: item.decision,
+        note: item.note,
+        correctionCode: item.correction_code,
+        reviewerId: item.reviewer_id,
+        previousStatus: item.previous_status,
+        resultingVersion: item.resulting_version,
+        createdAt: iso(item.created_at)
+      }))
+    };
+  }
+
+  async reviewCandidate(input: {
+    stateId: string;
+    idempotencyKey: string;
+    decision: "approved" | "rejected";
+    note: string;
+    correctionCode?: string | null;
+    reviewerId: string;
+    expectedVersion: number;
+  }): Promise<ReviewRecord> {
+    return this.sql.begin(async (transaction) => {
+      const existing = await transaction<
+        Array<{
+          id: string;
+          candidate_position_state_id: string;
+          decision: ReviewRecord["decision"];
+          note: string;
+          correction_code: string | null;
+          reviewer_id: string;
+          previous_status: ReviewRecord["previousStatus"];
+          resulting_version: number;
+          created_at: Date;
+        }>
+      >`
+        SELECT id, candidate_position_state_id, decision, note, correction_code, reviewer_id,
+          previous_status, resulting_version, created_at
+        FROM reviews WHERE idempotency_key = ${input.idempotencyKey}
+      `;
+      const replay = existing[0];
+      if (replay) {
+        if (replay.candidate_position_state_id !== input.stateId) {
+          throw new Error("Idempotency-Key is already used for another candidate state.");
+        }
+        return {
+          id: replay.id,
+          decision: replay.decision,
+          note: replay.note,
+          correctionCode: replay.correction_code,
+          reviewerId: replay.reviewer_id,
+          previousStatus: replay.previous_status,
+          resultingVersion: replay.resulting_version,
+          createdAt: iso(replay.created_at)
+        };
+      }
+      const stateRows = await transaction<
+        Array<{ version: number; review_status: ReviewRecord["previousStatus"] }>
+      >`
+        SELECT version, review_status FROM candidate_position_states
+        WHERE id = ${input.stateId}
+        FOR UPDATE
+      `;
+      const state = stateRows[0];
+      if (!state) throw new Error("Candidate state was not found.");
+      if (state.version !== input.expectedVersion) {
+        throw new OptimisticLockError(input.expectedVersion, state.version);
+      }
+      const reviewId = randomUUID();
+      const resultingVersion = state.version + 1;
+      const rows = await transaction<
+        Array<{
+          id: string;
+          decision: ReviewRecord["decision"];
+          note: string;
+          correction_code: string | null;
+          reviewer_id: string;
+          previous_status: ReviewRecord["previousStatus"];
+          resulting_version: number;
+          created_at: Date;
+        }>
+      >`
+        INSERT INTO reviews (
+          id, candidate_position_state_id, idempotency_key, decision, note,
+          correction_code, reviewer_id, previous_status, resulting_version
+        ) VALUES (
+          ${reviewId}, ${input.stateId}, ${input.idempotencyKey}, ${input.decision},
+          ${input.note}, ${input.correctionCode ?? null}, ${input.reviewerId},
+          ${state.review_status}, ${resultingVersion}
+        ) RETURNING id, decision, note, correction_code, reviewer_id,
+          previous_status, resulting_version, created_at
+      `;
+      await transaction`
+        UPDATE candidate_position_states
+        SET review_status = ${input.decision}, version = ${resultingVersion}, updated_at = now()
+        WHERE id = ${input.stateId}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (
+          id, actor_id, action, resource_type, resource_id, payload
+        ) VALUES (
+          ${randomUUID()}, ${input.reviewerId}, ${`candidate.review.${input.decision}`},
+          'candidate_position_state', ${input.stateId},
+          ${transaction.json({
+            reviewId,
+            previousStatus: state.review_status,
+            resultingVersion,
+            correctionCode: input.correctionCode ?? null
+          })}
+        )
+      `;
+      const row = rows[0]!;
+      return {
+        id: row.id,
+        decision: row.decision,
+        note: row.note,
+        correctionCode: row.correction_code,
+        reviewerId: row.reviewer_id,
+        previousStatus: row.previous_status,
+        resultingVersion: row.resulting_version,
+        createdAt: iso(row.created_at)
+      };
+    });
+  }
+
   async getDashboard(): Promise<DashboardSnapshot> {
     const [positions, taskRows, candidateRows, metricRows] = await Promise.all([
       this.listPositions(),
@@ -345,6 +590,7 @@ export class BossForgeRepository {
           rule_confidence: number;
           review_status: DashboardCandidate["reviewStatus"];
           contact_status: DashboardCandidate["contactStatus"];
+          state_version: number;
           source_evidence: string[];
           raw_fields: Record<string, string>;
           updated_at: Date;
@@ -352,7 +598,8 @@ export class BossForgeRepository {
       >`
         SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
           p.name AS position_name, cps.rule_decision, cps.rule_confidence,
-          cps.review_status, cps.contact_status, cs.source_evidence, cs.raw_fields,
+          cps.review_status, cps.contact_status, cps.version AS state_version,
+          cs.source_evidence, cs.raw_fields,
           cps.updated_at
         FROM candidate_position_states cps
         JOIN candidates c ON c.id = cps.candidate_id
@@ -401,6 +648,7 @@ export class BossForgeRepository {
         ruleConfidence: row.rule_confidence,
         reviewStatus: row.review_status,
         contactStatus: row.contact_status,
+        stateVersion: row.state_version,
         evidence: row.source_evidence,
         fields: row.raw_fields,
         updatedAt: iso(row.updated_at)

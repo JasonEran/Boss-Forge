@@ -38,7 +38,7 @@ pnpm m0 -- live positions
 pnpm web:dev
 ```
 
-浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1 控制 API，可创建立即筛选任务并查看真实采集结果；人工审核和联系操作在 M2 开放。
+浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1 控制 API，可配置岗位与 TEM8 规则、创建立即筛选任务、查看采集证据并进行人工审核；联系操作在 M2 开放。
 
 ## M1 本地数据闭环
 
