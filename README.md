@@ -8,6 +8,7 @@
 - [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
 - [M1 数据闭环运行手册](docs/M1_RUNBOOK.md)
+- [M2 定时筛选与受控联系运行手册](docs/M2_RUNBOOK.md)
 - [两阶段交付计划](docs/TWO_PHASE_DELIVERY_PLAN.md)
 - [boss-cli 能力复用清单](docs/BOSS_CLI_REUSE_MATRIX.md)
 - [HR Dashboard 需求思维导图](docs/HR_DASHBOARD_MINDMAP.md)
@@ -38,7 +39,7 @@ pnpm m0 -- live positions
 pnpm web:dev
 ```
 
-浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1 控制 API，可配置岗位与 TEM8 规则、创建立即筛选任务、查看采集证据并进行人工审核；联系操作在 M2 开放。
+浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1/M2 控制 API，可配置岗位与 TEM8 规则、立即或定时筛选、查看采集证据、人工审核、预览消息并创建受控联系任务。真实打招呼默认关闭。
 
 ## M1 本地数据闭环
 
@@ -58,3 +59,7 @@ pnpm web:dev
 ```
 
 此时 Dashboard 的“立即执行筛选”会创建幂等任务，Worker 从 BOSS 读取推荐候选人，去重、评估 TEM8 规则后写入 PostgreSQL 待审核列表。
+
+## M2 安全边界
+
+M2 已实现定时筛选、人工审核后的消息预览、显式联系确认、Outbox、限额/时段/冷却策略、失败与不确定结果恢复和审计日志。真实 `boss-cli greet` 执行需要 `--approve-real-greet` 与 `BOSS_FORGE_REAL_GREET_ENABLED=1` 同时存在；本轮没有进行真实打招呼测试，详见 [M2 运行手册](docs/M2_RUNBOOK.md)。

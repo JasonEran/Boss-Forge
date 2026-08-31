@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@boss-forge/contact-policy": "workspace:*",
     "postgres": "3.4.7"
   }
 }

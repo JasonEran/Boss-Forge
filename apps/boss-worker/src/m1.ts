@@ -3,7 +3,7 @@ import {
   runBossCommand,
   type BossCommand
 } from "@boss-forge/boss-cli-adapter";
-import { BossForgeRepository, createDatabase, type Task } from "@boss-forge/data";
+import { BossForgeRepository, M2Repository, createDatabase, type Task } from "@boss-forge/data";
 import { evaluateCandidate } from "@boss-forge/m1-core";
 import { withAccountLock } from "./account-lock.js";
 import { writeHeartbeat } from "./heartbeat.js";
@@ -76,9 +76,11 @@ async function main(): Promise<void> {
   const loop = process.argv.includes("--loop");
   const sql = createDatabase();
   const repository = new BossForgeRepository(sql);
+  const m2Repository = new M2Repository(sql);
   try {
     await writeHeartbeat({ state: "ready" });
     if (!loop) {
+      await m2Repository.materializeDueSchedules();
       const processed = await processNextTask(repository);
       if (!processed) console.log(JSON.stringify({ ok: true, event: "m1.no_queued_task" }));
       return;
@@ -86,6 +88,10 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ ok: true, event: "m1.worker.ready", pollIntervalMs: POLL_INTERVAL_MS }));
     while (!stopping) {
       try {
+        const scheduled = await m2Repository.materializeDueSchedules();
+        if (scheduled > 0) {
+          console.log(JSON.stringify({ ok: true, event: "m2.schedules.materialized", count: scheduled }));
+        }
         const processed = await processNextTask(repository);
         if (!processed) await waitForNextPoll();
       } catch (error: unknown) {

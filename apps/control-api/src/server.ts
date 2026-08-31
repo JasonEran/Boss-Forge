@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   BossForgeRepository,
+  M2Repository,
   OptimisticLockError,
   createDatabase,
   type RuleConfig
@@ -11,6 +12,7 @@ const port = Number(process.env.CONTROL_API_PORT ?? "3100");
 const webOrigin = process.env.CONTROL_WEB_ORIGIN?.trim() || "http://localhost:3000";
 const sql = createDatabase();
 const repository = new BossForgeRepository(sql);
+const m2Repository = new M2Repository(sql);
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,6 +42,18 @@ function integer(value: unknown, field: string): number {
     throw new Error(`${field} must be a positive integer.`);
   }
   return value;
+}
+
+function shanghaiMinuteOfDay(date: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+  return hour * 60 + minute;
 }
 
 function ruleConfig(value: unknown): RuleConfig {
@@ -100,7 +114,13 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
-    send(response, 200, await repository.getDashboard());
+    const [dashboard, schedules, contactIntents, auditLogs] = await Promise.all([
+      repository.getDashboard(),
+      m2Repository.listSchedules(),
+      m2Repository.listContactIntents(),
+      m2Repository.listAuditLogs()
+    ]);
+    send(response, 200, { ...dashboard, schedules, contactIntents, auditLogs });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/positions") {
@@ -155,6 +175,50 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     send(response, 201, { task });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/schedules") {
+    const idempotencyKey = request.headers["idempotency-key"];
+    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+      throw new Error("Idempotency-Key header is required.");
+    }
+    const body = await readJson(request);
+    const source = text(body.source, "source");
+    if (source !== "recommend" && source !== "search") {
+      throw new Error("source must be recommend or search.");
+    }
+    const frequency = text(body.frequency, "frequency");
+    if (!["once", "daily", "weekdays", "weekly"].includes(frequency)) {
+      throw new Error("frequency must be once, daily, weekdays or weekly.");
+    }
+    const searchKeyword = optionalText(body.searchKeyword, "searchKeyword");
+    if (source === "search" && !searchKeyword) {
+      throw new Error("searchKeyword is required when source is search.");
+    }
+    const nextRunAt = text(body.nextRunAt, "nextRunAt");
+    if (Date.parse(nextRunAt) <= Date.now()) throw new Error("nextRunAt must be in the future.");
+    const schedule = await m2Repository.createSchedule({
+      idempotencyKey: idempotencyKey.trim(),
+      positionId: text(body.positionId, "positionId"),
+      source,
+      searchKeyword,
+      frequency: frequency as "once" | "daily" | "weekdays" | "weekly",
+      timezone: "Asia/Shanghai",
+      nextRunAt,
+      createdBy: text(body.createdBy, "createdBy")
+    });
+    send(response, 201, { schedule });
+    return;
+  }
+  const cancelScheduleMatch = url.pathname.match(/^\/api\/schedules\/([0-9a-f-]+)\/cancel$/i);
+  if (request.method === "POST" && cancelScheduleMatch) {
+    const body = await readJson(request);
+    const schedule = await m2Repository.cancelSchedule({
+      scheduleId: cancelScheduleMatch[1]!,
+      expectedVersion: integer(body.expectedVersion, "expectedVersion"),
+      actorId: text(body.actorId, "actorId")
+    });
+    send(response, 200, { schedule });
+    return;
+  }
   const candidateMatch = url.pathname.match(
     /^\/api\/candidate-position-states\/([0-9a-f-]+)$/i
   );
@@ -165,6 +229,43 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return;
     }
     send(response, 200, { candidate });
+    return;
+  }
+  const previewMatch = url.pathname.match(
+    /^\/api\/candidate-position-states\/([0-9a-f-]+)\/message-preview$/i
+  );
+  if (request.method === "GET" && previewMatch) {
+    send(response, 200, { preview: await m2Repository.previewMessage(previewMatch[1]!) });
+    return;
+  }
+  const contactMatch = url.pathname.match(
+    /^\/api\/candidate-position-states\/([0-9a-f-]+)\/contact-intents$/i
+  );
+  if (request.method === "POST" && contactMatch) {
+    const idempotencyKey = request.headers["idempotency-key"];
+    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+      throw new Error("Idempotency-Key header is required.");
+    }
+    const body = await readJson(request);
+    const preview = await m2Repository.previewMessage(contactMatch[1]!);
+    const requestedVersionId = text(body.templateVersionId, "templateVersionId");
+    if (requestedVersionId !== preview.templateVersionId) {
+      throw new Error("templateVersionId is no longer active; refresh the preview.");
+    }
+    if (!preview.renderedMessage.trim() || preview.renderedMessage.length > 500) {
+      throw new Error("Rendered message must contain 1 to 500 characters.");
+    }
+    const now = new Date();
+    const intent = await m2Repository.createManualContactIntent({
+      stateId: contactMatch[1]!,
+      idempotencyKey: idempotencyKey.trim(),
+      templateVersionId: preview.templateVersionId,
+      renderedMessage: preview.renderedMessage,
+      createdBy: text(body.createdBy, "createdBy"),
+      localMinuteOfDay: shanghaiMinuteOfDay(now),
+      now: now.toISOString()
+    });
+    send(response, 201, { intent, realGreetingEnabled: false });
     return;
   }
   const reviewMatch = url.pathname.match(
@@ -211,19 +312,23 @@ const server = createServer((request, response) => {
     const status =
       error instanceof OptimisticLockError
         ? 409
-        : message.includes("not found")
-          ? 404
-          : message.includes("required") || message.includes("must")
-            ? 400
-            : 500;
+        : message.includes("policy blocked") || message.includes("version conflict")
+          ? 409
+          : message.includes("not found")
+            ? 404
+            : message.includes("required") || message.includes("must")
+              ? 400
+              : 500;
     const code =
-      status === 409
+      error instanceof OptimisticLockError
         ? "version_conflict"
-        : status === 404
-          ? "not_found"
-          : status === 400
-            ? "invalid_request"
-            : "internal_error";
+        : status === 409
+          ? "conflict"
+          : status === 404
+            ? "not_found"
+            : status === 400
+              ? "invalid_request"
+              : "internal_error";
     send(response, status, { error: code, message });
   });
 });

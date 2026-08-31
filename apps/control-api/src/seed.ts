@@ -1,9 +1,10 @@
-import { BossForgeRepository, createDatabase } from "@boss-forge/data";
+import { BossForgeRepository, M2Repository, createDatabase } from "@boss-forge/data";
 
 async function main(): Promise<void> {
   const sql = createDatabase();
   try {
     const repository = new BossForgeRepository(sql);
+    const m2Repository = new M2Repository(sql);
     const position = await repository.createPosition({
       bossAccountId: process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01",
       name: "当前登录岗位",
@@ -19,7 +20,12 @@ async function main(): Promise<void> {
       dictionaryVersion: "2026.08.1",
       createdBy: "system:m1-seed"
     });
-    console.log(JSON.stringify({ ok: true, position, version }, null, 2));
+    const templateVersionId = await m2Repository.ensureMessageTemplate({
+      name: "默认人工联系模板",
+      body: "你好 {{candidate_name}}，我们正在招聘{{position_name}}，看到你的经历与岗位比较匹配，方便进一步沟通吗？",
+      createdBy: "system:m2-seed"
+    });
+    console.log(JSON.stringify({ ok: true, position, version, templateVersionId }, null, 2));
   } finally {
     await sql.end();
   }

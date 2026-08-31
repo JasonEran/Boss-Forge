@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   UsersRound,
+  XCircle,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -49,7 +50,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { CandidateReviewDialog } from './candidate-review-dialog';
+import { ContactPreviewDialog } from './contact-preview-dialog';
 import { PositionRuleDialog } from './position-rule-dialog';
+import { ScheduleDialog } from './schedule-dialog';
 
 type Position = { id: string; name: string };
 type Task = {
@@ -75,7 +78,27 @@ type Candidate = {
   stateVersion: number;
   evidence: string[];
   fields: Record<string, string>;
+  reviewStatus: 'pending' | 'approved' | 'rejected' | 'not_required';
+  contactStatus: 'not_contacted' | 'queued' | 'sent' | 'failed' | 'uncertain';
 };
+type Schedule = {
+  id: string;
+  positionName: string;
+  source: 'recommend' | 'search';
+  frequency: 'once' | 'daily' | 'weekdays' | 'weekly';
+  nextRunAt: string;
+  enabled: boolean;
+  version: number;
+};
+type ContactIntent = {
+  id: string;
+  candidateName: string;
+  positionName: string;
+  status: 'ready' | 'processing' | 'sent' | 'failed' | 'uncertain' | 'cancelled';
+  createdAt: string;
+  lastError: string | null;
+};
+type AuditLog = { id: string; actorId: string; action: string; createdAt: string };
 type DashboardData = {
   metrics: {
     totalCandidates: number;
@@ -86,6 +109,9 @@ type DashboardData = {
   positions: Position[];
   tasks: Task[];
   candidates: Candidate[];
+  schedules: Schedule[];
+  contactIntents: ContactIntent[];
+  auditLogs: AuditLog[];
 };
 
 const controlApi =
@@ -96,7 +122,7 @@ const navigation = [
   { label: '任务中心', icon: ListChecks, href: '#tasks' },
   { label: '候选人审核', icon: UsersRound, href: '#candidates' },
   { label: '自动化控制', icon: ShieldCheck, href: '#automation' },
-  { label: '审计日志', icon: FileSearch },
+  { label: '审计日志', icon: FileSearch, href: '#audit' },
 ];
 const taskStatus: Record<Task['status'], string> = {
   queued: '等待 Worker',
@@ -141,7 +167,9 @@ export function DashboardClient() {
   const [creatingTask, setCreatingTask] = useState(false);
   const [selectedPositionId, setSelectedPositionId] = useState('');
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [selectedCandidateStateId, setSelectedCandidateStateId] = useState<
     string | null
   >(null);
@@ -208,6 +236,8 @@ export function DashboardClient() {
     ],
     [data],
   );
+  const pendingCandidates = data?.candidates.filter((candidate) => candidate.reviewStatus === 'pending') ?? [];
+  const approvedCandidates = data?.candidates.filter((candidate) => candidate.reviewStatus === 'approved') ?? [];
 
   async function createImmediateTask() {
     if (!position || creatingTask) return;
@@ -247,6 +277,25 @@ export function DashboardClient() {
     setReviewDialogOpen(true);
   }
 
+  function openContactPreview(stateId: string) {
+    setSelectedCandidateStateId(stateId);
+    setContactDialogOpen(true);
+  }
+
+  async function cancelSchedule(schedule: Schedule) {
+    try {
+      const response = await fetch(`${controlApi}/api/schedules/${schedule.id}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedVersion: schedule.version, actorId: 'hr:dashboard' }),
+      });
+      await responseJson(response);
+      await loadDashboard();
+    } catch (cancelError) {
+      setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-20 flex h-16 items-center border-b bg-card/95 px-4 backdrop-blur sm:px-6">
@@ -266,7 +315,7 @@ export function DashboardClient() {
             variant="secondary"
             className="hidden border border-border sm:inline-flex"
           >
-            M1 · 数据闭环
+            M1 + M2 · 受控闭环
           </Badge>
           <div className="hidden text-right md:block">
             <p className="text-xs font-medium">招聘账号 01</p>
@@ -316,7 +365,7 @@ export function DashboardClient() {
               安全模式
             </div>
             <p className="text-xs leading-5 text-muted-foreground">
-              当前只采集和评估候选人，不会自动发送消息。
+              可预览并创建联系任务；真实发送总开关关闭。
             </p>
           </div>
         </aside>
@@ -364,9 +413,9 @@ export function DashboardClient() {
                 <Plus data-icon="inline-start" aria-hidden="true" />
                 新建岗位规则
               </Button>
-              <Button variant="outline" size="lg" disabled>
+              <Button variant="outline" size="lg" disabled={!position} onClick={() => setScheduleDialogOpen(true)}>
                 <CalendarClock data-icon="inline-start" aria-hidden="true" />
-                定时任务·M2
+                定时筛选
               </Button>
               <Button
                 size="lg"
@@ -415,7 +464,7 @@ export function DashboardClient() {
             <div className="min-w-0">
               <p className="text-sm font-semibold">自动打招呼总开关已关闭</p>
               <p className="text-xs leading-5 text-muted-foreground">
-                M1 只会读取候选人并写入待审核列表。
+                筛选、审核和消息预览可用；当前不会调用 BOSS 打招呼命令。
               </p>
             </div>
             <Badge variant="outline" className="sm:ml-auto">
@@ -488,7 +537,7 @@ export function DashboardClient() {
                 <div className="grid grid-cols-3 gap-2 text-xs">
                   <div>
                     <p className="text-muted-foreground">执行方式</p>
-                    <p className="mt-1 font-medium">立即执行</p>
+                    <p className="mt-1 font-medium">{latestTask?.source === 'search' ? '搜索' : '推荐'}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">已采集</p>
@@ -511,7 +560,7 @@ export function DashboardClient() {
             <Card id="automation" className="scroll-mt-20">
               <CardHeader>
                 <CardTitle>自动化控制</CardTitle>
-                <CardDescription>第二阶段能力已预留，默认关闭</CardDescription>
+                <CardDescription>第二阶段已就绪，真实发送默认关闭</CardDescription>
                 <CardAction>
                   <Settings2
                     className="size-4 text-muted-foreground"
@@ -535,6 +584,44 @@ export function DashboardClient() {
             </Card>
           </section>
 
+          <section className="mt-4 grid gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader className="border-b">
+                <CardTitle>定时筛选</CardTitle>
+                <CardDescription>按上海时区生成筛选任务</CardDescription>
+                <CardAction><Badge variant="outline">{data?.schedules.filter((item) => item.enabled).length ?? 0} 个启用</Badge></CardAction>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-4">
+                {data?.schedules.length ? data.schedules.slice(0, 5).map((schedule) => (
+                  <div key={schedule.id} className="flex items-center gap-3 rounded-lg border px-3 py-2">
+                    <CalendarClock className="size-4 text-muted-foreground" aria-hidden="true" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{schedule.positionName}</p>
+                      <p className="text-xs text-muted-foreground">{schedule.frequency} · {new Date(schedule.nextRunAt).toLocaleString('zh-CN')}</p>
+                    </div>
+                    {schedule.enabled ? <Button variant="ghost" size="sm" onClick={() => void cancelSchedule(schedule)}><XCircle />停用</Button> : <Badge variant="outline">已停用</Badge>}
+                  </div>
+                )) : <p className="py-6 text-center text-sm text-muted-foreground">暂无定时任务</p>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="border-b">
+                <CardTitle>联系执行记录</CardTitle>
+                <CardDescription>消息状态与失败原因可追踪</CardDescription>
+                <CardAction><Badge variant="outline">真实发送关闭</Badge></CardAction>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-4">
+                {data?.contactIntents.length ? data.contactIntents.slice(0, 5).map((intent) => (
+                  <div key={intent.id} className="flex items-center gap-3 rounded-lg border px-3 py-2">
+                    <MessageSquareText className="size-4 text-muted-foreground" aria-hidden="true" />
+                    <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{intent.candidateName} · {intent.positionName}</p><p className="truncate text-xs text-muted-foreground">{intent.lastError ?? new Date(intent.createdAt).toLocaleString('zh-CN')}</p></div>
+                    <Badge variant={intent.status === 'sent' ? 'secondary' : 'outline'}>{intent.status}</Badge>
+                  </div>
+                )) : <p className="py-6 text-center text-sm text-muted-foreground">暂无联系任务</p>}
+              </CardContent>
+            </Card>
+          </section>
+
           <section id="candidates" className="mt-4 scroll-mt-20">
             <Card>
               <CardHeader className="border-b">
@@ -549,7 +636,7 @@ export function DashboardClient() {
                 </CardAction>
               </CardHeader>
               <CardContent className="px-0">
-                {data && data.candidates.length === 0 ? (
+                {data && pendingCandidates.length === 0 ? (
                   <div className="px-4 py-12 text-center">
                     <p className="text-sm font-medium">暂无待审核候选人</p>
                     <p className="mt-1 text-xs text-muted-foreground">
@@ -569,7 +656,7 @@ export function DashboardClient() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data?.candidates.slice(0, 12).map((candidate) => (
+                      {pendingCandidates.slice(0, 12).map((candidate) => (
                         <TableRow key={candidate.stateId}>
                           <TableCell className="pl-4">
                             <p className="font-medium">{candidate.name}</p>
@@ -617,6 +704,29 @@ export function DashboardClient() {
               </CardContent>
             </Card>
           </section>
+
+          <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
+            <Card>
+              <CardHeader className="border-b">
+                <CardTitle>已通过人工审核</CardTitle>
+                <CardDescription>先预览消息，再显式创建联系任务</CardDescription>
+                <CardAction><Badge variant="outline">{approvedCandidates.length} 人</Badge></CardAction>
+              </CardHeader>
+              <CardContent className="px-0">
+                {approvedCandidates.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">暂无已通过候选人</p> : (
+                  <Table><TableHeader><TableRow><TableHead className="pl-4">候选人</TableHead><TableHead>岗位</TableHead><TableHead>联系状态</TableHead><TableHead className="pr-4 text-right">操作</TableHead></TableRow></TableHeader>
+                    <TableBody>{approvedCandidates.slice(0, 12).map((candidate) => <TableRow key={candidate.stateId}><TableCell className="pl-4 font-medium">{candidate.name}</TableCell><TableCell>{candidate.positionName}</TableCell><TableCell><Badge variant="outline">{candidate.contactStatus}</Badge></TableCell><TableCell className="pr-4 text-right"><Button size="sm" variant="outline" disabled={candidate.contactStatus !== 'not_contacted' && candidate.contactStatus !== 'failed'} onClick={() => openContactPreview(candidate.stateId)}><MessageSquareText />消息预览</Button></TableCell></TableRow>)}</TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+            <Card id="audit" className="scroll-mt-20">
+              <CardHeader className="border-b"><CardTitle>审计日志</CardTitle><CardDescription>关键动作留痕</CardDescription></CardHeader>
+              <CardContent className="space-y-2 pt-4">
+                {data?.auditLogs.slice(0, 8).map((log) => <div key={log.id} className="rounded-lg border px-3 py-2"><p className="text-xs font-medium">{log.action}</p><p className="mt-1 text-[11px] text-muted-foreground">{log.actorId} · {new Date(log.createdAt).toLocaleString('zh-CN')}</p></div>)}
+              </CardContent>
+            </Card>
+          </section>
         </main>
       </div>
       <PositionRuleDialog
@@ -625,12 +735,26 @@ export function DashboardClient() {
         controlApi={controlApi}
         onCreated={positionCreated}
       />
+      <ScheduleDialog
+        open={scheduleDialogOpen}
+        onOpenChange={setScheduleDialogOpen}
+        controlApi={controlApi}
+        positionId={position?.id ?? null}
+        onCreated={loadDashboard}
+      />
       <CandidateReviewDialog
         open={reviewDialogOpen}
         stateId={selectedCandidateStateId}
         controlApi={controlApi}
         onOpenChange={setReviewDialogOpen}
         onReviewed={loadDashboard}
+      />
+      <ContactPreviewDialog
+        open={contactDialogOpen}
+        stateId={selectedCandidateStateId}
+        controlApi={controlApi}
+        onOpenChange={setContactDialogOpen}
+        onCreated={loadDashboard}
       />
     </div>
   );

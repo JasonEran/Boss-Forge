@@ -122,6 +122,67 @@ export type CandidateDetail = DashboardCandidate & {
   reviews: ReviewRecord[];
 };
 
+export type ScheduleFrequency = "once" | "daily" | "weekdays" | "weekly";
+
+export type Schedule = {
+  id: string;
+  positionId: string;
+  positionName: string;
+  source: "recommend" | "search";
+  searchKeyword: string | null;
+  frequency: ScheduleFrequency;
+  timezone: string;
+  nextRunAt: string;
+  enabled: boolean;
+  createdBy: string;
+  version: number;
+  createdAt: string;
+};
+
+export type MessagePreview = {
+  templateVersionId: string;
+  templateVersion: number;
+  body: string;
+  renderedMessage: string;
+};
+
+export type ContactIntentStatus =
+  | "ready"
+  | "processing"
+  | "sent"
+  | "failed"
+  | "uncertain"
+  | "cancelled";
+
+export type ContactIntent = {
+  id: string;
+  candidateStateId: string;
+  candidateName: string;
+  positionName: string;
+  renderedMessage: string;
+  status: ContactIntentStatus;
+  createdBy: string;
+  createdAt: string;
+  lastError: string | null;
+};
+
+export type ContactDispatchJob = ContactIntent & {
+  outboxEventId: string;
+  taskId: string;
+  bossJobKeyword: string | null;
+  candidateTarget: string;
+  attemptNo: number;
+};
+
+export type AuditLog = {
+  id: string;
+  actorId: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  createdAt: string;
+};
+
 export type DashboardSnapshot = {
   metrics: {
     totalCandidates: number;
@@ -132,4 +193,7 @@ export type DashboardSnapshot = {
   positions: Position[];
   tasks: Task[];
   candidates: DashboardCandidate[];
+  schedules?: Schedule[];
+  contactIntents?: ContactIntent[];
+  auditLogs?: AuditLog[];
 };

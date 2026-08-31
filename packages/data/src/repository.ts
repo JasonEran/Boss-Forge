@@ -605,7 +605,7 @@ export class BossForgeRepository {
         JOIN candidates c ON c.id = cps.candidate_id
         JOIN positions p ON p.id = cps.position_id
         JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
-        WHERE cps.review_status = 'pending'
+        WHERE cps.review_status IN ('pending', 'approved')
         ORDER BY
           CASE cps.rule_decision WHEN 'matched' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,
           cps.rule_confidence DESC, cps.updated_at DESC

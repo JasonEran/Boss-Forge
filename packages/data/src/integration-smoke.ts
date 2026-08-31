@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   BossForgeRepository,
+  M2Repository,
   OptimisticLockError,
   createDatabase
 } from "./index.js";
@@ -8,10 +10,12 @@ import {
 async function main(): Promise<void> {
   const sql = createDatabase();
   try {
+    const suffix = randomUUID();
     const repository = new BossForgeRepository(sql);
+    const m2Repository = new M2Repository(sql);
     const position = await repository.createPosition({
-      bossAccountId: "integration-account",
-      name: "Integration Position",
+      bossAccountId: `integration-account-${suffix}`,
+      name: `Integration Position ${suffix}`,
       ownerName: "integration-test"
     });
     await repository.createRuleVersion({
@@ -22,7 +26,7 @@ async function main(): Promise<void> {
       createdBy: "integration-test"
     });
     await repository.createImmediateTask({
-      idempotencyKey: "integration-task-1",
+      idempotencyKey: `integration-task-${suffix}`,
       positionId: position.id,
       source: "recommend",
       createdBy: "integration-test"
@@ -31,10 +35,10 @@ async function main(): Promise<void> {
     assert(task);
     await repository.completeTask(task, [
       {
-        sourceReference: "recommend:1:Integration Candidate",
+        sourceReference: `recommend:1:Integration Candidate ${suffix}`,
         source: "recommend",
-        displayName: "Integration Candidate",
-        fingerprint: "integration-fingerprint-1",
+        displayName: `Integration Candidate ${suffix}`,
+        fingerprint: `integration-fingerprint-${suffix}`,
         rawFields: { experience: "3 years" },
         sourceEvidence: ["TEM-8 certified"],
         rawText: "TEM-8 certified",
@@ -55,11 +59,11 @@ async function main(): Promise<void> {
       }
     ]);
     const dashboard = await repository.getDashboard();
-    const state = dashboard.candidates[0];
+    const state = dashboard.candidates.find((candidate) => candidate.name.endsWith(suffix));
     assert(state);
     const first = await repository.reviewCandidate({
       stateId: state.stateId,
-      idempotencyKey: "integration-review-1",
+      idempotencyKey: `integration-review-${suffix}`,
       decision: "approved",
       note: "Evidence confirmed.",
       reviewerId: "integration-reviewer",
@@ -67,7 +71,7 @@ async function main(): Promise<void> {
     });
     const replay = await repository.reviewCandidate({
       stateId: state.stateId,
-      idempotencyKey: "integration-review-1",
+      idempotencyKey: `integration-review-${suffix}`,
       decision: "approved",
       note: "Evidence confirmed.",
       reviewerId: "integration-reviewer",
@@ -77,7 +81,7 @@ async function main(): Promise<void> {
     await assert.rejects(
       repository.reviewCandidate({
         stateId: state.stateId,
-        idempotencyKey: "integration-review-stale",
+        idempotencyKey: `integration-review-stale-${suffix}`,
         decision: "rejected",
         note: "Stale write",
         reviewerId: "integration-reviewer",
@@ -90,13 +94,82 @@ async function main(): Promise<void> {
     assert.equal(detail.reviewStatus, "approved");
     assert.equal(detail.stateVersion, state.stateVersion + 1);
     assert.equal(detail.reviews.length, 1);
+    const templateVersionId = await m2Repository.ensureMessageTemplate({
+      name: `Integration Template ${suffix}`,
+      body: "你好 {{candidate_name}}，测试岗位：{{position_name}}。",
+      createdBy: "integration-test"
+    });
+    const preview = await m2Repository.previewMessage(state.stateId);
+    assert(preview.renderedMessage.includes("Integration Candidate"));
+    const intent = await m2Repository.createManualContactIntent({
+      stateId: state.stateId,
+      idempotencyKey: `integration-contact-${suffix}`,
+      templateVersionId: preview.templateVersionId,
+      renderedMessage: preview.renderedMessage,
+      createdBy: "integration-reviewer",
+      localMinuteOfDay: 12 * 60,
+      now: new Date().toISOString()
+    });
+    assert.equal(intent.status, "ready");
+    const dispatch = await m2Repository.claimContactDispatch("integration-contact-worker");
+    assert(dispatch);
+    assert.equal(dispatch.id, intent.id);
+    await m2Repository.assertContactDispatchAllowed({
+      job: dispatch,
+      localMinuteOfDay: 12 * 60,
+      now: new Date().toISOString()
+    });
+    await m2Repository.finishContactDispatch({
+      job: dispatch,
+      result: "sent",
+      externalMessage: "fake transport only"
+    });
+    const schedule = await m2Repository.createSchedule({
+      idempotencyKey: `integration-schedule-${suffix}`,
+      positionId: position.id,
+      source: "recommend",
+      frequency: "once",
+      timezone: "Asia/Shanghai",
+      nextRunAt: new Date(Date.now() + 60_000).toISOString(),
+      createdBy: "integration-test"
+    });
+    const cancelled = await m2Repository.cancelSchedule({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      actorId: "integration-test"
+    });
+    assert.equal(cancelled.enabled, false);
+    const dueSchedule = await m2Repository.createSchedule({
+      idempotencyKey: `integration-due-schedule-${suffix}`,
+      positionId: position.id,
+      source: "recommend",
+      frequency: "once",
+      timezone: "Asia/Shanghai",
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+      createdBy: "integration-test"
+    });
+    assert((await m2Repository.materializeDueSchedules()) >= 1);
+    const materialized = (await m2Repository.listSchedules()).find(
+      (item) => item.id === dueSchedule.id
+    );
+    assert(materialized);
+    assert.equal(materialized.enabled, false);
+    await sql`
+      UPDATE tasks SET status = 'cancelled'
+      WHERE position_id = ${position.id} AND created_by = 'integration-test' AND status = 'queued'
+    `;
     console.log(
       JSON.stringify({
         ok: true,
         stateId: state.stateId,
         reviewId: first.id,
         idempotentReplay: first.id === replay.id,
-        optimisticLock: true
+        optimisticLock: true,
+        messagePreview: true,
+        fakeContactDispatch: true,
+        scheduleLifecycle: true,
+        scheduleMaterialization: true,
+        seededTemplateVersionId: templateVersionId
       })
     );
   } finally {
