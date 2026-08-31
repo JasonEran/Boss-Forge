@@ -60,7 +60,8 @@ flowchart LR
     CLI --> CHROME[本机 Chrome + Boss 登录态]
     CHROME --> BOSS[Boss 直聘]
     WORKER --> STORE[(内网对象存储)]
-    CLI -.可选且需审批.-> BAIDU[百度 OCR]
+    CLI -.内置可选且需审批.-> BAIDU[百度 OCR]
+    WORKER -.截图 OCR 可选且需审批.-> TENCENT[腾讯云 GeneralBasicOCR]
 ```
 
 边界说明：
@@ -68,7 +69,7 @@ flowchart LR
 - HR 不直接接触 Worker 或 CLI，只操作 Dashboard。
 - API 不直接控制 Chrome，只投递经过校验的业务任务。
 - Worker 是唯一允许启动 `boss-cli` 子进程的组件。
-- OCR 未经审批时设置 `BOSS_RESUME_OCR=0`，不连接百度，只保存本地简历截图。
+- OCR 未经审批时关闭 `BOSS_FORGE_RESUME_PREVIEW_ENABLED`。腾讯云模式保持 `BOSS_RESUME_OCR=0`，避免同时连接百度 OCR。
 
 ## 4. 总体组件设计
 
@@ -124,7 +125,7 @@ flowchart TB
 - 提供规则、词典、计划和模板的可视化编辑。
 - 第一期提供明确的人工审核和发送二次确认。
 - 第二期提供全局、岗位、任务三级自动开关和紧急停止。
-- 不保存 Boss Cookie、CLI 密钥或百度 OCR 密钥。
+- 不保存 Boss Cookie、CLI 密钥、百度或腾讯云 OCR 密钥；密钥仅存在于 Worker 服务端环境。
 - 不直接调用 Worker 或执行 CLI。
 
 ### 5.2 业务 API
@@ -687,7 +688,7 @@ Boss-Forge/
 1. 公司是否已有 OIDC/SSO、PostgreSQL 和对象存储，可直接复用。
 2. 首期管理一个还是多个 Boss 账号，以及账号与岗位的归属关系。
 3. Worker 是否有专用 macOS 设备，是否允许长期保持 Chrome 登录态。
-4. 百度 OCR 是否通过隐私与安全审批；若不通过，一期是否接受仅截图人工查看。
+4. 腾讯云 OCR 是否通过隐私与安全审批；若不通过，一期是否接受仅截图人工查看。
 5. 候选人简历、OCR、消息和审计数据的保存期限。
 6. 告警接入企业微信、邮件还是公司现有监控平台。
 7. 第一期批量人工联系是否允许，最大批次是多少。

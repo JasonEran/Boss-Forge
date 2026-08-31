@@ -449,6 +449,10 @@ export class BossForgeRepository {
     screenshotPath: string | null;
     resumeTextHash: string;
     workerId: string;
+    ocrProvider?: "boss" | "tencent";
+    ocrLineCount?: number | null;
+    ocrAverageConfidence?: number | null;
+    ocrRequestId?: string | null;
   }): Promise<void> {
     await this.sql.begin(async (transaction) => {
       await transaction`
@@ -501,7 +505,11 @@ export class BossForgeRepository {
             confidence: input.record.confidence,
             currentEnglishLevel: input.record.currentEnglishLevel,
             screenshotAvailable: Boolean(input.screenshotPath),
-            resumeTextHash: input.resumeTextHash
+            resumeTextHash: input.resumeTextHash,
+            ocrProvider: input.ocrProvider ?? "synthetic",
+            ocrLineCount: input.ocrLineCount ?? null,
+            ocrAverageConfidence: input.ocrAverageConfidence ?? null,
+            ocrRequestId: input.ocrRequestId ?? null
           })}
         )
       `;

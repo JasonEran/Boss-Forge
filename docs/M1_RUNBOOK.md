@@ -63,8 +63,9 @@ Dashboard 创建任务
 
 ## 5. 安全边界
 
-- `preview` 只有在 `BOSS_FORGE_RESUME_PREVIEW_ENABLED=1` 与 `BOSS_RESUME_OCR=1` 同时开启时执行；默认均关闭。
-- 当前 `boss-cli` OCR 使用外部 OCR 服务，只有完成隐私审批并配置密钥后才能开启；日志不保存完整简历正文。
+- `preview` 只有在 `BOSS_FORGE_RESUME_PREVIEW_ENABLED=1` 且选定的 OCR 提供方配置完整时执行；默认关闭。
+- 腾讯云模式设置 `BOSS_FORGE_OCR_PROVIDER=tencent` 和服务端 `TENCENTCLOUD_SECRET_ID/SECRET_KEY`，同时保持 `BOSS_RESUME_OCR=0`。`boss-cli` 负责截图，Worker 调用腾讯云 `GeneralBasicOCR`。
+- OCR 密钥、图片 Base64 和完整识别正文都不写日志；审计只记录提供方、行数、平均置信度、请求 ID 和正文哈希。
 - M1 Worker 不生成 `greet` 或 `send`，真实联系总开关保持关闭。
 - 同一 BOSS 账号的页面操作使用进程锁串行化。
 - 自动打招呼开关仍保持关闭，不会因 M1 任务自动联系候选人。
@@ -78,7 +79,7 @@ Dashboard 创建任务
 - 30 位为 `insufficient`，3 位因 CET 等明确易混淆证书判定为 `not_matched`。
 - 同一幂等键重复请求返回同一任务 ID。
 - 常驻 Worker 可将 Dashboard 新建的 `queued` 任务推进到 `screening`，全部简历精筛完成后再进入 `waiting_review`。
-- 已完成基于合成 OCR 文本的简历精筛集成测试；没有调用真实简历预览或联系命令。
+- 已完成腾讯云官方公开示例图片的真实 `GeneralBasicOCR` 接口验证，以及基于合成 OCR 文本的简历精筛集成测试；没有调用真实候选人简历预览或联系命令。
 - 既有 33 位候选人不会因迁移自动触发预览，可在候选人详情中按需点击“重新精筛简历”。
 
 ## 7. M1 当前状态与后续项

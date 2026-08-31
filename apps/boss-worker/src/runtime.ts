@@ -18,6 +18,14 @@ export function effectiveOcrEnabled(): boolean {
   return value !== "0" && value !== "false" && value !== "no";
 }
 
+export type ResumeOcrProvider = "boss" | "tencent";
+
+export function resumeOcrProvider(): ResumeOcrProvider {
+  return process.env.BOSS_FORGE_OCR_PROVIDER?.trim().toLowerCase() === "tencent"
+    ? "tencent"
+    : "boss";
+}
+
 const CHROME_EXECUTABLE_NAMES = new Set([
   "Google Chrome for Testing",
   "Google Chrome",

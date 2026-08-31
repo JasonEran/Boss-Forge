@@ -46,7 +46,7 @@
 - Boss DOM 选择器、页面 URL 识别和导航。
 - Chrome/CDP 生命周期、页面会话锁、随机延时和弹窗处理。
 - 推荐、搜索、深搜、岗位、JD、简历预览、截图、聊天和招呼的页面自动化。
-- 第二套 OCR：百度 OCR 获批则直接使用 `boss-cli`，未获批则关闭 OCR 并保留截图。
+- 简历弹层、长截图继续复用 `boss-cli`；OCR 按配置选择 `boss-cli` 内置百度 OCR 或用户指定的腾讯云 `GeneralBasicOCR`，不会重写 BOSS 页面操作。
 
 ## 版本与调用约束
 

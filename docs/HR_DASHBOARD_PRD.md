@@ -332,7 +332,7 @@ Boss-Forge 只建设 `boss-cli` 不负责的招聘业务能力：Dashboard、权
 | 深度搜索条件 | `boss deep-search --core ... --bonus ...` | 同步 Boss 深度搜索的核心要求和加分项 | 否 |
 | 执行深度匹配 | `boss deep-search ... --match` | 消耗平台匹配次数并返回最新 20 条 | 否 |
 | 在线简历预览 | `boss preview <姓名>` | 在推荐、深度搜索或常规搜索当前列表中打开简历并保存截图 | 否 |
-| 简历 OCR | `boss preview` / `boss action resume` | 已支持截图后调用百度 OCR 并返回正文；需配置密钥 | 原则上否，隐私未批准时关闭 |
+| 简历 OCR | `boss preview` 截图 + 配置的 OCR 提供方 | 支持 `boss-cli` 内置百度 OCR，或将截图提交腾讯云 `GeneralBasicOCR`；需服务端密钥 | 原则上否，隐私未批准时关闭 |
 | 聊天候选人列表 | `boss list [--unread]` | 读取全部/未读会话、岗位、时间、消息摘要 | 否 |
 | 打开候选人聊天 | `boss chat <姓名>` 或 `boss chat --index <序号>` | 支持模糊/精确匹配；同名可按列表序号打开 | 否 |
 | 发送文本消息 | `boss send --text <内容>` | 在当前候选人会话发送文本 | 否 |
@@ -368,7 +368,7 @@ Boss-Forge 只建设 `boss-cli` 不负责的招聘业务能力：Dashboard、权
 - 不自行开发 Boss 页面爬虫、DOM 选择器和页面导航。
 - 不自行启动或控制第二套 Chrome/CDP 会话。
 - 不自行实现推荐、常规搜索、深度搜索、岗位和 JD 抓取。
-- 不自行实现简历弹层打开、长截图和百度 OCR 调用。
+- 不自行实现简历弹层打开和长截图；始终复用 `boss-cli`。OCR 使用经过批准的提供方适配器。
 - 不自行实现聊天打开、消息发送、打招呼、备注、不合适、求简历、沟通记录或换微信。
 - 不把 `boss-cli` 源码复制进 Boss-Forge；优先安装锁定版本的 npm 包并以子进程调用。
 - 只有当关键能力在锁定版本中不存在、已向上游确认不支持，且业务明确批准后，才单独评审是否扩展；优先向 `boss-cli` 上游贡献能力。
@@ -382,7 +382,7 @@ Boss-Forge 只建设 `boss-cli` 不负责的招聘业务能力：Dashboard、权
 - 同名候选人优先使用 `boss chat --index` 及岗位/当前列表上下文，不能只依赖姓名。
 - `deep-search --match` 会消耗匹配次数且只返回最新 20 条，任务应记录批次并避免重复调用。
 - `preview` 受平台每日预览次数或访问频率限制，优先复用已完成的精筛结果；达到限制时标记“信息不足”并停止当日继续预览。公开资料无法确认其属于付费额度。
-- `boss-cli` OCR 当前调用百度在线 OCR。未经公司隐私与安全批准时设置 `BOSS_RESUME_OCR=0`，只保留本地截图；批准后复用原功能，不另写 OCR。
+- 腾讯云模式保持 `BOSS_RESUME_OCR=0`，由 Worker 将 `boss-cli` 生成的截图提交 `GeneralBasicOCR`；密钥仅从服务端环境变量读取。未获隐私与安全批准时关闭 `BOSS_FORGE_RESUME_PREVIEW_ENABLED`。
 - 登录失效、验证码、人机校验或页面结构变化时立即暂停并通知管理员，不由 Boss-Forge 绕过。
 - 生产固定验证过的 npm 版本，不调用 `boss update` 自动升级；升级前回归输出解析和关键流程。
 - 若修改或分发 `boss-cli`，需在实施前完成 GPL-3.0 许可证义务评估；首选不改源码、通过已安装 CLI 调用。

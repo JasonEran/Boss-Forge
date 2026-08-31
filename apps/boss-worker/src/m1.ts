@@ -14,10 +14,31 @@ import {
 import { evaluateCandidate } from "@boss-forge/m1-core";
 import { withAccountLock } from "./account-lock.js";
 import { writeHeartbeat } from "./heartbeat.js";
-import { effectiveOcrEnabled, workerBossEnvironment } from "./runtime.js";
+import {
+  effectiveOcrEnabled,
+  resumeOcrProvider,
+  workerBossEnvironment
+} from "./runtime.js";
+import {
+  recognizeImageWithTencentOcr,
+  tencentOcrConfigured
+} from "./tencent-ocr.js";
 
 const POLL_INTERVAL_MS = 2_000;
 let stopping = false;
+
+function safeErrorMessage(error: unknown): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const secret of [
+    process.env.TENCENTCLOUD_SECRET_ID,
+    process.env.TENCENTCLOUD_SECRET_KEY,
+    process.env.BOSS_BAIDU_API_KEY,
+    process.env.BOSS_BAIDU_SECRET_KEY
+  ]) {
+    if (secret?.trim()) message = message.replaceAll(secret.trim(), "[REDACTED]");
+  }
+  return message;
+}
 
 function collectionCommand(task: Task): BossCommand {
   if (task.source === "search") {
@@ -43,7 +64,10 @@ function resumeContextCommand(job: ResumeScreeningJob): BossCommand {
 
 function resumeScreeningEnabled(): boolean {
   const value = (process.env.BOSS_FORGE_RESUME_PREVIEW_ENABLED ?? "0").trim().toLowerCase();
-  return !["0", "false", "no", "off"].includes(value) && effectiveOcrEnabled();
+  const previewEnabled = !["0", "false", "no", "off"].includes(value);
+  const ocrReady =
+    resumeOcrProvider() === "tencent" ? tencentOcrConfigured() : effectiveOcrEnabled();
+  return previewEnabled && ocrReady;
 }
 
 async function processNextTask(repository: BossForgeRepository): Promise<boolean> {
@@ -81,7 +105,7 @@ async function processNextTask(repository: BossForgeRepository): Promise<boolean
         })
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeErrorMessage(error);
       await repository.failTask(task.id, message);
       throw error;
     } finally {
@@ -131,7 +155,19 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
       if (preview.kind !== "resume") {
         throw new Error(`Expected resume result, received ${preview.kind}.`);
       }
-      if (!preview.resume.ocrText?.trim()) {
+      const provider = resumeOcrProvider();
+      let resumeText = preview.resume.ocrText?.trim() || "";
+      let ocrLineCount: number | null = resumeText ? resumeText.split(/\r?\n/u).length : null;
+      let ocrAverageConfidence: number | null = null;
+      let ocrRequestId: string | null = null;
+      if (!resumeText && provider === "tencent" && preview.resume.screenshotPath) {
+        const ocrResult = await recognizeImageWithTencentOcr(preview.resume.screenshotPath);
+        resumeText = ocrResult.text.trim();
+        ocrLineCount = ocrResult.lineCount;
+        ocrAverageConfidence = ocrResult.averageConfidence;
+        ocrRequestId = ocrResult.requestId;
+      }
+      if (!resumeText) {
         await repository.completeResumeScreeningWithoutText({
           stateId: job.stateId,
           taskId: job.taskId,
@@ -140,14 +176,17 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
         });
         return;
       }
-      const resumeText = preview.resume.ocrText.trim();
       const record = evaluateCandidate(job.candidate, job.ruleConfig, resumeText);
       await repository.completeResumeScreening({
         job,
         record,
         screenshotPath: preview.resume.screenshotPath,
         resumeTextHash: createHash("sha256").update(resumeText).digest("hex"),
-        workerId
+        workerId,
+        ocrProvider: provider,
+        ocrLineCount,
+        ocrAverageConfidence,
+        ocrRequestId
       });
       console.log(
         JSON.stringify({
@@ -155,11 +194,14 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
           event: "m1.resume_screening.completed",
           stateId: job.stateId,
           decision: record.decision,
-          currentEnglishLevel: record.currentEnglishLevel
+          currentEnglishLevel: record.currentEnglishLevel,
+          ocrProvider: provider,
+          ocrLineCount,
+          ocrAverageConfidence
         })
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeErrorMessage(error);
       await repository.failResumeScreening({
         stateId: job.stateId,
         taskId: job.taskId,
@@ -208,7 +250,8 @@ async function main(): Promise<void> {
         ok: true,
         event: "m1.worker.ready",
         pollIntervalMs: POLL_INTERVAL_MS,
-        resumeScreeningEnabled: resumeScreeningEnabled()
+        resumeScreeningEnabled: resumeScreeningEnabled(),
+        ocrProvider: resumeOcrProvider()
       })
     );
     while (!stopping) {
@@ -227,7 +270,7 @@ async function main(): Promise<void> {
           JSON.stringify({
             ok: false,
             event: "m1.task.failed",
-            message: error instanceof Error ? error.message : String(error)
+            message: safeErrorMessage(error)
           })
         );
         if (!stopping) await waitForNextPoll();
@@ -247,6 +290,6 @@ process.once("SIGTERM", () => {
 });
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(safeErrorMessage(error));
   process.exitCode = 1;
 });
