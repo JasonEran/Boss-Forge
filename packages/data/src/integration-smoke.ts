@@ -7,6 +7,113 @@ import {
   createDatabase
 } from "./index.js";
 
+async function cleanupIntegrationData(sql: ReturnType<typeof createDatabase>): Promise<void> {
+  await sql.begin(async (transaction) => {
+    await transaction`
+      DELETE FROM outbox_events WHERE aggregate_id IN (
+        SELECT ci.id FROM contact_intents ci
+        JOIN candidate_position_states cps ON cps.id = ci.candidate_position_state_id
+        JOIN positions p ON p.id = cps.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM contact_attempts WHERE contact_intent_id IN (
+        SELECT ci.id FROM contact_intents ci
+        JOIN candidate_position_states cps ON cps.id = ci.candidate_position_state_id
+        JOIN positions p ON p.id = cps.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM contact_intents WHERE candidate_position_state_id IN (
+        SELECT cps.id FROM candidate_position_states cps
+        JOIN positions p ON p.id = cps.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM quota_counters WHERE
+        (scope_type = 'account' AND scope_id LIKE 'integration-account-%')
+        OR (scope_type = 'position' AND scope_id IN (
+          SELECT id::text FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+        ))
+        OR (scope_type = 'task' AND scope_id IN (
+          SELECT t.id::text FROM tasks t JOIN positions p ON p.id = t.position_id
+          WHERE p.boss_account_id LIKE 'integration-account-%'
+        ))
+    `;
+    await transaction`
+      DELETE FROM reviews WHERE candidate_position_state_id IN (
+        SELECT cps.id FROM candidate_position_states cps JOIN positions p ON p.id = cps.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM match_evidence WHERE candidate_position_state_id IN (
+        SELECT cps.id FROM candidate_position_states cps JOIN positions p ON p.id = cps.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM candidate_position_states WHERE position_id IN (
+        SELECT id FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM candidate_snapshots WHERE task_id IN (
+        SELECT t.id FROM tasks t JOIN positions p ON p.id = t.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM tasks WHERE position_id IN (
+        SELECT id FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM schedules WHERE position_id IN (
+        SELECT id FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      UPDATE rule_sets SET active_version_id = NULL WHERE position_id IN (
+        SELECT id FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM rule_versions WHERE rule_set_id IN (
+        SELECT rs.id FROM rule_sets rs JOIN positions p ON p.id = rs.position_id
+        WHERE p.boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM rule_sets WHERE position_id IN (
+        SELECT id FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+      )
+    `;
+    await transaction`
+      DELETE FROM candidates WHERE fingerprint LIKE 'integration-fingerprint-%'
+    `;
+    await transaction`
+      DELETE FROM positions WHERE boss_account_id LIKE 'integration-account-%'
+    `;
+    await transaction`
+      UPDATE message_templates SET active_version_id = NULL WHERE name LIKE 'Integration Template %'
+    `;
+    await transaction`
+      DELETE FROM template_versions WHERE template_id IN (
+        SELECT id FROM message_templates WHERE name LIKE 'Integration Template %'
+      )
+    `;
+    await transaction`DELETE FROM message_templates WHERE name LIKE 'Integration Template %'`;
+    await transaction`
+      DELETE FROM audit_logs WHERE actor_id LIKE 'integration-%'
+        OR payload::text LIKE '%integration-account-%'
+    `;
+  });
+}
+
 async function main(): Promise<void> {
   const sql = createDatabase();
   try {
@@ -173,6 +280,7 @@ async function main(): Promise<void> {
       })
     );
   } finally {
+    await cleanupIntegrationData(sql);
     await sql.end();
   }
 }
