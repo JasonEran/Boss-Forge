@@ -28,6 +28,48 @@ function parseFields(raw: string): Record<string, string> {
   return fields;
 }
 
+const BOSS_PLATFORM_TAG_FIELD_KEYS = new Set([
+  "标签",
+  "boss标签",
+  "平台标签",
+  "院校标签",
+  "学校标签",
+  "boss平台标签"
+]);
+
+function normalizePlatformTagFieldKey(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/[\s:_：-]/gu, "");
+}
+
+function canonicalAcademicPlatformTag(value: string): string | null {
+  const normalized = value
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-CN")
+    .replace(/\s+/gu, "")
+    .replace(/(?:院校|高校|大学)$/u, "");
+  if (normalized === "985") return "985";
+  if (normalized === "211") return "211";
+  if (normalized === "双一流") return "双一流";
+  return null;
+}
+
+/**
+ * Promote only explicit BOSS card labels to a canonical field. Resume prose and
+ * summaries are deliberately excluded: platform tags must come from BOSS, not
+ * from our own school-name inference.
+ */
+function withBossPlatformTags(fields: Record<string, string>): Record<string, string> {
+  const tags = Object.entries(fields)
+    .filter(([key]) => BOSS_PLATFORM_TAG_FIELD_KEYS.has(normalizePlatformTagFieldKey(key)))
+    .flatMap(([, value]) => value.split(/[,，;；/|、]/u))
+    .map((value) => canonicalAcademicPlatformTag(value.trim()))
+    .filter((value): value is string => value !== null);
+  const uniqueTags = [...new Set(tags)];
+  return uniqueTags.length > 0
+    ? { ...fields, BOSS平台标签: uniqueTags.join("/") }
+    : fields;
+}
+
 function deduplicateCandidates(candidates: ParsedCandidate[]): ParsedCandidate[] {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
@@ -69,7 +111,7 @@ function parseRecommend(raw: string): ParsedCandidate[] {
         index: Number(match[1]),
         name,
         source: "recommend",
-        fields: parseFields(match[3]!),
+        fields: withBossPlatformTags(parseFields(match[3]!)),
         evidence: [],
         raw: line.trim()
       };
@@ -94,7 +136,7 @@ function parseSearch(raw: string): ParsedCandidate[] {
         index: Number(match[1]),
         name: match[2]!.trim(),
         source: "search",
-        fields: parseFields(match[3]!.replace(/^｜/, "")),
+        fields: withBossPlatformTags(parseFields(match[3]!.replace(/^｜/, ""))),
         evidence: [],
         raw: line.trim()
       };

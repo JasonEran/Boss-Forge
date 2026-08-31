@@ -7,6 +7,9 @@ settings:
 overrides:
   '@puppeteer/browsers': 3.2.1
 
+patchedDependencies:
+  '@joohw/boss-cli@0.6.6': a7d7414c41f1498d2c5defb12c28eea9c2c82a6928e520be0c91addf0724bff0
+
 importers:
 
   .:
@@ -167,7 +170,7 @@ importers:
         version: link:../contracts
       '@joohw/boss-cli':
         specifier: 0.6.6
-        version: 0.6.6(supports-color@10.2.2)(yauzl@2.10.0)
+        version: 0.6.6(patch_hash=a7d7414c41f1498d2c5defb12c28eea9c2c82a6928e520be0c91addf0724bff0)(supports-color@10.2.2)(yauzl@2.10.0)
 
   packages/contact-policy: {}
 
@@ -4915,7 +4918,7 @@ snapshots:
   '@img/sharp-win32-x64@0.34.5':
     optional: true
 
-  '@joohw/boss-cli@0.6.6(supports-color@10.2.2)(yauzl@2.10.0)':
+  '@joohw/boss-cli@0.6.6(patch_hash=a7d7414c41f1498d2c5defb12c28eea9c2c82a6928e520be0c91addf0724bff0)(supports-color@10.2.2)(yauzl@2.10.0)':
     dependencies:
       dotenv: 17.4.2
       puppeteer-core: 24.43.1(supports-color@10.2.2)(yauzl@2.10.0)

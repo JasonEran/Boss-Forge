@@ -1,0 +1,12 @@
+diff --git a/dist/toolset/recommend.js b/dist/toolset/recommend.js
+index 5f76cd19c320d0da1a74af090e30b1ee947824c9..fff91f3b5a59137664d770e0113c032689939de2 100644
+--- a/dist/toolset/recommend.js
++++ b/dist/toolset/recommend.js
+@@ -267,6 +267,7 @@ export function renderRecommendList(candidates) {
+                 m.baseInfo ? `信息:${m.baseInfo}` : '',
+                 m.expect ? `期望:${m.expect}` : '',
+                 m.experience ? `经历:${m.experience}` : '',
++                m.highlights.length > 0 ? `标签:${m.highlights.join('/')}` : '',
+                 m.hasHistoryChat ? '同事沟通过' : '',
+                 m.canGreet ? '可打招呼' : '已打招呼',
+             ]

@@ -78,6 +78,29 @@ function candidate(overrides: Partial<ParsedCandidate> = {}): ParsedCandidate {
   };
 }
 
+function bossAcademicTagRule(
+  values: string[],
+  mode: "any" | "all" = "any"
+): RuleConfig {
+  return parseRuleConfig({
+    schemaVersion: "1.0",
+    name: "BOSS 院校平台标签",
+    root: {
+      operator: "AND",
+      children: [
+        {
+          type: "enum",
+          field: "bossPlatformTags",
+          values,
+          mode,
+          match: "exact",
+          unknownPolicy: "fail"
+        }
+      ]
+    }
+  });
+}
+
 describe("M1 candidate pipeline", () => {
   it("creates a stable fingerprint independent of field order", () => {
     const first = candidate();
@@ -101,6 +124,42 @@ describe("M1 candidate pipeline", () => {
       }
     });
     expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
+  });
+
+  it("keeps the same fingerprint when BOSS list labels change", () => {
+    const first = candidate({ fields: { 信息: "28岁 / 4年 / 本科", 标签: "985" } });
+    const second = candidate({
+      fields: { 信息: "28岁 / 4年 / 本科", 标签: "985/双一流", BOSS平台标签: "985/双一流" }
+    });
+    expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
+  });
+
+  it("filters directly by exact BOSS academic platform tags without an institution catalog", () => {
+    const config = bossAcademicTagRule(["985", "双一流"], "all");
+    const result = evaluateCandidate(
+      candidate({ fields: { BOSS平台标签: "985/211/双一流" }, evidence: [] }),
+      config
+    );
+    expect(result.decision).toBe("matched");
+    expect(result.institutionCatalogVersion).toBeUndefined();
+  });
+
+  it("does not infer 211 from a 985 BOSS platform tag", () => {
+    const result = evaluateCandidate(
+      candidate({ fields: { BOSS平台标签: "985" }, evidence: [] }),
+      bossAcademicTagRule(["211"])
+    );
+    expect(result.decision).toBe("not_matched");
+  });
+
+  it("fails a BOSS platform-tag rule when the explicit label is missing", () => {
+    const result = evaluateCandidate(
+      candidate({ fields: { 信息: "毕业于一所 985 大学" }, evidence: ["985 项目经验"] }),
+      bossAcademicTagRule(["985"]),
+      "教育经历：某 985 大学"
+    );
+    expect(result.decision).toBe("not_matched");
+    expect(result.reasonCodes).toContain("field_missing");
   });
 
   it("does not merge people with the same masked name but different base information", () => {

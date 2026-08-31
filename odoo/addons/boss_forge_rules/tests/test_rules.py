@@ -150,6 +150,55 @@ class TestBossForgeRules(TransactionCase):
         self.assertEqual(version.state, "published")
         self.assertTrue(version.config_hash)
 
+    def test_boss_academic_platform_tags_publish_without_institution_catalog(self):
+        version = self.env["boss.forge.rule.version"].create(
+            {
+                "rule_set_id": self.rule_set.id,
+                "version_number": 30,
+                "config_json": {
+                    "schemaVersion": "1.0",
+                    "root": {
+                        "operator": "AND",
+                        "children": [
+                            {
+                                "type": "enum",
+                                "field": "bossPlatformTags",
+                                "values": ["985", "211", "双一流"],
+                                "mode": "any",
+                                "match": "exact",
+                                "unknownPolicy": "fail",
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+        version.action_publish()
+        self.assertFalse(version.institution_catalog_id)
+        self.assertNotIn("institutionCatalog", version.config_json)
+        self.assertEqual(
+            version.config_json["root"]["children"][0]["field"],
+            "bossPlatformTags",
+        )
+
+    def test_boss_academic_platform_tag_template_is_catalog_free(self):
+        version = self.env["boss.forge.rule.version"].create(
+            {
+                "rule_set_id": self.rule_set.id,
+                "version_number": 31,
+                "config_json": {"schemaVersion": "1.0", "root": {}},
+            }
+        )
+        version.action_use_boss_academic_tag_template()
+        self.assertFalse(version.institution_catalog_id)
+        self.assertEqual(version.dictionary_version, "2026.08.3")
+        self.assertEqual(
+            version.config_json["root"]["children"][0]["values"],
+            ["985", "211", "双一流"],
+        )
+        version.action_publish()
+        self.assertNotIn("institutionCatalog", version.config_json)
+
     def test_unknown_fields_policy_and_invalid_not_are_rejected(self):
         invalid_roots = [
             {

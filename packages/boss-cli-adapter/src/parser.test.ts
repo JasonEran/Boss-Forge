@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
+import { renderRecommendList } from "@joohw/boss-cli/dist/toolset/recommend.js";
 import { parseBossOutput } from "./parser.js";
 
 describe("boss-cli 0.6.6 output parser", () => {
+  it("keeps upstream recommend highlights when an advantage is also present", () => {
+    const output = renderRecommendList([
+      {
+        geekId: "fixture-1",
+        name: "张三",
+        salary: "20-25K",
+        baseInfo: "北京 / 5年 / 本科",
+        expect: "产品经理",
+        experience: "示例公司",
+        advantage: "五年产品经验",
+        highlights: ["985", "双一流"],
+        canGreet: true,
+        hasHistoryChat: false,
+        hasViewed: false
+      }
+    ]);
+    expect(output).toContain("标签:985/双一流");
+    expect(output).toContain("优势: 五年产品经验");
+  });
+
   it("parses positions", () => {
     const output = `已读取 2 个职位。
 职位明细：
@@ -36,6 +57,26 @@ describe("boss-cli 0.6.6 output parser", () => {
         evidence: ["英语专业八级 / 海外教学经验"]
       })
     ]);
+  });
+
+  it("keeps recommend highlights as explicit BOSS academic platform tags", () => {
+    const output = `推荐列表（按来源分组）：共 1 人。
+
+常规推荐（1）
+  - 1. 张三｜薪资:20-25K｜信息:北京 / 5年 / 本科｜期望:产品经理｜标签:985院校/211/双一流大学｜可打招呼
+    优势:五年产品经验`;
+    const result = parseBossOutput("0.6.6", { type: "recommend" }, output);
+    expect(result.kind).toBe("candidates");
+    if (result.kind !== "candidates") return;
+    expect(result.candidates[0]).toEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({
+          标签: "985院校/211/双一流大学",
+          BOSS平台标签: "985/211/双一流"
+        }),
+        evidence: ["五年产品经验"]
+      })
+    );
   });
 
   it("deduplicates repeated candidate cards while preserving the first source index", () => {
@@ -80,6 +121,21 @@ describe("boss-cli 0.6.6 output parser", () => {
         ]
       })
     );
+  });
+
+  it("normalizes only explicit search card labels and does not infer them from prose", () => {
+    const output = `常规搜索结果（关键词：产品经理；当前岗位：产品经理）
+共 2 人
+
+1. 李四｜刚刚活跃｜5年经验 本科｜标签:985高校/双一流/产品专家
+   摘要:负责平台产品
+2. 王五｜本周活跃｜3年经验 本科｜标签:产品专家
+   摘要:毕业于一所 985 大学`;
+    const result = parseBossOutput("0.6.6", { type: "search", keyword: "产品经理" }, output);
+    expect(result.kind).toBe("candidates");
+    if (result.kind !== "candidates") return;
+    expect(result.candidates[0]?.fields.BOSS平台标签).toBe("985/双一流");
+    expect(result.candidates[1]?.fields.BOSS平台标签).toBeUndefined();
   });
 
   it("parses deep search candidates", () => {

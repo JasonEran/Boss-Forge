@@ -381,7 +381,14 @@ class BossForgeRuleVersion(models.Model):
     )
     schema_version = fields.Char(required=True, default="1.0")
     dictionary_version = fields.Char(required=True, default="1.0")
-    institution_catalog_id = fields.Many2one("boss.forge.institution.catalog", ondelete="restrict")
+    institution_catalog_id = fields.Many2one(
+        "boss.forge.institution.catalog",
+        ondelete="restrict",
+        help=(
+            "Optional company-reviewed catalog for custom institution classification rules. "
+            "BOSS 985/211/Double First-Class platform-tag rules do not require it."
+        ),
+    )
     config_json = fields.Json(required=True, default=lambda self: {"schemaVersion": "1.0", "root": {}})
     config_hash = fields.Char(readonly=True, copy=False)
     created_by = fields.Many2one("res.users", readonly=True, default=lambda self: self.env.user)
@@ -414,6 +421,36 @@ class BossForgeRuleVersion(models.Model):
 
     def action_start_testing(self):
         self.filtered(lambda record: record.state == "draft").write({"state": "testing"})
+
+    def action_use_boss_academic_tag_template(self):
+        """Use explicit BOSS platform labels; never infer categories from school names."""
+        for record in self:
+            if record.state != "draft":
+                raise UserError(_("Only draft rule versions can use a template."))
+            record.write(
+                {
+                    "dictionary_version": "2026.08.3",
+                    "institution_catalog_id": False,
+                    "config_json": {
+                        "schemaVersion": "1.0",
+                        "name": "BOSS academic platform tags",
+                        "root": {
+                            "operator": "AND",
+                            "children": [
+                                {
+                                    "type": "enum",
+                                    "field": "bossPlatformTags",
+                                    "values": ["985", "211", "双一流"],
+                                    "mode": "any",
+                                    "match": "exact",
+                                    "unknownPolicy": "fail",
+                                }
+                            ],
+                        },
+                    },
+                }
+            )
+        return True
 
     def execution_config(self):
         """Return the exact immutable configuration consumed by Boss-Forge."""

@@ -13,8 +13,8 @@
 | 会话 | `boss login` | 打开登录页并复用本机 Chrome 登录态 |
 | 岗位 | `boss positions` | 同步职位及状态 |
 | 岗位 | `boss jd <名称>` | 同步职位详情和 JD |
-| 获客 | `boss recommend [岗位]` | 获取推荐候选人 |
-| 获客 | `boss search [关键词]` | 获取常规搜索候选人 |
+| 获客 | `boss recommend [岗位]` | 获取推荐候选人；保留 BOSS 显式标签供 985/211/双一流筛选 |
+| 获客 | `boss search [关键词]` | 获取常规搜索候选人；复用卡片 `标签`，不按学校名自建分类 |
 | 获客 | `boss deep-search --core ... --bonus ... [--match]` | 配置并执行深度匹配 |
 | 简历 | `boss preview <姓名>` | 获取在线简历截图及可选 OCR 正文 |
 | 会话 | `boss list [--unread]` | 获取沟通列表和未读消息 |
@@ -46,6 +46,7 @@
 - Boss DOM 选择器、页面 URL 识别和导航。
 - Chrome/CDP 生命周期、页面会话锁、随机延时和弹窗处理。
 - 推荐、搜索、深搜、岗位、JD、简历预览、截图、聊天和招呼的页面自动化。
+- `boss-cli@0.6.6` 通过项目级 pnpm 补丁保证推荐卡片同时输出“优势”和显式“标签”；Boss-Forge 只做字段归一化和规则判定，不复制 DOM 读取逻辑。
 - 简历弹层、长截图继续复用 `boss-cli`；OCR 按配置选择 `boss-cli` 内置百度 OCR 或用户指定的腾讯云 `GeneralBasicOCR`，不会重写 BOSS 页面操作。
 
 ## 版本与调用约束

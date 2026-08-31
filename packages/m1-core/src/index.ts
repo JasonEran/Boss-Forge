@@ -49,7 +49,16 @@ function normalizedFields(fields: Record<string, string>): Array<[string, string
     .sort(([left], [right]) => left.localeCompare(right));
 }
 
-const MUTABLE_LIST_FIELD_NAMES = new Set(["期望", "薪资"]);
+const MUTABLE_LIST_FIELD_NAMES = new Set([
+  "期望",
+  "薪资",
+  "标签",
+  "boss标签",
+  "平台标签",
+  "院校标签",
+  "学校标签",
+  "boss平台标签"
+]);
 
 function identityFields(fields: Record<string, string>): Array<[string, string]> {
   const normalized = normalizedFields(fields);

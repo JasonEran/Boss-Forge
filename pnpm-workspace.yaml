@@ -11,3 +11,5 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+patchedDependencies:
+  '@joohw/boss-cli@0.6.6': patches/@joohw__boss-cli@0.6.6.patch

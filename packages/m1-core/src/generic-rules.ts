@@ -60,7 +60,16 @@ const FIELD_ALIASES: Readonly<Record<string, readonly string[]>> = {
   educationlevel: ["educationlevel", "学历", "最高学历", "学历层次", "学位"],
   skills: ["skills", "skill", "技能", "专业技能", "核心技能", "技能特长", "技术栈"],
   location: ["location", "地点", "城市", "工作地点", "期望地点", "期望城市"],
-  status: ["status", "状态", "求职状态", "在职状态"]
+  status: ["status", "状态", "求职状态", "在职状态"],
+  bossplatformtags: [
+    "bossplatformtags",
+    "boss平台标签",
+    "平台标签",
+    "boss标签",
+    "院校标签",
+    "学校标签",
+    "标签"
+  ]
 };
 
 const EXPERIENCE_FIELD_KEYS = new Set(FIELD_ALIASES.yearsofexperience);
