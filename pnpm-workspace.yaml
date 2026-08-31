@@ -8,4 +8,6 @@ onlyBuiltDependencies:
 overrides:
   "@puppeteer/browsers": 3.2.1
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+  sharp: true
+  workerd: true

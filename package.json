@@ -9,13 +9,16 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --dir apps/web typecheck",
     "test": "vitest run",
     "m0": "tsx apps/boss-worker/src/m0.ts",
     "m0:doctor": "tsx apps/boss-worker/src/m0.ts doctor",
     "m0:heartbeat": "tsx apps/boss-worker/src/m0.ts heartbeat",
     "m0:install-browser": "pnpm dlx @puppeteer/browsers@3.2.1 install chrome@152.0.7977.64 --path .boss-forge/browsers",
-    "worker": "tsx apps/boss-worker/src/worker.ts"
+    "worker": "tsx apps/boss-worker/src/worker.ts",
+    "lint:web": "pnpm --dir apps/web lint",
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:build": "pnpm --dir apps/web build"
   },
   "devDependencies": {
     "@types/node": "26.4.0",
