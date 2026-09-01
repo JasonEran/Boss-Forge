@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { LoaderCircle, SlidersHorizontal } from 'lucide-react';
+import { LoaderCircle, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   NativeSelect,
   NativeSelectOption,
@@ -24,6 +25,19 @@ type AcademicTag = (typeof academicTags)[number];
 type RuleMode = 'any' | 'all';
 type RootOperator = 'AND' | 'OR';
 type MissingPolicy = 'manual_review' | 'fail' | 'ignore';
+type SemanticExecutionMode = 'normalized_entity' | 'semantic_rubric';
+
+type SemanticDraft = {
+  criterionId: string;
+  label: string;
+  executionMode: SemanticExecutionMode;
+  factType: string;
+  expectedValues: string;
+  aliases: string;
+  valueMode: RuleMode;
+  rubric: string;
+  minimumConfidence: string;
+};
 
 type PositionInput = {
   id: string;
@@ -85,6 +99,42 @@ function joinedValues(node: JsonRecord | undefined): string {
   return strings(node?.values).join('、');
 }
 
+function semanticAliasesText(value: unknown): string {
+  const aliases = record(value);
+  if (!aliases) return '';
+  return Object.entries(aliases)
+    .map(([canonical, values]) => `${canonical}=${strings(values).join('|')}`)
+    .join('\n');
+}
+
+function parseSemanticAliases(value: string): Record<string, string[]> {
+  return Object.fromEntries(
+    value
+      .split(/\n|;/u)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [canonical, aliases = ''] = line.split('=', 2);
+        return [canonical.trim(), splitValues(aliases.replaceAll('|', '、'))];
+      })
+      .filter(([canonical, aliases]) => canonical && aliases.length > 0),
+  );
+}
+
+function emptySemanticDraft(criterionId: string): SemanticDraft {
+  return {
+    criterionId,
+    label: '',
+    executionMode: 'normalized_entity',
+    factType: 'skill',
+    expectedValues: '',
+    aliases: '',
+    valueMode: 'any',
+    rubric: '',
+    minimumConfidence: '0.8',
+  };
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
   const payload = (await response.json()) as T & { message?: string };
   if (!response.ok)
@@ -122,6 +172,7 @@ export function PositionRuleDialog({
   const [keywordMode, setKeywordMode] = useState<RuleMode>('any');
   const [missingPolicy, setMissingPolicy] =
     useState<MissingPolicy>('manual_review');
+  const [semanticRules, setSemanticRules] = useState<SemanticDraft[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeRuleConfigJson = JSON.stringify(activeRule?.config ?? null);
@@ -148,6 +199,7 @@ export function PositionRuleDialog({
       setResumeKeywords('');
       setKeywordMode('any');
       setMissingPolicy('manual_review');
+      setSemanticRules([]);
 
       const config = record(JSON.parse(activeRuleConfigJson) as unknown);
       if (!config) return;
@@ -230,6 +282,31 @@ export function PositionRuleDialog({
       ) {
         setMissingPolicy(configuredPolicy);
       }
+      setSemanticRules(
+        leaves
+          .filter((node) => node.type === 'semantic')
+          .map((node, index) => ({
+            criterionId:
+              typeof node.criterionId === 'string'
+                ? node.criterionId
+                : `semantic_custom_${index + 1}`,
+            label: typeof node.label === 'string' ? node.label : '',
+            executionMode:
+              node.executionMode === 'semantic_rubric'
+                ? 'semantic_rubric'
+                : 'normalized_entity',
+            factType:
+              typeof node.factType === 'string' ? node.factType : 'skill',
+            expectedValues: strings(node.expectedValues).join('、'),
+            aliases: semanticAliasesText(node.aliases),
+            valueMode: node.valueMode === 'all' ? 'all' : 'any',
+            rubric: typeof node.rubric === 'string' ? node.rubric : '',
+            minimumConfidence:
+              typeof node.minimumConfidence === 'number'
+                ? String(node.minimumConfidence)
+                : '0.8',
+          })),
+      );
     }, 0);
     return () => window.clearTimeout(timer);
   }, [
@@ -270,6 +347,51 @@ export function PositionRuleDialog({
     ) {
       setError('工作年限范围无效，请确认最小值不大于最大值。');
       return;
+    }
+
+    for (const [index, semanticRule] of semanticRules.entries()) {
+      const semanticConfidence = Number(semanticRule.minimumConfidence);
+      if (!semanticRule.label.trim() || !semanticRule.factType.trim()) {
+        setError(`语义条件 ${index + 1} 必须填写条件名称和事实类型。`);
+        return;
+      }
+      if (!/^[a-z][a-z0-9._-]{1,99}$/u.test(semanticRule.factType.trim())) {
+        setError(`语义条件 ${index + 1} 的事实类型必须是小写稳定标识，例如 project_leadership。`);
+        return;
+      }
+      if (
+        !Number.isFinite(semanticConfidence) ||
+        semanticConfidence < 0 ||
+        semanticConfidence > 1
+      ) {
+        setError(`语义条件 ${index + 1} 的最低置信度必须在 0 到 1 之间。`);
+        return;
+      }
+      if (
+        semanticRule.executionMode === 'normalized_entity' &&
+        splitValues(semanticRule.expectedValues).length === 0
+      ) {
+        setError(`语义条件 ${index + 1} 至少需要一个规范值。`);
+        return;
+      }
+      if (
+        semanticRule.executionMode === 'semantic_rubric' &&
+        !semanticRule.rubric.trim()
+      ) {
+        setError(`语义条件 ${index + 1} 必须填写可验证的评分标准。`);
+        return;
+      }
+      const expected = new Set(splitValues(semanticRule.expectedValues));
+      const unsupportedAlias = Object.keys(
+        parseSemanticAliases(semanticRule.aliases),
+      ).find((canonical) => !expected.has(canonical));
+      if (
+        semanticRule.executionMode === 'normalized_entity' &&
+        unsupportedAlias
+      ) {
+        setError(`语义条件 ${index + 1} 的别名“${unsupportedAlias}”没有对应规范值。`);
+        return;
+      }
     }
 
     const skillValues = splitValues(skills);
@@ -339,6 +461,31 @@ export function PositionRuleDialog({
         unknownPolicy: missingPolicy,
       });
     }
+    for (const semanticRule of semanticRules) {
+      const common = {
+        type: 'semantic',
+        criterionId: semanticRule.criterionId,
+        label: semanticRule.label.trim(),
+        executionMode: semanticRule.executionMode,
+        factType: semanticRule.factType.trim(),
+        minimumConfidence: Number(semanticRule.minimumConfidence),
+        unknownPolicy: missingPolicy,
+      };
+      if (semanticRule.executionMode === 'normalized_entity') {
+        const aliases = parseSemanticAliases(semanticRule.aliases);
+        children.push({
+          ...common,
+          expectedValues: splitValues(semanticRule.expectedValues),
+          ...(Object.keys(aliases).length > 0 ? { aliases } : {}),
+          valueMode: semanticRule.valueMode,
+        });
+      } else {
+        children.push({
+          ...common,
+          rubric: semanticRule.rubric.trim(),
+        });
+      }
+    }
     if (children.length === 0) {
       setError('请至少配置一个筛选条件。');
       return;
@@ -373,7 +520,7 @@ export function PositionRuleDialog({
           body: JSON.stringify({
             name: `${name} · 筛选规则`,
             config: {
-              schemaVersion: '1.0',
+              schemaVersion: semanticRules.length > 0 ? '1.1' : '1.0',
               name: `${name} · 筛选规则 v${nextVersion}`,
               root: { operator: rootOperator, children },
             },
@@ -412,6 +559,31 @@ export function PositionRuleDialog({
         <NativeSelectOption value="all">必须全部</NativeSelectOption>
       </NativeSelect>
     );
+  }
+
+  function updateSemanticRule(
+    index: number,
+    patch: Partial<SemanticDraft>,
+  ) {
+    setSemanticRules((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  }
+
+  function addSemanticRule() {
+    setSemanticRules((current) => {
+      let sequence = current.length + 1;
+      while (
+        current.some(
+          (item) => item.criterionId === `semantic_custom_${sequence}`,
+        )
+      ) {
+        sequence += 1;
+      }
+      return [...current, emptySemanticDraft(`semantic_custom_${sequence}`)];
+    });
   }
 
   return (
@@ -608,6 +780,207 @@ export function PositionRuleDialog({
                 {modeSelect('keyword-mode', keywordMode, setKeywordMode)}
               </label>
             </div>
+          </fieldset>
+
+          <fieldset className="space-y-4 rounded-lg border p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <legend className="text-sm font-semibold">通用语义条件</legend>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  规范实体先查同义词；复杂经历由服务端模型按评分标准提取。模型默认影子运行，低置信度进入人工复核。
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={addSemanticRule}
+              >
+                <Plus aria-hidden="true" />
+                添加条件
+              </Button>
+            </div>
+
+            {semanticRules.length === 0 ? (
+              <p className="rounded-lg bg-muted/35 p-3 text-xs text-muted-foreground">
+                当前没有语义条件，现有确定性规则照常运行。
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {semanticRules.map((semanticRule, index) => (
+                  <div
+                    key={semanticRule.criterionId}
+                    className="space-y-3 rounded-lg border bg-muted/20 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        条件 {index + 1} · {semanticRule.criterionId}
+                      </span>
+                      <Button
+                        type="button"
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`删除语义条件 ${index + 1}`}
+                        onClick={() =>
+                          setSemanticRules((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index),
+                          )
+                        }
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label
+                        htmlFor={`semantic-label-${index}`}
+                        className="space-y-1.5 text-xs font-medium"
+                      >
+                        条件名称
+                        <Input
+                          id={`semantic-label-${index}`}
+                          value={semanticRule.label}
+                          onChange={(event) =>
+                            updateSemanticRule(index, { label: event.target.value })
+                          }
+                          placeholder="例：具有大客户销售经验"
+                        />
+                      </label>
+                      <label
+                        htmlFor={`semantic-mode-${index}`}
+                        className="space-y-1.5 text-xs font-medium"
+                      >
+                        执行方式
+                        <NativeSelect
+                          id={`semantic-mode-${index}`}
+                          value={semanticRule.executionMode}
+                          onChange={(event) =>
+                            updateSemanticRule(index, {
+                              executionMode: event.target
+                                .value as SemanticExecutionMode,
+                            })
+                          }
+                        >
+                          <NativeSelectOption value="normalized_entity">
+                            同义词/实体归一化
+                          </NativeSelectOption>
+                          <NativeSelectOption value="semantic_rubric">
+                            大模型语义评分
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </label>
+                      <label
+                        htmlFor={`semantic-fact-type-${index}`}
+                        className="space-y-1.5 text-xs font-medium"
+                      >
+                        事实类型
+                        <Input
+                          id={`semantic-fact-type-${index}`}
+                          value={semanticRule.factType}
+                          onChange={(event) =>
+                            updateSemanticRule(index, {
+                              factType: event.target.value,
+                            })
+                          }
+                          placeholder="skill / industry_experience"
+                        />
+                      </label>
+                      <label
+                        htmlFor={`semantic-confidence-${index}`}
+                        className="space-y-1.5 text-xs font-medium"
+                      >
+                        最低置信度
+                        <Input
+                          id={`semantic-confidence-${index}`}
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={semanticRule.minimumConfidence}
+                          onChange={(event) =>
+                            updateSemanticRule(index, {
+                              minimumConfidence: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    {semanticRule.executionMode === 'normalized_entity' ? (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label
+                          htmlFor={`semantic-values-${index}`}
+                          className="space-y-1.5 text-xs font-medium"
+                        >
+                          规范值
+                          <Input
+                            id={`semantic-values-${index}`}
+                            value={semanticRule.expectedValues}
+                            onChange={(event) =>
+                              updateSemanticRule(index, {
+                                expectedValues: event.target.value,
+                              })
+                            }
+                            placeholder="Spring Cloud、Java"
+                          />
+                        </label>
+                        <label
+                          htmlFor={`semantic-value-mode-${index}`}
+                          className="space-y-1.5 text-xs font-medium"
+                        >
+                          匹配方式
+                          <NativeSelect
+                            id={`semantic-value-mode-${index}`}
+                            value={semanticRule.valueMode}
+                            onChange={(event) =>
+                              updateSemanticRule(index, {
+                                valueMode: event.target.value as RuleMode,
+                              })
+                            }
+                          >
+                            <NativeSelectOption value="any">满足任一</NativeSelectOption>
+                            <NativeSelectOption value="all">必须全部</NativeSelectOption>
+                          </NativeSelect>
+                        </label>
+                        <label
+                          htmlFor={`semantic-aliases-${index}`}
+                          className="space-y-1.5 text-xs font-medium sm:col-span-2"
+                        >
+                          自定义别名（每行：规范值=别名1|别名2）
+                          <Textarea
+                            id={`semantic-aliases-${index}`}
+                            value={semanticRule.aliases}
+                            onChange={(event) =>
+                              updateSemanticRule(index, {
+                                aliases: event.target.value,
+                              })
+                            }
+                            placeholder={'Spring Cloud=SpringCloud|Spring Cloud Alibaba\nJava=J2EE|Java 后端'}
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      <label
+                        htmlFor={`semantic-rubric-${index}`}
+                        className="space-y-1.5 text-xs font-medium"
+                      >
+                        可验证评分标准
+                        <Textarea
+                          id={`semantic-rubric-${index}`}
+                          value={semanticRule.rubric}
+                          onChange={(event) =>
+                            updateSemanticRule(index, {
+                              rubric: event.target.value,
+                            })
+                          }
+                          placeholder="仅当简历明确说明候选人负责团队排期、绩效或交付，并引用对应原文时判定符合；只有参与项目不得判定为管理经验。"
+                        />
+                      </label>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </fieldset>
 
           <label htmlFor="missing-policy" className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/35 p-3 text-sm font-medium">

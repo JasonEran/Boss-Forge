@@ -1,5 +1,6 @@
 import type { ParsedCandidate } from "@boss-forge/contracts";
 import type { InstitutionCatalog, InstitutionCategoryRule } from "@boss-forge/rule-engine";
+import type { SemanticEvaluation, SemanticRule } from "@boss-forge/semantic-engine";
 
 export type Position = {
   id: string;
@@ -99,10 +100,11 @@ export type RuleNode =
   | EnumRuleNode
   | TextRuleNode
   | EducationLevelRuleNode
-  | InstitutionCategoryRule;
+  | InstitutionCategoryRule
+  | SemanticRule;
 
 export type CompositeRuleConfig = {
-  schemaVersion: "1.0";
+  schemaVersion: "1.0" | "1.1";
   name?: string;
   root: RuleGroupNode;
   /** Immutable, published and content-hash-verified snapshot used by institution leaves. */
@@ -170,6 +172,7 @@ export type CandidateEvaluationRecord = {
   institutionSummary?: string;
   institutionCatalogVersion?: string;
   education?: CandidateEducationEvidence[];
+  semanticEvaluations?: SemanticEvaluation[];
   evidence: Array<{
     sourceText: string;
     normalizedAlias: string;
@@ -260,6 +263,7 @@ export type CandidateDetail = DashboardCandidate & {
   dictionaryVersion: string;
   resumeScreenshotAvailable: boolean;
   matchEvidence: MatchEvidenceRecord[];
+  semanticEvaluations: SemanticEvaluation[];
   reviews: ReviewRecord[];
 };
 

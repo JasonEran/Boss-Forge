@@ -54,6 +54,23 @@ type CandidateDetail = {
     confidence: number;
     reasonCodes: string[];
   }>;
+  semanticEvaluations: Array<{
+    criterionId: string;
+    factType: string;
+    executionMode: 'normalized_entity' | 'semantic_rubric';
+    result: 'matched' | 'not_matched' | 'unknown';
+    normalizedValue: unknown;
+    qualifier: string | null;
+    evidence: string[];
+    confidence: number;
+    extractor: 'alias' | 'llm' | 'none';
+    modelVersion: string | null;
+    promptVersion: string;
+    catalogVersion: string;
+    rubricVersion: string | null;
+    runtimeMode: 'shadow' | 'active';
+    reasonCodes: string[];
+  }>;
   reviews: Array<{
     id: string;
     decision: 'approved' | 'rejected';
@@ -264,6 +281,79 @@ export function CandidateReviewDialog({
                 </p>
               ) : null}
             </section>
+
+            {candidate.semanticEvaluations.length > 0 ? (
+              <section>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">通用语义评估</h3>
+                  <span className="text-xs text-muted-foreground">
+                    模型结果必须有简历原文证据
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {candidate.semanticEvaluations.map((item) => (
+                    <div
+                      key={item.criterionId}
+                      className="rounded-lg border bg-muted/20 p-3"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">
+                          {item.criterionId}
+                        </span>
+                        <Badge variant="outline">{item.factType}</Badge>
+                        <Badge
+                          variant={
+                            item.result === 'matched' ? 'secondary' : 'outline'
+                          }
+                        >
+                          {item.result === 'matched'
+                            ? '符合'
+                            : item.result === 'not_matched'
+                              ? '不符合'
+                              : '待人工复核'}
+                        </Badge>
+                        {item.runtimeMode === 'shadow' &&
+                        item.extractor === 'llm' ? (
+                          <Badge variant="outline">影子模式</Badge>
+                        ) : null}
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {Math.round(item.confidence * 100)}%
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        提取器 {item.extractor}
+                        {item.modelVersion ? ` · 模型 ${item.modelVersion}` : ''}
+                        {` · 提示词 ${item.promptVersion}`}
+                        {item.rubricVersion
+                          ? ` · 评分标准 ${item.rubricVersion}`
+                          : ''}
+                      </p>
+                      {item.normalizedValue !== null ? (
+                        <pre className="mt-2 overflow-x-auto rounded bg-background p-2 text-xs">
+                          {JSON.stringify(item.normalizedValue, null, 2)}
+                        </pre>
+                      ) : null}
+                      {item.evidence.length > 0 ? (
+                        <div className="mt-2 space-y-1">
+                          {item.evidence.map((evidence) => (
+                            <p
+                              key={evidence}
+                              className="rounded border bg-card p-2 text-sm leading-6"
+                            >
+                              {evidence}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-warning-foreground">
+                          没有可验证原文，结果不会自动通过或淘汰。
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             <section>
               <h3 className="mb-2 text-sm font-semibold">候选人列表字段</h3>

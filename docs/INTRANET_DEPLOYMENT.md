@@ -44,6 +44,18 @@ NEXT_PUBLIC_CONTROL_API_URL=http://10.x.x.x:3100
 
 腾讯云密钥只写入 `deploy/.env.intranet`，该文件被 Git 忽略。
 
+如需内网语义模型，先只配置影子模式：
+
+```text
+BOSS_FORGE_SEMANTIC_ENABLED=1
+BOSS_FORGE_SEMANTIC_MODE=shadow
+BOSS_FORGE_SEMANTIC_BASE_URL=http://model.internal:8000/v1
+BOSS_FORGE_SEMANTIC_MODEL=<批准的模型名>
+BOSS_FORGE_SEMANTIC_API_KEY=<仅在端点要求时填写>
+```
+
+这些变量只注入 `boss-worker`。完成固定样本与 HR 结论对比前不得改为 `active`；未配置模型时保持 `ENABLED=0`，同义词确定性匹配仍可使用。
+
 ## 4. 配置检查
 
 ```bash
@@ -125,6 +137,8 @@ BOSS_RESUME_OCR=0
 ```
 
 然后重新创建 `boss-worker`。
+
+语义模型开关或端点变更后也需要重新创建 `boss-worker`。查看候选人详情中的“通用语义评估”，核对模型、提示词、目录、评分标准版本以及原文证据；影子结果不得改变候选人通过/淘汰。
 
 ## 7. 验收
 

@@ -4,6 +4,7 @@ import {
   type InstitutionCatalog,
   type InstitutionCategoryRule
 } from "@boss-forge/rule-engine";
+import type { SemanticRule } from "@boss-forge/semantic-engine";
 import type {
   CompositeRuleConfig,
   EducationLevel,
@@ -204,7 +205,30 @@ function parseLegacy(value: JsonObject): LegacyRuleConfig {
 type ParseContext = {
   nodeCount: number;
   institutionLeaves: InstitutionCategoryRule[];
+  semanticCriterionIds: Set<string>;
+  schemaVersion: "1.0" | "1.1";
 };
+
+function parseSemanticAliases(
+  value: unknown,
+  expectedValues: string[],
+  path: string
+): Record<string, string[]> | undefined {
+  if (value === undefined) return undefined;
+  const aliases = record(value, path);
+  const expected = new Set(expectedValues);
+  const unsupported = Object.keys(aliases).filter((key) => !expected.has(key));
+  if (unsupported.length > 0) {
+    throw new RuleConfigValidationError([
+      `${path} contains canonical values not present in expectedValues: ${unsupported.join(", ")}.`
+    ]);
+  }
+  const parsed: Record<string, string[]> = {};
+  for (const [canonical, rawAliases] of Object.entries(aliases)) {
+    parsed[canonical] = parseValues(rawAliases, `${path}.${canonical}`);
+  }
+  return parsed;
+}
 
 function parseNode(value: unknown, path: string, depth: number, context: ParseContext): RuleNode {
   if (depth > MAX_RULE_DEPTH) {
@@ -371,6 +395,100 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
     } satisfies EducationLevelRuleNode;
   }
 
+  if (node.type === "semantic") {
+    if (context.schemaVersion !== "1.1") {
+      throw new RuleConfigValidationError([
+        `${path} requires config.schemaVersion 1.1.`
+      ]);
+    }
+    exactKeys(
+      node,
+      new Set([
+        "type",
+        "criterionId",
+        "label",
+        "executionMode",
+        "factType",
+        "expectedValues",
+        "aliases",
+        "valueMode",
+        "rubric",
+        "minimumConfidence",
+        "unknownPolicy"
+      ]),
+      path
+    );
+    const criterionId = nonEmptyString(node.criterionId, `${path}.criterionId`, 100);
+    if (!/^[a-z][a-z0-9._-]{2,99}$/u.test(criterionId)) {
+      throw new RuleConfigValidationError([
+        `${path}.criterionId must start with a lowercase letter and contain only lowercase letters, digits, dot, underscore, or hyphen.`
+      ]);
+    }
+    if (context.semanticCriterionIds.has(criterionId)) {
+      throw new RuleConfigValidationError([
+        `${path}.criterionId duplicates another semantic criterion.`
+      ]);
+    }
+    context.semanticCriterionIds.add(criterionId);
+    const label = nonEmptyString(node.label, `${path}.label`, 120);
+    const factType = nonEmptyString(node.factType, `${path}.factType`, 100);
+    if (!/^[a-z][a-z0-9._-]{1,99}$/u.test(factType)) {
+      throw new RuleConfigValidationError([
+        `${path}.factType must be a stable lowercase identifier.`
+      ]);
+    }
+    const base = {
+      type: "semantic" as const,
+      criterionId,
+      label,
+      factType,
+      minimumConfidence: confidence(
+        node.minimumConfidence,
+        `${path}.minimumConfidence`
+      ),
+      unknownPolicy: parseUnknownPolicy(node.unknownPolicy, `${path}.unknownPolicy`)
+    };
+    if (node.executionMode === "normalized_entity") {
+      if (node.rubric !== undefined) {
+        throw new RuleConfigValidationError([
+          `${path}.rubric is only valid for semantic_rubric.`
+        ]);
+      }
+      const expectedValues = parseValues(node.expectedValues, `${path}.expectedValues`);
+      const aliases = parseSemanticAliases(
+        node.aliases,
+        expectedValues,
+        `${path}.aliases`
+      );
+      return {
+        ...base,
+        executionMode: "normalized_entity",
+        expectedValues,
+        ...(aliases ? { aliases } : {}),
+        valueMode: mode(node.valueMode, `${path}.valueMode`)
+      } satisfies SemanticRule;
+    }
+    if (node.executionMode === "semantic_rubric") {
+      if (
+        node.expectedValues !== undefined ||
+        node.aliases !== undefined ||
+        node.valueMode !== undefined
+      ) {
+        throw new RuleConfigValidationError([
+          `${path}.expectedValues, aliases, and valueMode are only valid for normalized_entity.`
+        ]);
+      }
+      return {
+        ...base,
+        executionMode: "semantic_rubric",
+        rubric: nonEmptyString(node.rubric, `${path}.rubric`, 2_000)
+      } satisfies SemanticRule;
+    }
+    throw new RuleConfigValidationError([
+      `${path}.executionMode must be normalized_entity or semantic_rubric.`
+    ]);
+  }
+
   if (node.type === "institution_category") {
     exactKeys(
       node,
@@ -399,13 +517,18 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
 
 function parseComposite(value: JsonObject): CompositeRuleConfig {
   exactKeys(value, new Set(["schemaVersion", "name", "root", "institutionCatalog"]), "config");
-  if (value.schemaVersion !== "1.0") {
-    throw new RuleConfigValidationError(["config.schemaVersion must be 1.0."]);
+  if (value.schemaVersion !== "1.0" && value.schemaVersion !== "1.1") {
+    throw new RuleConfigValidationError(["config.schemaVersion must be 1.0 or 1.1."]);
   }
   if (value.name !== undefined && (typeof value.name !== "string" || !value.name.trim())) {
     throw new RuleConfigValidationError(["config.name must be a non-empty string when provided."]);
   }
-  const context: ParseContext = { nodeCount: 0, institutionLeaves: [] };
+  const context: ParseContext = {
+    nodeCount: 0,
+    institutionLeaves: [],
+    semanticCriterionIds: new Set(),
+    schemaVersion: value.schemaVersion
+  };
   const root = parseNode(value.root, "config.root", 0, context);
   if (!("children" in root)) {
     throw new RuleConfigValidationError(["config.root must be an AND/OR/NOT or all/any group node."]);
@@ -453,7 +576,7 @@ function parseComposite(value: JsonObject): CompositeRuleConfig {
   }
 
   return {
-    schemaVersion: "1.0",
+    schemaVersion: value.schemaVersion,
     ...(typeof value.name === "string" ? { name: value.name.trim() } : {}),
     root,
     ...(institutionCatalog ? { institutionCatalog } : {})

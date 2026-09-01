@@ -20,6 +20,7 @@ import {
   type InstitutionCategoryRule,
   type InstitutionRuleEvidence
 } from "@boss-forge/rule-engine";
+import type { SemanticEvaluation, SemanticRule } from "@boss-forge/semantic-engine";
 import { extractEducationExperiences } from "./education.js";
 import {
   evaluateGenericRuleNode,
@@ -428,17 +429,124 @@ function withEnglishLevels(evaluation: GenericRuleEvaluation): NodeEvaluation {
   };
 }
 
+function semanticUnknownDecision(
+  policy: UnknownPolicy,
+  reasonCodes: string[]
+): Pick<NodeEvaluation, "decision" | "unknown" | "reasonCodes"> {
+  const policyReason = `unknown_policy_${policy}`;
+  return {
+    decision:
+      policy === "fail"
+        ? "not_matched"
+        : policy === "ignore"
+          ? "ignored"
+          : reasonCodes.includes("semantic_conflicting_evidence")
+            ? "ambiguous"
+            : "insufficient",
+    unknown: true,
+    reasonCodes: unique([...reasonCodes, policyReason])
+  };
+}
+
+function semanticNormalizedAlias(evaluation: SemanticEvaluation | undefined): string {
+  if (!evaluation || evaluation.normalizedValue === null) return "semantic_unknown";
+  const encoded = JSON.stringify(evaluation.normalizedValue);
+  return encoded && encoded.length <= 500 ? encoded : "semantic_value";
+}
+
+function evaluateSemanticNode(
+  node: SemanticRule,
+  evaluation: SemanticEvaluation | undefined
+): NodeEvaluation {
+  const shadowedModelResult =
+    evaluation?.extractor === "llm" && evaluation.runtimeMode === "shadow";
+  const belowConfidence =
+    evaluation !== undefined && evaluation.confidence < node.minimumConfidence;
+  const unresolved =
+    !evaluation ||
+    evaluation.result === "unknown" ||
+    shadowedModelResult ||
+    belowConfidence;
+  const unresolvedReasons = unique([
+    ...(evaluation?.reasonCodes ?? ["semantic_evaluation_missing"]),
+    ...(shadowedModelResult ? ["semantic_shadow_mode"] : []),
+    ...(belowConfidence ? ["below_configured_confidence"] : [])
+  ]);
+  const outcome = unresolved
+    ? semanticUnknownDecision(node.unknownPolicy, unresolvedReasons)
+    : {
+        decision: evaluation.result as Extract<RuntimeNodeDecision, "matched" | "not_matched">,
+        unknown: false,
+        reasonCodes: unique([
+          ...evaluation.reasonCodes,
+          `semantic_${evaluation.result}`,
+          `semantic_extractor_${evaluation.extractor}`
+        ])
+      };
+  const sourceEvidence = evaluation?.evidence.length
+    ? evaluation.evidence
+    : ["未提取到可验证的语义证据"];
+  const status: RecordEvidence["status"] = unresolved
+    ? "ambiguous"
+    : evaluation!.result === "matched"
+      ? "positive"
+      : "negative";
+  const version = [
+    evaluation?.catalogVersion ?? "semantic-catalog-unknown",
+    evaluation?.modelVersion ?? evaluation?.extractor ?? "none",
+    evaluation?.promptVersion ?? "prompt-unknown",
+    evaluation?.rubricVersion ?? "no-rubric"
+  ].join("/");
+  return {
+    decision: outcome.decision,
+    confidence: unresolved ? 0 : evaluation!.confidence,
+    reasonCodes: outcome.reasonCodes,
+    evidence: sourceEvidence.map((sourceText) => ({
+      sourceText,
+      normalizedAlias: semanticNormalizedAlias(evaluation),
+      status,
+      confidence: unresolved ? 0 : evaluation!.confidence,
+      capabilityId: `semantic.${node.criterionId}`,
+      canonicalLabel: node.label,
+      dictionaryVersion: version,
+      reasonCodes: outcome.reasonCodes
+    })),
+    englishLevels: [],
+    unknown: outcome.unknown,
+    education: [],
+    institutionDecisions: []
+  };
+}
+
+export function collectSemanticRules(ruleConfig: RuleConfig): SemanticRule[] {
+  const config = parseRuleConfig(ruleConfig);
+  if (isLegacyRuleConfig(config)) return [];
+  const rules: SemanticRule[] = [];
+  const visit = (node: RuleNode): void => {
+    if (isGroupNode(node)) {
+      node.children.forEach(visit);
+      return;
+    }
+    if (node.type === "semantic") rules.push(node);
+  };
+  visit(config.root);
+  return rules;
+}
+
 function evaluateNode(
   node: RuleNode,
   candidate: ParsedCandidate,
   ruleText: string,
   resumeText: string | null | undefined,
-  catalog: InstitutionCatalog | undefined
+  catalog: InstitutionCatalog | undefined,
+  semanticById: ReadonlyMap<string, SemanticEvaluation>
 ): NodeEvaluation {
   if (isGroupNode(node)) {
     return aggregateGroup(
       node,
-      node.children.map((child) => evaluateNode(child, candidate, ruleText, resumeText, catalog))
+      node.children.map((child) =>
+        evaluateNode(child, candidate, ruleText, resumeText, catalog, semanticById)
+      )
     );
   }
   if (node.type === "tem8" || node.type === "capability") {
@@ -449,6 +557,9 @@ function evaluateNode(
       throw new Error("Institution rule requires a locked catalog snapshot.");
     }
     return evaluateInstitutionNode(node, candidate, resumeText, catalog);
+  }
+  if (node.type === "semantic") {
+    return evaluateSemanticNode(node, semanticById.get(node.criterionId));
   }
   return withEnglishLevels(evaluateGenericRuleNode(node, candidate, ruleText, resumeText));
 }
@@ -492,14 +603,16 @@ function compositeEvaluation(
   candidate: ParsedCandidate,
   config: CompositeRuleConfig,
   ruleText: string,
-  resumeText?: string | null
+  resumeText?: string | null,
+  semanticEvaluations: SemanticEvaluation[] = []
 ): CandidateEvaluationRecord {
   const evaluation = evaluateNode(
     config.root,
     candidate,
     ruleText,
     resumeText,
-    config.institutionCatalog
+    config.institutionCatalog,
+    new Map(semanticEvaluations.map((item) => [item.criterionId, item]))
   );
   const education = uniqueEducation(evaluation.education);
   const institutionDecision: InstitutionDecision | undefined =
@@ -532,7 +645,8 @@ function compositeEvaluation(
     confidence: evaluation.confidence,
     capabilityId: "rule.composite",
     canonicalLabel: config.name ?? "组合筛选规则",
-    dictionaryVersion: config.institutionCatalog?.version ?? "rule-schema-1.0",
+    dictionaryVersion:
+      config.institutionCatalog?.version ?? `rule-schema-${config.schemaVersion}`,
     currentEnglishLevel: evaluation.englishLevels.join(" / ") || null,
     reasonCodes: evaluation.reasonCodes,
     ...(institutionDecision ? { institutionDecision } : {}),
@@ -541,6 +655,7 @@ function compositeEvaluation(
       ? { institutionCatalogVersion: config.institutionCatalog.version }
       : {}),
     ...(education.length > 0 ? { education } : {}),
+    ...(semanticEvaluations.length > 0 ? { semanticEvaluations } : {}),
     evidence: evaluation.evidence
   };
 }
@@ -548,11 +663,12 @@ function compositeEvaluation(
 export function evaluateCandidate(
   candidate: ParsedCandidate,
   ruleConfig: RuleConfig,
-  resumeText?: string | null
+  resumeText?: string | null,
+  semanticEvaluations: SemanticEvaluation[] = []
 ): CandidateEvaluationRecord {
   // Revalidate persisted snapshots so direct database ingestion cannot bypass the API validator.
   const config = parseRuleConfig(ruleConfig);
   const ruleText = fullRuleText(candidate, resumeText);
   if (isLegacyRuleConfig(config)) return legacyEvaluation(candidate, config, ruleText);
-  return compositeEvaluation(candidate, config, ruleText, resumeText);
+  return compositeEvaluation(candidate, config, ruleText, resumeText, semanticEvaluations);
 }

@@ -7,6 +7,7 @@
   "dependencies": {
     "@boss-forge/contracts": "workspace:*",
     "@boss-forge/data": "workspace:*",
-    "@boss-forge/rule-engine": "workspace:*"
+    "@boss-forge/rule-engine": "workspace:*",
+    "@boss-forge/semantic-engine": "workspace:*"
   }
 }

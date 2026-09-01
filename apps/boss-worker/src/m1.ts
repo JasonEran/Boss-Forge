@@ -11,7 +11,16 @@ import {
   type ResumeScreeningJob,
   type Task
 } from "@boss-forge/data";
-import { evaluateCandidate } from "@boss-forge/m1-core";
+import {
+  candidateRuleText,
+  collectSemanticRules,
+  evaluateCandidate
+} from "@boss-forge/m1-core";
+import {
+  evaluateSemanticRules,
+  semanticProviderFromEnvironment,
+  semanticRuntimeMode
+} from "@boss-forge/semantic-engine";
 import { withAccountLock } from "./account-lock.js";
 import { selectUnambiguousCandidateTarget } from "./candidate-target.js";
 import { writeHeartbeat } from "./heartbeat.js";
@@ -34,7 +43,8 @@ function safeErrorMessage(error: unknown): string {
     process.env.TENCENTCLOUD_SECRET_ID,
     process.env.TENCENTCLOUD_SECRET_KEY,
     process.env.BOSS_BAIDU_API_KEY,
-    process.env.BOSS_BAIDU_SECRET_KEY
+    process.env.BOSS_BAIDU_SECRET_KEY,
+    process.env.BOSS_FORGE_SEMANTIC_API_KEY
   ]) {
     if (secret?.trim()) message = message.replaceAll(secret.trim(), "[REDACTED]");
   }
@@ -181,7 +191,22 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
         });
         return;
       }
-      const record = evaluateCandidate(job.candidate, job.ruleConfig, resumeText);
+      const semanticRules = collectSemanticRules(job.ruleConfig);
+      const semanticEvaluations =
+        semanticRules.length === 0
+          ? []
+          : await evaluateSemanticRules({
+              candidateText: `${candidateRuleText(job.candidate)}\n完整简历：${resumeText}`,
+              rules: semanticRules,
+              provider: semanticProviderFromEnvironment(),
+              runtimeMode: semanticRuntimeMode()
+            });
+      const record = evaluateCandidate(
+        job.candidate,
+        job.ruleConfig,
+        resumeText,
+        semanticEvaluations
+      );
       await repository.completeResumeScreening({
         job,
         record,
@@ -200,6 +225,8 @@ async function processNextResumeScreening(repository: BossForgeRepository): Prom
           stateId: job.stateId,
           decision: record.decision,
           currentEnglishLevel: record.currentEnglishLevel,
+          semanticEvaluationCount: semanticEvaluations.length,
+          semanticRuntimeMode: semanticRuntimeMode(),
           ocrProvider: provider,
           ocrLineCount,
           ocrAverageConfidence
@@ -256,7 +283,11 @@ async function main(): Promise<void> {
         event: "m1.worker.ready",
         pollIntervalMs: POLL_INTERVAL_MS,
         resumeScreeningEnabled: resumeScreeningEnabled(),
-        ocrProvider: resumeOcrProvider()
+        ocrProvider: resumeOcrProvider(),
+        semanticEnabled: !["0", "false", "no", "off"].includes(
+          (process.env.BOSS_FORGE_SEMANTIC_ENABLED ?? "0").trim().toLowerCase()
+        ),
+        semanticRuntimeMode: semanticRuntimeMode()
       })
     );
     while (!stopping) {

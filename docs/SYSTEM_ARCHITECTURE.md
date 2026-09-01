@@ -53,6 +53,7 @@ PostgreSQL                    BOSS/Contact queues
 | `packages/boss-cli-adapter` | 命令构建、风险分类、版本检查和 stdout 解析 |
 | `packages/rule-engine` | TEM8/英语等级、院校目录、确定性条件与基础证据归一 |
 | `packages/m1-core` | 候选人规则评估和组合规则执行 |
+| `packages/semantic-engine` | 同义词归一、OpenAI 兼容事实提取、严格 Schema/证据校验和失败关闭 |
 | `packages/contact-policy` | 联系开关、时段、限额、冷却和熔断判定 |
 | `packages/data` | PostgreSQL 迁移、Repository、租约、幂等、Outbox 和审计 |
 | `packages/contracts` | Worker 心跳、BOSS 结果和内部事件类型 |
@@ -62,7 +63,7 @@ PostgreSQL                    BOSS/Contact queues
 ### 4.1 岗位与规则
 
 1. Web 通过 API 创建岗位。
-2. Web 将结构化表单转换为 schema 1.0 规则树。
+2. Web 将结构化表单转换为 schema 1.0 确定性规则树；存在语义叶子时使用 schema 1.1。
 3. API 严格校验规则字段、深度、节点数、取值和目录快照。
 4. Repository 创建新 `rule_versions` 记录，并把 `rule_sets.active_version_id` 指向新版本。
 5. 已存在版本不被覆盖；任务保存创建时的规则版本 ID。
@@ -81,6 +82,8 @@ Web 创建任务/计划
   -> 解析、稳定指纹去重、卡片规则初筛
   -> 命中/歧义/信息不足候选人排入简历精筛
   -> 可选 boss-cli preview + OCR
+  -> 同义词归一；未解决的语义条件可调用服务端模型
+  -> 严格校验结构、原文证据和置信度
   -> 组合规则重评估并保存叶子证据
   -> waiting_review 或 completed
 ```
@@ -113,7 +116,8 @@ M0 的显式 `greet` 命令是独立技术诊断通道，不经过 Dashboard 联
 当前兼容两种配置：
 
 - Legacy：`requiredCapabilities: [{ capability: "tem8", minimumConfidence }]`。
-- Composite schema 1.0：根规则组 + 叶子节点。
+- Composite schema 1.0：根规则组 + 确定性叶子节点。
+- Composite schema 1.1：兼容 1.0，并增加 `semantic` 叶子节点。
 
 叶子类型包括：
 
@@ -122,14 +126,13 @@ M0 的显式 `greet` 命令是独立技术诊断通道，不经过 Dashboard 联
 - `keyword`、`enum`、`text`。
 - `education_level`。
 - `institution_category`。
+- `semantic`：`normalized_entity` 或 `semantic_rubric`，包含稳定条件 ID、事实类型、阈值和缺失策略。
 
 组节点支持 `AND`、`OR`、`NOT` 及兼容的 `all/any`。缺失字段策略为 `manual_review`、`fail` 或 `ignore`。
 
 BOSS `985`、`211`、`双一流`使用 `enum(field=bossPlatformTags)`，只匹配适配器从候选人卡片提取的显式标签。
 
-### 5.1 规划中的通用语义层
-
-以下能力尚未写入当前运行链路，属于下一阶段架构，不应被视为已经实现。
+### 5.1 通用语义层
 
 通用语义层位于 OCR/卡片解析与规则引擎之间，将跨岗位的自然语言表达转换为可审计事实：
 
@@ -145,7 +148,7 @@ Card/OCR text
 
 岗位条件按执行方式分为 `platform_tag`、`deterministic`、`normalized_entity` 和 `semantic_rubric`。大模型不替代规则树：它为 `normalized_entity` 补充事实提取，并按版本化 rubric 评估只能通过上下文判断的条件。数值、学历、平台标签等硬条件仍由确定性规则执行。
 
-规划中的规范化事实至少包含：
+当前持久化的规范化评估至少包含：
 
 ```json
 {
@@ -169,6 +172,10 @@ Card/OCR text
 - HR 纠正写入审核事实和评估数据集，不在线自学习、不静默修改已发布规则。
 - 大模型不得生成或覆盖 BOSS 985/211/双一流标签，也不得推断岗位无关的敏感属性。
 - 部署只允许管理员配置的内网模型端点；凭据只进入 Worker/服务端，不进入 Web。
+
+运行开关为 `BOSS_FORGE_SEMANTIC_ENABLED` 与 `BOSS_FORGE_SEMANTIC_MODE`。默认关闭且为 `shadow`：配置的同义词仍可确定性匹配；模型结果会保存供核对，但不影响候选人通过/淘汰。只有明确设置 `active` 后，高于岗位阈值且有可核验原文证据的模型结果才进入规则树。模型不可用、响应格式错误或证据不在原文时统一降级为 `unknown`。
+
+当前尚缺部门级目录审批、历史样本批量回放、评估集和模型效果指标；因此“连接器已实现”不等于“真实模型效果已验收”。
 
 ## 6. 状态机
 
@@ -204,7 +211,7 @@ Card/OCR text
 |---|---|
 | 岗位/规则 | `positions`、`rule_sets`、`rule_versions` |
 | 任务/候选人 | `tasks`、`candidates`、`candidate_snapshots`、`candidate_position_states` |
-| 证据/审核 | `match_evidence`、`reviews` |
+| 证据/审核 | `match_evidence`、`semantic_evaluations`、`reviews` |
 | 简历精筛 | `candidate_position_states` 的精筛列和截图引用 |
 | 定时计划 | `schedules` |
 | 消息/联系 | `message_templates`、`template_versions`、`contact_settings`、`contact_intents`、`contact_attempts` |
@@ -278,7 +285,7 @@ Ubuntu 内网 Compose 默认包含：
 
 ## 12. 测试分层
 
-- 单元/契约：Vitest，当前 14 文件、149 测试。
+- 单元/契约：Vitest，当前 17 文件、164 测试。
 - 数据集成：`pnpm test:integration:data`，使用真实 PostgreSQL。
 - 用户 E2E：`pnpm test:e2e:user`，调用与 Dashboard 相同的 API，固定无真实发送。
 - Web：类型、Oxlint 和生产构建。

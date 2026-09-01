@@ -8,6 +8,7 @@
     "@boss-forge/contracts": "workspace:*",
     "@boss-forge/contact-policy": "workspace:*",
     "@boss-forge/rule-engine": "workspace:*",
+    "@boss-forge/semantic-engine": "workspace:*",
     "postgres": "3.4.7"
   }
 }

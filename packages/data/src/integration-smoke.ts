@@ -156,6 +156,25 @@ async function main(): Promise<void> {
         dictionaryVersion: "integration.1",
         currentEnglishLevel: "TEM-8（英语专业八级）",
         reasonCodes: ["confirmed_alias"],
+        semanticEvaluations: [
+          {
+            criterionId: "semantic.skill.java",
+            factType: "skill",
+            executionMode: "normalized_entity",
+            result: "matched",
+            normalizedValue: ["Java"],
+            qualifier: "confirmed",
+            evidence: ["技术栈：Java 后端"],
+            confidence: 1,
+            extractor: "alias",
+            modelVersion: null,
+            promptVersion: "semantic-prompt-1.0",
+            catalogVersion: "semantic-catalog-1.0",
+            rubricVersion: null,
+            runtimeMode: "shadow",
+            reasonCodes: ["semantic_alias_matched"]
+          }
+        ],
         evidence: [
           {
             sourceText: "TEM-8 certified",
@@ -244,6 +263,10 @@ async function main(): Promise<void> {
     assert.equal(detail.reviewStatus, "approved");
     assert.equal(detail.stateVersion, state.stateVersion + 1);
     assert.equal(detail.reviews.length, 1);
+    assert.equal(detail.semanticEvaluations.length, 1);
+    assert.equal(detail.semanticEvaluations[0]?.criterionId, "semantic.skill.java");
+    assert.deepEqual(detail.semanticEvaluations[0]?.normalizedValue, ["Java"]);
+    assert.equal(detail.semanticEvaluations[0]?.promptVersion, "semantic-prompt-1.0");
     const templateVersionId = await m2Repository.ensureMessageTemplate({
       name: `Integration Template ${suffix}`,
       body: "你好 {{candidate_name}}，测试岗位：{{position_name}}。",

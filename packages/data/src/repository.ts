@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { SemanticEvaluation } from "@boss-forge/semantic-engine";
 import type { Database } from "./client.js";
 import type {
   CandidateEvaluationRecord,
@@ -643,6 +644,33 @@ export class BossForgeRepository {
         `;
       }
       await transaction`
+        DELETE FROM semantic_evaluations
+        WHERE candidate_position_state_id = ${input.job.stateId}
+      `;
+      for (const evaluation of input.record.semanticEvaluations ?? []) {
+        await transaction`
+          INSERT INTO semantic_evaluations (
+            id, candidate_position_state_id, source_snapshot_id, rule_version_id,
+            criterion_id, fact_type, execution_mode, result, normalized_value,
+            qualifier, evidence, confidence, extractor, model_version,
+            prompt_version, catalog_version, rubric_version, runtime_mode,
+            reason_codes
+          )
+          SELECT
+            ${randomUUID()}, cps.id, cps.latest_snapshot_id, cps.rule_version_id,
+            ${evaluation.criterionId}, ${evaluation.factType},
+            ${evaluation.executionMode}, ${evaluation.result},
+            ${transaction.json(evaluation.normalizedValue)}, ${evaluation.qualifier},
+            ${transaction.json(evaluation.evidence)}, ${evaluation.confidence},
+            ${evaluation.extractor}, ${evaluation.modelVersion},
+            ${evaluation.promptVersion}, ${evaluation.catalogVersion},
+            ${evaluation.rubricVersion}, ${evaluation.runtimeMode},
+            ${transaction.json(evaluation.reasonCodes)}
+          FROM candidate_position_states cps
+          WHERE cps.id = ${input.job.stateId}
+        `;
+      }
+      await transaction`
         INSERT INTO audit_logs (
           id, actor_id, action, resource_type, resource_id, payload
         ) VALUES (
@@ -1036,7 +1064,7 @@ export class BossForgeRepository {
     `;
     const row = rows[0];
     if (!row) return null;
-    const [evidenceRows, reviewRows] = await Promise.all([
+    const [evidenceRows, semanticRows, reviewRows] = await Promise.all([
       this.sql<
         Array<{
           capability_id: string;
@@ -1052,6 +1080,32 @@ export class BossForgeRepository {
         SELECT capability_id, canonical_label, dictionary_version, source_text,
           normalized_alias, evidence_status, confidence, reason_codes
         FROM match_evidence
+        WHERE candidate_position_state_id = ${stateId}
+        ORDER BY created_at ASC
+      `,
+      this.sql<
+        Array<{
+          criterion_id: string;
+          fact_type: string;
+          execution_mode: "normalized_entity" | "semantic_rubric";
+          result: "matched" | "not_matched" | "unknown";
+          normalized_value: SemanticEvaluation["normalizedValue"];
+          qualifier: string | null;
+          evidence: string[];
+          confidence: number;
+          extractor: "alias" | "llm" | "none";
+          model_version: string | null;
+          prompt_version: string;
+          catalog_version: string;
+          rubric_version: string | null;
+          runtime_mode: "shadow" | "active";
+          reason_codes: string[];
+        }>
+      >`
+        SELECT criterion_id, fact_type, execution_mode, result, normalized_value,
+          qualifier, evidence, confidence, extractor, model_version,
+          prompt_version, catalog_version, rubric_version, runtime_mode, reason_codes
+        FROM semantic_evaluations
         WHERE candidate_position_state_id = ${stateId}
         ORDER BY created_at ASC
       `,
@@ -1106,6 +1160,23 @@ export class BossForgeRepository {
         normalizedAlias: item.normalized_alias,
         status: item.evidence_status,
         confidence: item.confidence,
+        reasonCodes: item.reason_codes
+      })),
+      semanticEvaluations: semanticRows.map((item) => ({
+        criterionId: item.criterion_id,
+        factType: item.fact_type,
+        executionMode: item.execution_mode,
+        result: item.result,
+        normalizedValue: item.normalized_value,
+        qualifier: item.qualifier,
+        evidence: item.evidence,
+        confidence: item.confidence,
+        extractor: item.extractor,
+        modelVersion: item.model_version,
+        promptVersion: item.prompt_version,
+        catalogVersion: item.catalog_version,
+        rubricVersion: item.rubric_version,
+        runtimeMode: item.runtime_mode,
         reasonCodes: item.reason_codes
       })),
       reviews: reviewRows.map((item) => ({

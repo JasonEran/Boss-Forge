@@ -41,6 +41,9 @@ importers:
       '@boss-forge/m1-core':
         specifier: workspace:*
         version: link:../../packages/m1-core
+      '@boss-forge/semantic-engine':
+        specifier: workspace:*
+        version: link:../../packages/semantic-engine
       tencentcloud-sdk-nodejs-ocr:
         specifier: 4.1.302
         version: 4.1.302(supports-color@10.2.2)
@@ -191,6 +194,9 @@ importers:
       '@boss-forge/rule-engine':
         specifier: workspace:*
         version: link:../rule-engine
+      '@boss-forge/semantic-engine':
+        specifier: workspace:*
+        version: link:../semantic-engine
       postgres:
         specifier: 3.4.7
         version: 3.4.7
@@ -206,8 +212,13 @@ importers:
       '@boss-forge/rule-engine':
         specifier: workspace:*
         version: link:../rule-engine
+      '@boss-forge/semantic-engine':
+        specifier: workspace:*
+        version: link:../semantic-engine
 
   packages/rule-engine: {}
+
+  packages/semantic-engine: {}
 
 packages:
 

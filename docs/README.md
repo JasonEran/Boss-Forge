@@ -10,7 +10,7 @@
 |---|---|
 | [产品需求](PRODUCT_REQUIREMENTS.md) | 产品目标、通用语义筛选、用户流程、功能边界和验收口径 |
 | [当前实现状态](CURRENT_STATUS.md) | 已实现、部分实现、未实现和最近验证结果 |
-| [系统架构](SYSTEM_ARCHITECTURE.md) | 当前组件、数据、API、状态机及规划中的通用语义层 |
+| [系统架构](SYSTEM_ARCHITECTURE.md) | 当前组件、数据、API、状态机及通用语义层 |
 | [本地开发与验证](LOCAL_DEVELOPMENT.md) | 本地启动、M0 诊断、Worker、OCR 和测试命令 |
 | [Ubuntu 内网部署](INTRANET_DEPLOYMENT.md) | 单数据库自研拓扑的部署、升级和回滚 |
 | [boss-cli 集成边界](BOSS_CLI_INTEGRATION.md) | 复用能力、版本约束、风险分级和不重复建设范围 |
