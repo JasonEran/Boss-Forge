@@ -15,6 +15,7 @@
 | [Ubuntu 内网部署](INTRANET_DEPLOYMENT.md) | 单数据库自研拓扑的部署、升级和回滚 |
 | [boss-cli 集成边界](BOSS_CLI_INTEGRATION.md) | 复用能力、版本约束、风险分级和不重复建设范围 |
 | [自研产品路线图](ROADMAP.md) | R1–R6 已交付能力与后续真实上线工作 |
+| [2026-09-01 验收报告](ACCEPTANCE_REPORT_2026-09-01.md) | 自动化、服务、路由与浏览器验收结果及阻塞项 |
 | [前端设计系统](../design-system/boss-forge/MASTER.md) | 当前 CSS Token、组件和交互规范 |
 
 ## 维护规则
