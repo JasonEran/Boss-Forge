@@ -51,7 +51,7 @@ PostgreSQL                    BOSS/Contact queues
 | `apps/control-api` | HTTP API、请求校验、错误映射、E2E 和种子数据 |
 | `apps/boss-worker` | M0 诊断、M1 任务/计划 Worker、简历 OCR、联系 Worker |
 | `packages/boss-cli-adapter` | 命令构建、风险分类、版本检查和 stdout 解析 |
-| `packages/rule-engine` | TEM8/英语等级、院校目录与基础证据归一 |
+| `packages/rule-engine` | TEM8/英语等级、院校目录、确定性条件与基础证据归一 |
 | `packages/m1-core` | 候选人规则评估和组合规则执行 |
 | `packages/contact-policy` | 联系开关、时段、限额、冷却和熔断判定 |
 | `packages/data` | PostgreSQL 迁移、Repository、租约、幂等、Outbox 和审计 |
@@ -126,6 +126,49 @@ M0 的显式 `greet` 命令是独立技术诊断通道，不经过 Dashboard 联
 组节点支持 `AND`、`OR`、`NOT` 及兼容的 `all/any`。缺失字段策略为 `manual_review`、`fail` 或 `ignore`。
 
 BOSS `985`、`211`、`双一流`使用 `enum(field=bossPlatformTags)`，只匹配适配器从候选人卡片提取的显式标签。
+
+### 5.1 规划中的通用语义层
+
+以下能力尚未写入当前运行链路，属于下一阶段架构，不应被视为已经实现。
+
+通用语义层位于 OCR/卡片解析与规则引擎之间，将跨岗位的自然语言表达转换为可审计事实：
+
+```text
+Card/OCR text
+  -> deterministic parser + alias catalog
+  -> model extractor for unresolved/ambiguous text
+  -> JSON Schema validator
+  -> normalized facts + evidence
+  -> versioned rule/rubric evaluator
+  -> matched | not_matched | unknown
+```
+
+岗位条件按执行方式分为 `platform_tag`、`deterministic`、`normalized_entity` 和 `semantic_rubric`。大模型不替代规则树：它为 `normalized_entity` 补充事实提取，并按版本化 rubric 评估只能通过上下文判断的条件。数值、学历、平台标签等硬条件仍由确定性规则执行。
+
+规划中的规范化事实至少包含：
+
+```json
+{
+  "criterionId": "criterion-id",
+  "factType": "team_management",
+  "normalizedValue": { "teamSize": 12 },
+  "qualifier": "led",
+  "evidence": ["负责12人研发团队的排期、绩效和交付"],
+  "confidence": 0.93,
+  "sourceSnapshotId": "snapshot-id",
+  "extractor": "llm",
+  "extractorVersion": "model/prompt/catalog version"
+}
+```
+
+执行边界：
+
+- 模型仅接收完成筛选所需的卡片/OCR文本，输出必须通过严格 Schema 校验。
+- 无证据、低置信度、冲突或解析失败统一降级为 `unknown/manual_review`。
+- 原文快照、模型、提示词、语义目录、rubric 和最终规则版本必须一起留存，保证回放。
+- HR 纠正写入审核事实和评估数据集，不在线自学习、不静默修改已发布规则。
+- 大模型不得生成或覆盖 BOSS 985/211/双一流标签，也不得推断岗位无关的敏感属性。
+- 部署只允许管理员配置的内网模型端点；凭据只进入 Worker/服务端，不进入 Web。
 
 ## 6. 状态机
 
