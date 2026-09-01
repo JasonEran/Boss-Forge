@@ -1,91 +1,82 @@
 # Boss-Forge
 
-内网 HR 智能简历筛选与候选人联络 Dashboard。
+Boss-Forge 是面向内网 HR 团队的自研招聘控制面，通过 `boss-cli` 读取 BOSS 候选人，执行版本化规则筛选、简历预览/OCR、人工审核和受控联系。
 
-Boss-Forge 现在采用完全自研控制面，不依赖 Odoo 运行时。我们保留了岗位聚合、招聘阶段、负责人协作、活动待办、不可变规则版本和审计等成熟 ATS 设计思想，但数据、权限、页面和执行链路均由本项目维护。
+项目不依赖 Odoo。Web 是唯一 HR 控制面；API、PostgreSQL 和 Worker 负责业务事实、队列与外部执行。
 
-当前文档：
+## 当前状态
 
-- [纯自研 HR 控制面重构设计](docs/SELF_HOSTED_HR_REFACTOR_PLAN.md)
-- [纯自研内网部署与运行手册](docs/SELF_HOSTED_INTRANET_RUNBOOK.md)
-- [HR Dashboard 产品需求文档](docs/HR_DASHBOARD_PRD.md)
-- [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
-- [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
-- [M1 数据闭环运行手册](docs/M1_RUNBOOK.md)
-- [M2 定时筛选与受控联系运行手册](docs/M2_RUNBOOK.md)
-- [M1/M2 验收清单与测试报告](docs/M1_M2_ACCEPTANCE.md)
-- [两阶段交付计划](docs/TWO_PHASE_DELIVERY_PLAN.md)
-- [boss-cli 能力复用清单](docs/BOSS_CLI_REUSE_MATRIX.md)
-- [HR Dashboard 需求思维导图](docs/HR_DASHBOARD_MINDMAP.md)
-- [Dashboard 设计系统](design-system/boss-forge/MASTER.md)
+- 已实现：岗位和规则版本、立即/定时筛选、推荐/搜索、候选人去重、简历精筛、TEM8 与当前英语级别、BOSS 985/211/双一流标签、人工审核、消息预览、Fake 联系、审计。
+- 尚未实现：登录与部门权限、招聘阶段/面试/Offer、协作待办、可操作的自动联系开关、回复同步、分析报表、可成功执行的产品级 Real 联系。
+- 真实打招呼未测试；内网 Compose 没有 Real Worker，固定 `BOSS_FORGE_REAL_GREET_ENABLED=0`。
+- 当前验证基线：14 个测试文件、149 个测试通过；数据集成和 Fake-only 用户 E2E 通过。
 
-## M0 快速验证
+完整状态见 [当前实现状态](docs/CURRENT_STATUS.md)。
 
-Boss-Forge Dashboard 是唯一 HR 控制面；M0/M1/M2 Worker 负责 BOSS 渠道执行、规则判定、任务队列和受控联系。
+## 本地启动
 
-```bash
-pnpm install
-pnpm m0:install-browser
-pnpm typecheck
-pnpm test
-pnpm m0:doctor
-pnpm m0 -- login
-```
-
-登录需要在打开的 Chrome 中人工完成。登录后可执行：
-
-```bash
-pnpm m0 -- live positions
-```
-
-简历预览和真实打招呼分别要求显式传入 `--approve-preview` 与 `--approve-greet`，详见 [M0 技术验证运行手册](docs/M0_RUNBOOK.md)。
-
-## Dashboard 本地预览
-
-```bash
-pnpm web:dev
-```
-
-浏览器打开 `http://localhost:3000`。Dashboard 已接入 M1/M2 控制 API，可配置岗位与 TEM8 规则、立即或定时筛选、查看采集证据、人工审核、预览消息并创建受控联系任务。真实打招呼默认关闭。
-
-前端按 HR 工作流划分为六个功能页：
-
-- `/`：工作台总览与快捷待办
-- `/positions`：岗位与筛选规则
-- `/tasks`：立即任务与定时计划
-- `/candidates`：候选人证据与人工审核
-- `/contacts`：消息预览、联系意图与执行记录
-- `/audit`：审计日志与自动化安全边界
-
-## M1 本地数据闭环
+要求 Node.js 22+、pnpm 11 和 Docker。
 
 ```bash
 cp .env.example .env
+pnpm install
 pnpm db:up
 pnpm db:migrate
 pnpm m1:seed
 ```
 
-分别在三个终端启动控制 API、采集 Worker 和 Dashboard：
+分别启动 API 与 Web：
 
 ```bash
 pnpm api
-pnpm m1:worker
 pnpm web:dev
 ```
 
-此时 Dashboard 的“立即执行筛选”会创建幂等任务，Worker 先读取推荐候选人并去重，再将候选人排入完整简历精筛队列。精筛通过 `boss-cli preview` 复用现有简历截图/OCR 能力，识别 TEM8 及候选人明确写出的 TEM4、CET4/6、IELTS、TOEFL、BEC 等证书或成绩；完成精筛后才允许 HR 审核。
-
-岗位规则可直接选择 BOSS 的 `985`、`211`、`双一流`平台标签，并配置“满足任一”或“必须全部”。这些结论只读取 `boss-cli recommend/search` 返回的显式标签，不从学校名称、简历正文或 OCR 自行推断，也不需要导入学校名单。版本化院校目录仅保留给公司自定义白名单/黑名单等可选规则。
-
-真实简历预览默认关闭。腾讯云通用印刷体 OCR 模式需要设置 `BOSS_FORGE_RESUME_PREVIEW_ENABLED=1`、`BOSS_FORGE_OCR_PROVIDER=tencent` 及 `TENCENTCLOUD_SECRET_ID/SECRET_KEY`；`BOSS_RESUME_OCR` 保持为 `0`，避免同时调用 `boss-cli` 内置百度 OCR。Worker 只把 `boss-cli` 生成的简历截图提交给腾讯云 `GeneralBasicOCR`，密钥只从服务端环境变量读取。简历精筛开关与真实打招呼开关完全独立。
-
-## M2 安全边界
-
-M2 已实现定时筛选、人工审核后的消息预览、显式联系确认、Outbox、限额/时段/冷却策略、失败与不确定结果恢复和审计日志。真实 `boss-cli greet` 执行需要 `--approve-real-greet` 与 `BOSS_FORGE_REAL_GREET_ENABLED=1` 同时存在；本轮没有进行真实打招呼测试，详见 [M2 运行手册](docs/M2_RUNBOOK.md)。
-
-无真实发送的完整用户流程可重复执行：
+打开 `http://localhost:3000`。需要读取 BOSS 时，再在独立终端启动：
 
 ```bash
-pnpm test:e2e:user
+pnpm m1:worker
 ```
+
+简历预览默认关闭；开启前请先阅读 [本地开发与验证](docs/LOCAL_DEVELOPMENT.md)。
+
+## 页面
+
+- `/`：工作台总览
+- `/positions`：岗位和结构化规则
+- `/tasks`：立即任务与定时计划
+- `/candidates`：筛选结果、证据和人工审核
+- `/contacts`：消息预览、Fake 联系意图和结果
+- `/audit`：审计与安全状态
+
+## 常用验证
+
+```bash
+pnpm typecheck
+pnpm lint:web
+pnpm test
+pnpm test:integration:data
+pnpm test:e2e:user
+pnpm web:build
+```
+
+`test:e2e:user` 必须输出 `realGreetingExecuted: false`。
+
+## 文档
+
+- [文档索引](docs/README.md)
+- [产品需求](docs/PRODUCT_REQUIREMENTS.md)
+- [当前实现状态](docs/CURRENT_STATUS.md)
+- [系统架构](docs/SYSTEM_ARCHITECTURE.md)
+- [本地开发与验证](docs/LOCAL_DEVELOPMENT.md)
+- [Ubuntu 内网部署](docs/INTRANET_DEPLOYMENT.md)
+- [boss-cli 集成边界](docs/BOSS_CLI_INTEGRATION.md)
+- [自研产品路线图](docs/ROADMAP.md)
+- [前端设计系统](design-system/boss-forge/MASTER.md)
+
+## 安全边界
+
+- `preview` 会访问真实简历并可能消耗平台预览额度；默认关闭。
+- Dashboard 创建的联系意图固定为 Fake，不会发送真实招呼。
+- M0 诊断命令包含显式批准的真实 `greet` 通道，只供人工技术验证；未经单独授权不得运行。
+- 不实现绕过验证码、平台风控或产品额度的能力。
