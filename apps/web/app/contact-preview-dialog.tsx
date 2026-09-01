@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { apiFetch } from './api-client';
 
 type Preview = {
   templateVersionId: string;
@@ -47,7 +48,7 @@ export function ContactPreviewDialog({ open, stateId, controlApi, onOpenChange, 
       setLoading(true);
       setCreated(false);
       setError(null);
-      return fetch(`${controlApi}/api/candidate-position-states/${stateId}/message-preview`, { cache: 'no-store' });
+      return apiFetch(`${controlApi}/api/candidate-position-states/${stateId}/message-preview`, { cache: 'no-store' });
     })
       .then((response) => responseJson<{ preview: Preview }>(response))
       .then((payload) => setPreview(payload.preview))
@@ -60,7 +61,7 @@ export function ContactPreviewDialog({ open, stateId, controlApi, onOpenChange, 
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(`${controlApi}/api/candidate-position-states/${stateId}/contact-intents`, {
+      const response = await apiFetch(`${controlApi}/api/candidate-position-states/${stateId}/contact-intents`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

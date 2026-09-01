@@ -59,6 +59,8 @@ import { CandidateReviewDialog } from './candidate-review-dialog';
 import { ContactPreviewDialog } from './contact-preview-dialog';
 import { PositionRuleDialog } from './position-rule-dialog';
 import { ScheduleDialog } from './schedule-dialog';
+import { AuthGate } from './auth-gate';
+import { apiFetch } from './api-client';
 
 export type DashboardPage =
   | 'overview'
@@ -100,6 +102,7 @@ type Task = {
 };
 type Candidate = {
   stateId: string;
+  positionId: string;
   name: string;
   positionName: string;
   ruleDecision: 'matched' | 'not_matched' | 'ambiguous' | 'insufficient';
@@ -313,6 +316,11 @@ const navigation: Array<{
     href: '/audit',
   },
 ];
+const atsNavigation = [
+  ['/team', '团队与权限'], ['/pipeline', '招聘流程'], ['/rules', '规则治理'],
+  ['/semantic', '语义评估'], ['/operations', '招聘运营'], ['/automation', '自动联系'],
+  ['/analytics', '数据分析'],
+] as const;
 
 const pageCopy: Record<
   DashboardPage,
@@ -487,7 +495,7 @@ function PaginationFooter({
   );
 }
 
-export function DashboardClient({ page }: { page: DashboardPage }) {
+function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
@@ -507,7 +515,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const response = await fetch(`${controlApi}/api/dashboard`, {
+      const response = await apiFetch(`${controlApi}/api/dashboard`, {
         cache: 'no-store',
       });
       const nextData = await responseJson<DashboardData>(response);
@@ -615,7 +623,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
     setCreatingTask(true);
     setError(null);
     try {
-      const response = await fetch(`${controlApi}/api/tasks`, {
+      const response = await apiFetch(`${controlApi}/api/tasks`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -653,7 +661,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
 
   async function cancelSchedule(schedule: Schedule) {
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${controlApi}/api/schedules/${schedule.id}/cancel`,
         {
           method: 'POST',
@@ -743,7 +751,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
             variant="secondary"
             className="hidden border border-border sm:inline-flex"
           >
-            M1 + M2 · 受控闭环
+            R1–R6 · Fake-only
           </Badge>
           <div className="hidden text-right md:block">
             <p className="text-xs font-medium">招聘账号 01</p>
@@ -792,6 +800,10 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                 </Link>
               );
             })}
+          </nav>
+          <div className="my-4 border-t" />
+          <nav aria-label="部门 ATS 导航" className="space-y-1">
+            {atsNavigation.map(([href, label]) => <Link key={href} href={href} className="flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"><Activity className="size-4" /><span>{label}</span></Link>)}
           </nav>
           <div className="mt-8 rounded-xl border bg-muted/45 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
@@ -1855,4 +1867,8 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
       />
     </div>
   );
+}
+
+export function DashboardClient({ page }: { page: DashboardPage }) {
+  return <AuthGate><AuthenticatedDashboardClient page={page} /></AuthGate>;
 }

@@ -56,6 +56,9 @@ importers:
       '@boss-forge/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@boss-forge/m1-core':
+        specifier: workspace:*
+        version: link:../../packages/m1-core
 
   apps/web:
     dependencies:

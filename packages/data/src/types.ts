@@ -211,6 +211,7 @@ export type ResumeScreeningStatus =
 export type DashboardCandidate = {
   stateId: string;
   candidateId: string;
+  positionId: string;
   name: string;
   positionName: string;
   ruleDecision: CandidateEvaluationRecord["decision"];

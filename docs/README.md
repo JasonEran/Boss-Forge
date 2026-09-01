@@ -14,13 +14,13 @@
 | [本地开发与验证](LOCAL_DEVELOPMENT.md) | 本地启动、M0 诊断、Worker、OCR 和测试命令 |
 | [Ubuntu 内网部署](INTRANET_DEPLOYMENT.md) | 单数据库自研拓扑的部署、升级和回滚 |
 | [boss-cli 集成边界](BOSS_CLI_INTEGRATION.md) | 复用能力、版本约束、风险分级和不重复建设范围 |
-| [自研产品路线图](ROADMAP.md) | 从当前筛选工具演进为部门级 ATS 的后续阶段 |
+| [自研产品路线图](ROADMAP.md) | R1–R6 已交付能力与后续真实上线工作 |
 | [前端设计系统](../design-system/boss-forge/MASTER.md) | 当前 CSS Token、组件和交互规范 |
 
 ## 维护规则
 
-1. 当前事实写入 `CURRENT_STATUS.md`，未来能力写入 `ROADMAP.md`。
-2. 产品需求不得把路线图能力描述成已经交付。
+1. 当前事实写入 `CURRENT_STATUS.md`，R1–R6 交付记录和后续上线工作写入 `ROADMAP.md`。
+2. 产品需求与当前状态必须按已验证代码同步更新。
 3. API、表名、状态和环境变量以代码为准；修改代码时同步对应文档。
 4. 测试数量只在重新执行全量测试后更新。
 5. 真实联系状态必须明确写出：是否存在 Worker、是否部署、是否实测。

@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { apiFetch } from './api-client';
 import {
   NativeSelect,
   NativeSelectOption,
@@ -496,7 +497,7 @@ export function PositionRuleDialog({
     try {
       let positionId = position?.id;
       if (!positionId) {
-        const positionResponse = await fetch(`${controlApi}/api/positions`, {
+        const positionResponse = await apiFetch(`${controlApi}/api/positions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -512,7 +513,7 @@ export function PositionRuleDialog({
         positionId = payload.position.id;
       }
       const nextVersion = (activeRule?.version ?? 0) + 1;
-      const ruleResponse = await fetch(
+      const ruleResponse = await apiFetch(
         `${controlApi}/api/positions/${positionId}/rules`,
         {
           method: 'POST',
@@ -599,8 +600,8 @@ export function PositionRuleDialog({
           </DialogTitle>
           <DialogDescription>
             {editingExistingPosition
-              ? `正在编辑“${position?.name}”。保存后生成不可变的新版本，历史任务继续使用旧版本。`
-              : '创建岗位并发布第一版筛选规则。后续修改会生成新版本。'}
+              ? `正在编辑“${position?.name}”。保存后生成不可变草稿，审批发布前历史任务继续使用旧版本。`
+              : '创建岗位并保存第一版规则草稿；请到“规则治理”完成审批发布。'}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="space-y-4">
@@ -1015,8 +1016,8 @@ export function PositionRuleDialog({
               {submitting
                 ? '正在保存'
                 : editingExistingPosition
-                  ? '保存为新规则版本'
-                  : '保存岗位与规则'}
+                  ? '保存为规则草稿'
+                  : '保存岗位与规则草稿'}
             </Button>
           </DialogFooter>
         </form>

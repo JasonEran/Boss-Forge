@@ -1026,6 +1026,7 @@ export class BossForgeRepository {
       Array<{
         state_id: string;
         candidate_id: string;
+        position_id: string;
         display_name: string;
         position_name: string;
         rule_decision: DashboardCandidate["ruleDecision"];
@@ -1048,7 +1049,7 @@ export class BossForgeRepository {
         dictionary_version: string;
       }>
     >`
-      SELECT cps.id AS state_id, c.id AS candidate_id, c.display_name,
+      SELECT cps.id AS state_id, c.id AS candidate_id, p.id AS position_id, c.display_name,
         p.name AS position_name, cps.rule_decision, cps.rule_confidence,
         cps.review_status, cps.contact_status, cps.version AS state_version,
         cps.resume_screening_status, cps.current_english_level,
@@ -1132,6 +1133,7 @@ export class BossForgeRepository {
     return {
       stateId: row.state_id,
       candidateId: row.candidate_id,
+      positionId: row.position_id,
       name: row.display_name,
       positionName: row.position_name,
       ruleDecision: row.rule_decision,
@@ -1336,6 +1338,7 @@ export class BossForgeRepository {
         Array<{
           state_id: string;
           candidate_id: string;
+          position_id: string;
           display_name: string;
           position_name: string;
           rule_decision: DashboardCandidate["ruleDecision"];
@@ -1380,7 +1383,7 @@ export class BossForgeRepository {
             ) AS identity_rank
           FROM candidate_source
         )
-        SELECT state_id, candidate_id, display_name, position_name,
+        SELECT state_id, candidate_id, position_id, display_name, position_name,
           rule_decision, rule_confidence, review_status, contact_status,
           state_version, resume_screening_status, current_english_level,
           resume_screened_at, resume_screening_error, source_evidence,
@@ -1458,6 +1461,7 @@ export class BossForgeRepository {
       candidates: candidateRows.map((row) => ({
         stateId: row.state_id,
         candidateId: row.candidate_id,
+        positionId: row.position_id,
         name: row.display_name,
         positionName: row.position_name,
         ruleDecision: row.rule_decision,

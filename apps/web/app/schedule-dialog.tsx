@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { apiFetch } from './api-client';
 import {
   Select,
   SelectContent,
@@ -62,7 +63,7 @@ export function ScheduleDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(`${controlApi}/api/schedules`, {
+      const response = await apiFetch(`${controlApi}/api/schedules`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

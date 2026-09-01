@@ -187,7 +187,7 @@ pnpm test:e2e:user
 当前基线：
 
 - Vitest：17 个文件、164 个测试。
-- Web：6 个路由构建通过。
+- Web：13 个路由构建通过。
 - 数据集成：真实 PostgreSQL、Fake 联系、幂等和计划物化通过。
 - 用户 E2E：必须输出 `realGreetingExecuted: false`，并清理合成数据。
 

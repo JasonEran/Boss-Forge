@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { apiFetch } from './api-client';
 
 type CandidateDetail = {
   stateId: string;
@@ -131,7 +132,7 @@ export function CandidateReviewDialog({
       setCandidate(null);
       setLoading(true);
       setError(null);
-      void fetch(`${controlApi}/api/candidate-position-states/${stateId}`, {
+      void apiFetch(`${controlApi}/api/candidate-position-states/${stateId}`, {
         cache: 'no-store',
       })
         .then((response) =>
@@ -157,7 +158,7 @@ export function CandidateReviewDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${controlApi}/api/candidate-position-states/${candidate.stateId}/reviews`,
         {
           method: 'POST',
@@ -195,7 +196,7 @@ export function CandidateReviewDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${controlApi}/api/candidate-position-states/${candidate.stateId}/resume-screenings`,
         {
           method: 'POST',

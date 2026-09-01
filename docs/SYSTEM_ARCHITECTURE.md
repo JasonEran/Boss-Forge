@@ -2,7 +2,7 @@
 
 > 架构版本：2026-09-01 代码同步版
 >
-> 范围：当前纯自研控制面，不含路线图能力
+> 范围：当前纯自研 R1–R6 部门 ATS 控制面
 
 ## 1. 架构结论
 
@@ -47,7 +47,7 @@ PostgreSQL                    BOSS/Contact queues
 
 | 路径 | 职责 |
 |---|---|
-| `apps/web` | 六页 Dashboard、结构化规则表单、审核和联系交互 |
+| `apps/web` | 13 个功能路由：筛选、审核、团队、管道、规则、语义、运营、自动联系和分析 |
 | `apps/control-api` | HTTP API、请求校验、错误映射、E2E 和种子数据 |
 | `apps/boss-worker` | M0 诊断、M1 任务/计划 Worker、简历 OCR、联系 Worker |
 | `packages/boss-cli-adapter` | 命令构建、风险分类、版本检查和 stdout 解析 |
@@ -65,10 +65,10 @@ PostgreSQL                    BOSS/Contact queues
 1. Web 通过 API 创建岗位。
 2. Web 将结构化表单转换为 schema 1.0 确定性规则树；存在语义叶子时使用 schema 1.1。
 3. API 严格校验规则字段、深度、节点数、取值和目录快照。
-4. Repository 创建新 `rule_versions` 记录，并把 `rule_sets.active_version_id` 指向新版本。
-5. 已存在版本不被覆盖；任务保存创建时的规则版本 ID。
+4. Repository 创建 Draft；负责人/管理员审批后才把 `rule_sets.active_version_id` 指向 Published 版本。
+5. 已发布配置由数据库触发器禁止原地修改；任务保存创建时的规则版本 ID。
 
-当前 UI 只生成根节点 AND/OR 和常用叶子；规则引擎支持更丰富的嵌套节点。
+`/rules` 使用递归可视化规则树，可生成任意嵌套 AND/OR/NOT 和常用叶子。
 
 ### 4.2 立即与定时筛选
 
@@ -175,7 +175,7 @@ Card/OCR text
 
 运行开关为 `BOSS_FORGE_SEMANTIC_ENABLED` 与 `BOSS_FORGE_SEMANTIC_MODE`。默认关闭且为 `shadow`：配置的同义词仍可确定性匹配；模型结果会保存供核对，但不影响候选人通过/淘汰。只有明确设置 `active` 后，高于岗位阈值且有可核验原文证据的模型结果才进入规则树。模型不可用、响应格式错误或证据不在原文时统一降级为 `unknown`。
 
-当前尚缺部门级目录审批、历史样本批量回放、评估集和模型效果指标；因此“连接器已实现”不等于“真实模型效果已验收”。
+部门目录审批、固定历史评估集、规则回放和模型效果指标已实现。仓库没有真实模型端点和岗位金标数据，因此“控制面已实现”仍不等于“真实模型效果已验收”。
 
 ## 6. 状态机
 
@@ -217,6 +217,12 @@ Card/OCR text
 | 消息/联系 | `message_templates`、`template_versions`、`contact_settings`、`contact_intents`、`contact_attempts` |
 | 限额/队列 | `quota_counters`、`contact_quota_reservations`、`outbox_events` |
 | 审计 | `audit_logs` |
+| 部门身份/权限 | `departments`、`users`、`user_sessions`、`position_members` |
+| 招聘管道/协作 | `pipeline_stages`、`candidate_activities`、`candidate_notes`、`candidate_attachments`、`work_items`、`interviews`、`interview_feedback` |
+| 规则治理 | `rule_templates`、`rule_template_versions`、`rule_replay_runs` 及 `rule_versions.lifecycle_status` |
+| 语义治理 | `semantic_catalogs`、`semantic_catalog_versions`、`semantic_evaluation_sets/cases/runs` |
+| 招聘运营 | `inbound_messages`、`talent_tags`、`candidate_talent_tags`、`account_health`、`operational_alerts`、`data_export_jobs` |
+| 自动联系控制 | `contact_controls`、`contact_approval_requests`、`do_not_contact` |
 
 ### 7.2 身份与去重
 
@@ -231,9 +237,17 @@ Card/OCR text
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/health` | 数据库健康检查 |
+| POST/GET | `/api/auth/login`、`/api/auth/me` | 部门会话 |
+| GET/POST | `/api/team/users` | 部门成员管理 |
+| GET | `/api/pipeline` | 岗位授权后的分页候选人管道 |
+| GET/POST | `/api/collaboration/*` | 时间线、附件、待办、面试和反馈 |
+| GET/POST | `/api/rules/*` | 草稿、审批、模板、回放和回滚 |
+| GET/POST | `/api/semantic/*` | 目录、评估集、指标和模式门禁 |
+| GET/POST | `/api/operations/*` | 回复、人才库、健康、告警和导出 |
+| GET/POST | `/api/automation/*` | 多级开关、审批、就绪检查和 Fake 演练 |
 | GET | `/api/dashboard` | Dashboard 聚合快照 |
 | GET/POST | `/api/positions` | 查询/创建岗位 |
-| POST | `/api/positions/:id/rules` | 创建并激活规则版本 |
+| POST | `/api/positions/:id/rules` | 兼容入口：只创建规则草稿 |
 | POST | `/api/tasks` | 创建立即任务 |
 | POST | `/api/schedules` | 创建定时计划 |
 | POST | `/api/schedules/:id/cancel` | 乐观锁停用计划 |
@@ -243,7 +257,7 @@ Card/OCR text
 | GET | `/api/candidate-position-states/:id/message-preview` | 预览消息 |
 | POST | `/api/candidate-position-states/:id/contact-intents` | 创建 Fake 联系意图 |
 
-除 GET 外的重要创建请求使用 `Idempotency-Key`。当前 API 没有认证和授权中间件，这是进入部门使用前的最高优先级缺口。
+业务 API 均要求 Bearer 会话。岗位资源在服务端检查成员关系；招聘负责人/管理员具有部门管理权限。任务、审核、计划和联系等副作用请求继续使用幂等键。
 
 ## 9. 并发与恢复
 
@@ -275,13 +289,7 @@ Ubuntu 内网 Compose 默认包含：
 - 联系时段、限额、冷却、幂等和不确定结果状态。
 - `.env` 与浏览器数据目录不进 Git。
 
-尚未实现：
-
-- 用户认证、角色权限、部门数据隔离和 CSRF 策略。
-- 权威账号健康状态、集中告警和正式密钥管理。
-- 产品级 Real Worker 的安全验收。
-
-因此当前系统只适合受控内网单团队使用，不能因“仅内网”而假设已有用户隔离。
+新增的部门安全边界包括密码会话、四角色、岗位级数据隔离、账号停用、当前用户审计、多级联系开关、审批、权威账号健康、DNC 和紧急停止。当前只在内网运行，不配置公网 CSRF/TLS/WAF 规格。产品级 Real Worker 仍未验收或部署。
 
 ## 12. 测试分层
 
