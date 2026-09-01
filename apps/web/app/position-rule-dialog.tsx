@@ -581,7 +581,7 @@ export function PositionRuleDialog({
                   id="skills"
                   value={skills}
                   onChange={(event) => setSkills(event.target.value)}
-                  placeholder="Python、Odoo、招聘运营"
+                  placeholder="Python、SQL、招聘运营"
                 />
                 {modeSelect('skills-mode', skillsMode, setSkillsMode)}
               </label>

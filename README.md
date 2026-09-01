@@ -2,11 +2,12 @@
 
 内网 HR 智能简历筛选与候选人联络 Dashboard。
 
+Boss-Forge 现在采用完全自研控制面，不依赖 Odoo 运行时。我们保留了岗位聚合、招聘阶段、负责人协作、活动待办、不可变规则版本和审计等成熟 ATS 设计思想，但数据、权限、页面和执行链路均由本项目维护。
+
 当前文档：
 
-- [基于 Odoo Community Recruitment 的详细重构设计](docs/ODOO_COMMUNITY_REFACTOR_PLAN.md)
-- [Odoo 重构内网部署、升级与验收手册](docs/ODOO_REFACTOR_RUNBOOK.md)
-- [Odoo 重构实施报告](docs/ODOO_REFACTOR_IMPLEMENTATION_REPORT.md)
+- [纯自研 HR 控制面重构设计](docs/SELF_HOSTED_HR_REFACTOR_PLAN.md)
+- [纯自研内网部署与运行手册](docs/SELF_HOSTED_INTRANET_RUNBOOK.md)
 - [HR Dashboard 产品需求文档](docs/HR_DASHBOARD_PRD.md)
 - [系统架构设计](docs/SYSTEM_ARCHITECTURE.md)
 - [M0 技术验证运行手册](docs/M0_RUNBOOK.md)
@@ -20,7 +21,7 @@
 
 ## M0 快速验证
 
-当前重构以 Odoo 19 Community Recruitment 作为 HR 主控制面，Boss-Forge 负责 BOSS 渠道执行、规则判定、任务队列和受控联系。旧 Dashboard 与 M0/M1/M2 命令继续保留，用于本地验证、运维诊断和渐进迁移；不会在切换前删除既有能力。
+Boss-Forge Dashboard 是唯一 HR 控制面；M0/M1/M2 Worker 负责 BOSS 渠道执行、规则判定、任务队列和受控联系。
 
 ```bash
 pnpm install

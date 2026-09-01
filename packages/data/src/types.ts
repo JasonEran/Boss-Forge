@@ -29,7 +29,7 @@ export type Tem8RuleNode = {
 
 export type UnknownPolicy = "manual_review" | "fail" | "ignore";
 
-/** Compatibility with the generic capability leaf documented by the Odoo design. */
+/** Compatibility with the generic capability leaf used by versioned rule configs. */
 export type Tem8CapabilityRuleNode = {
   type: "capability";
   capability: "tem8";

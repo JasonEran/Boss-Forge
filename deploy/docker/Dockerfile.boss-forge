@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 ARG NODE_IMAGE=node:22-bookworm-slim
 FROM ${NODE_IMAGE} AS runtime
+ARG NEXT_PUBLIC_CONTROL_API_URL=http://127.0.0.1:3100
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH NODE_ENV=production HOME=/home/node LANG=C.UTF-8
+ENV NEXT_PUBLIC_CONTROL_API_URL=${NEXT_PUBLIC_CONTROL_API_URL}
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates chromium dumb-init fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \
@@ -11,6 +13,7 @@ WORKDIR /app
 COPY --chown=node:node . /app
 # tsx is the current runtime; keep root devDependencies until standalone JS bundles exist.
 RUN pnpm install --frozen-lockfile --prod=false \
+    && pnpm web:build \
     && mkdir -p /var/lib/boss-forge/runtime /var/lib/boss-forge/browser /home/node/.boss-cli \
     && chown -R node:node /var/lib/boss-forge /home/node/.boss-cli
 USER node

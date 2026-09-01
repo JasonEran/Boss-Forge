@@ -1,4 +1,0 @@
-id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_bf_outbox_system,boss.forge.integration.outbox system,model_boss_forge_integration_outbox,base.group_system,1,1,1,1
-access_bf_inbox_system,boss.forge.integration.inbox system,model_boss_forge_integration_inbox,base.group_system,1,1,1,0
-access_bf_external_map_system,boss.forge.external.map system,model_boss_forge_external_map,base.group_system,1,1,1,1

@@ -1,10 +1,7 @@
-import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { parseOdooInboundEvent } from "@boss-forge/contracts";
 import {
   BossForgeRepository,
   M2Repository,
-  OdooIntegrationRepository,
   OptimisticLockError,
   createDatabase,
   parseRuleConfig,
@@ -17,7 +14,6 @@ const webOrigin = process.env.CONTROL_WEB_ORIGIN?.trim() || "http://localhost:30
 const sql = createDatabase();
 const repository = new BossForgeRepository(sql);
 const m2Repository = new M2Repository(sql);
-const odooIntegrationRepository = new OdooIntegrationRepository(sql);
 
 type JsonObject = Record<string, unknown>;
 
@@ -47,21 +43,6 @@ function integer(value: unknown, field: string): number {
     throw new Error(`${field} must be a positive integer.`);
   }
   return value;
-}
-
-function integrationAuthorized(request: IncomingMessage): boolean {
-  const configured =
-    process.env.ODOO_INTEGRATION_TOKEN?.trim() ||
-    process.env.BOSS_FORGE_SERVICE_TOKEN?.trim();
-  if (!configured) {
-    throw new Error("ODOO_INTEGRATION_TOKEN or BOSS_FORGE_SERVICE_TOKEN is required.");
-  }
-  const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return false;
-  const received = header.slice("Bearer ".length).trim();
-  const left = Buffer.from(configured);
-  const right = Buffer.from(received);
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function shanghaiMinuteOfDay(date: Date): number {
@@ -116,37 +97,6 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (request.method === "GET" && url.pathname === "/health") {
     await sql`SELECT 1`;
     send(response, 200, { ok: true, service: "boss-forge-control-api" });
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/api/integration/odoo/v1/health") {
-    await sql`SELECT 1`;
-    send(response, 200, {
-      ok: true,
-      service: "boss-forge-odoo-integration",
-      contractVersion: "1",
-      realGreetingEnabled: process.env.BOSS_FORGE_REAL_GREET_ENABLED === "1"
-    });
-    return;
-  }
-  if (request.method === "POST" && url.pathname === "/api/integration/odoo/v1/events") {
-    if (!integrationAuthorized(request)) {
-      send(response, 401, { error: "unauthorized", message: "Invalid integration token." });
-      return;
-    }
-    // Published institution catalogs are immutable snapshots and can exceed normal UI payloads.
-    const body = await readJson(request, 10 * 1024 * 1024);
-    let parsed;
-    try {
-      parsed = parseOdooInboundEvent(body);
-    } catch {
-      throw new Error("Odoo event must match the supported v1 integration schema.");
-    }
-    const result = await odooIntegrationRepository.handleInboundEvent(parsed);
-    send(response, result.replayed ? 200 : 202, {
-      accepted: true,
-      result,
-      realGreetingEnabled: process.env.BOSS_FORGE_REAL_GREET_ENABLED === "1"
-    });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/dashboard") {

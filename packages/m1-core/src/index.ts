@@ -550,7 +550,7 @@ export function evaluateCandidate(
   ruleConfig: RuleConfig,
   resumeText?: string | null
 ): CandidateEvaluationRecord {
-  // Revalidate persisted snapshots so Odoo or database ingestion cannot bypass the API validator.
+  // Revalidate persisted snapshots so direct database ingestion cannot bypass the API validator.
   const config = parseRuleConfig(ruleConfig);
   const ruleText = fullRuleText(candidate, resumeText);
   if (isLegacyRuleConfig(config)) return legacyEvaluation(candidate, config, ruleText);
