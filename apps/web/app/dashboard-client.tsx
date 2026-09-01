@@ -74,6 +74,14 @@ type Position = {
   bossJobKeyword?: string | null;
   ownerName?: string;
 };
+type ActiveRule = {
+  positionId: string;
+  id: string;
+  version: number;
+  config: unknown;
+  dictionaryVersion: string;
+  createdAt: string;
+};
 type Task = {
   id: string;
   positionName: string;
@@ -157,12 +165,100 @@ type DashboardData = {
     contactedToday: number;
   };
   positions: Position[];
+  activeRules: ActiveRule[];
   tasks: Task[];
   candidates: Candidate[];
   schedules: Schedule[];
   contactIntents: ContactIntent[];
   auditLogs: AuditLog[];
 };
+
+type JsonRecord = Record<string, unknown>;
+
+function jsonRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function ruleLeaves(value: unknown): JsonRecord[] {
+  const node = jsonRecord(value);
+  if (!node) return [];
+  if (!Array.isArray(node.children)) return [node];
+  return node.children.flatMap(ruleLeaves);
+}
+
+const educationLabels: Record<string, string> = {
+  high_school: '高中/中专',
+  associate: '专科',
+  bachelor: '本科',
+  master: '硕士',
+  doctor: '博士',
+};
+
+function scalarLabel(value: unknown, fallback: string): string {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : fallback;
+}
+
+function describeActiveRule(rule: ActiveRule | undefined): string[] {
+  const config = jsonRecord(rule?.config);
+  if (!config) return [];
+  if (Array.isArray(config.requiredCapabilities)) {
+    const capability = jsonRecord(config.requiredCapabilities[0]);
+    const confidence =
+      typeof capability?.minimumConfidence === 'number'
+        ? ` · 置信度 ${Math.round(capability.minimumConfidence * 100)}%`
+        : '';
+    return [`TEM8 英语专业八级${confidence}`];
+  }
+  const root = jsonRecord(config.root);
+  return ruleLeaves(root).map((node) => {
+    if (
+      node.type === 'tem8' ||
+      (node.type === 'capability' && node.capability === 'tem8')
+    ) {
+      const confidence =
+        typeof node.minimumConfidence === 'number'
+          ? ` · 置信度 ${Math.round(node.minimumConfidence * 100)}%`
+          : '';
+      return `TEM8 英语专业八级${confidence}`;
+    }
+    if (node.type === 'enum' && node.field === 'bossPlatformTags') {
+      return `BOSS 院校标签：${stringValues(node.values).join('、')}（${node.mode === 'all' ? '全部' : '任一'}）`;
+    }
+    if (node.type === 'range' && node.field === 'yearsOfExperience') {
+      return `工作经验：${scalarLabel(node.minimum, '不限')}–${scalarLabel(node.maximum, '不限')} 年`;
+    }
+    if (node.type === 'education_level') {
+      return `最低学历：${educationLabels[String(node.minimum)] ?? String(node.minimum)}`;
+    }
+    if (node.type === 'keyword' && node.field === 'skills') {
+      return `技能：${stringValues(node.values).join('、')}（${node.mode === 'all' ? '全部' : '任一'}）`;
+    }
+    if (node.type === 'enum' && node.field === 'location') {
+      return `地点：${stringValues(node.values).join('、')}（${node.mode === 'all' ? '全部' : '任一'}）`;
+    }
+    if (node.type === 'keyword' && node.field === 'all') {
+      return `全文关键词：${stringValues(node.values).join('、')}（${node.mode === 'all' ? '全部' : '任一'}）`;
+    }
+    return `自定义条件：${scalarLabel(node.field, scalarLabel(node.type, '未命名'))}`;
+  });
+}
+
+function activeRuleOperator(rule: ActiveRule | undefined): string {
+  const config = jsonRecord(rule?.config);
+  if (Array.isArray(config?.requiredCapabilities)) return '全部条件（AND）';
+  const root = jsonRecord(config?.root);
+  return root?.operator === 'OR' ? '任一条件（OR）' : '全部条件（AND）';
+}
 
 const controlApi =
   process.env.NEXT_PUBLIC_CONTROL_API_URL ?? 'http://127.0.0.1:3100';
@@ -401,6 +497,7 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
   const [screenedOutCandidatePage, setScreenedOutCandidatePage] = useState(1);
   const [approvedCandidatePage, setApprovedCandidatePage] = useState(1);
   const [positionDialogOpen, setPositionDialogOpen] = useState(false);
+  const [editingPositionId, setEditingPositionId] = useState<string | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
@@ -440,6 +537,16 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
   const position =
     data?.positions.find((item) => item.id === selectedPositionId) ??
     data?.positions[0];
+  const activeRule = data?.activeRules.find(
+    (item) => item.positionId === position?.id,
+  );
+  const activeRuleDescriptions = describeActiveRule(activeRule);
+  const editingPosition = editingPositionId
+    ? data?.positions.find((item) => item.id === editingPositionId)
+    : null;
+  const editingActiveRule = editingPositionId
+    ? data?.activeRules.find((item) => item.positionId === editingPositionId)
+    : null;
   const latestTask = data?.tasks[0];
   const pendingCandidates =
     data?.candidates.filter(
@@ -713,9 +820,15 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
             {page === 'positions' ? (
               <div className="flex flex-wrap gap-2">
                 {positionSelect()}
-                <Button size="lg" onClick={() => setPositionDialogOpen(true)}>
+                <Button
+                  size="lg"
+                  onClick={() => {
+                    setEditingPositionId(null);
+                    setPositionDialogOpen(true);
+                  }}
+                >
                   <Plus />
-                  新建岗位规则
+                  新建岗位
                 </Button>
               </div>
             ) : null}
@@ -1032,28 +1145,54 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
                       {position?.name ?? '请选择岗位'}
                     </CardDescription>
                     <CardAction>
-                      <Badge variant="secondary">已发布</Badge>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!position}
+                        onClick={() => {
+                          setEditingPositionId(position?.id ?? null);
+                          setPositionDialogOpen(true);
+                        }}
+                      >
+                        <Settings2 />
+                        编辑规则
+                      </Button>
                     </CardAction>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm">
-                    <div className="rounded-lg border bg-muted/35 p-3">
-                      <p className="text-xs text-muted-foreground">硬性能力</p>
-                      <p className="mt-1 font-semibold">TEM-8 · 英语专业八级</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <p className="text-xs text-muted-foreground">
-                          词典版本
-                        </p>
-                        <p className="mt-1 font-medium">2026.08.2</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">
-                          最低置信度
-                        </p>
-                        <p className="mt-1 font-medium">86%</p>
-                      </div>
-                    </div>
+                    {activeRule ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">规则 v{activeRule.version}</Badge>
+                          <Badge variant="outline">{activeRuleOperator(activeRule)}</Badge>
+                        </div>
+                        <div className="space-y-2">
+                          {activeRuleDescriptions.map((description) => (
+                            <div
+                              key={description}
+                              className="rounded-lg border bg-muted/35 p-3 font-medium"
+                            >
+                              {description}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-xs text-muted-foreground">词典版本</p>
+                            <p className="mt-1 font-medium">{activeRule.dictionaryVersion}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">规则条件数</p>
+                            <p className="mt-1 font-medium">{activeRuleDescriptions.length} 条</p>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <SectionEmpty
+                        title="尚未配置规则"
+                        description="点击“编辑规则”创建第一个规则版本。"
+                      />
+                    )}
                   </CardContent>
                 </Card>
                 <Card>
@@ -1689,6 +1828,8 @@ export function DashboardClient({ page }: { page: DashboardPage }) {
         open={positionDialogOpen}
         onOpenChange={setPositionDialogOpen}
         controlApi={controlApi}
+        position={editingPosition}
+        activeRule={editingActiveRule}
         onCreated={positionCreated}
       />
       <ScheduleDialog

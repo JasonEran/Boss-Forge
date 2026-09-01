@@ -375,6 +375,14 @@ export type DashboardSnapshot = {
     contactedToday: number;
   };
   positions: Position[];
+  activeRules: Array<{
+    positionId: string;
+    id: string;
+    version: number;
+    config: RuleConfig;
+    dictionaryVersion: string;
+    createdAt: string;
+  }>;
   tasks: Task[];
   candidates: DashboardCandidate[];
   schedules?: Schedule[];

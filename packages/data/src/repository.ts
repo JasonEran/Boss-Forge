@@ -1242,8 +1242,24 @@ export class BossForgeRepository {
   }
 
   async getDashboard(): Promise<DashboardSnapshot> {
-    const [positions, taskRows, candidateRows, metricRows] = await Promise.all([
+    const [positions, activeRuleRows, taskRows, candidateRows, metricRows] = await Promise.all([
       this.listPositions(),
+      this.sql<
+        Array<{
+          position_id: string;
+          id: string;
+          version: number;
+          config: RuleConfig;
+          dictionary_version: string;
+          created_at: Date;
+        }>
+      >`
+        SELECT rs.position_id, rv.id, rv.version, rv.config,
+          rv.dictionary_version, rv.created_at
+        FROM rule_sets rs
+        JOIN rule_versions rv ON rv.id = rs.active_version_id
+        ORDER BY rs.position_id
+      `,
       this.sql.unsafe<TaskRow[]>(`${TASK_SELECT} ORDER BY t.created_at DESC LIMIT 10`),
       this.sql<
         Array<{
@@ -1359,6 +1375,14 @@ export class BossForgeRepository {
         contactedToday: metrics.contacted_today
       },
       positions,
+      activeRules: activeRuleRows.map((row) => ({
+        positionId: row.position_id,
+        id: row.id,
+        version: row.version,
+        config: row.config,
+        dictionaryVersion: row.dictionary_version,
+        createdAt: iso(row.created_at)
+      })),
       tasks: taskRows.map(mapTask),
       candidates: candidateRows.map((row) => ({
         stateId: row.state_id,
