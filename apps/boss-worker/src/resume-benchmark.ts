@@ -10,7 +10,7 @@ type SampleRow = {
   state_id: string;
   screenshot_path: string | null;
   raw_text: string | null;
-  source: "recommend" | "search";
+  source: ParsedCandidate["source"];
   display_name: string;
   source_locator: ParsedCandidate["sourceLocator"] | null;
   raw_fields: Record<string, string>;
