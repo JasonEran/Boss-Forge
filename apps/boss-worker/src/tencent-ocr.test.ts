@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  mapWithConcurrency,
   recognizeResumeWithTencentOcr,
   recognizeImageWithTencentOcr,
   resumeOcrLooksUsable,
@@ -123,6 +124,40 @@ describe("full résumé OCR", () => {
     calls = 0;
     await expect(recognizeResumeWithTencentOcr(path, { client: { async GeneralBasicOCR() { if (++calls === 2) throw new Error('service failed'); return { TextDetections: [{ DetectedText: '教育经历' }] }; } } })).rejects.toThrow('OCR request failed');
     expect(calls).toBe(2);
+  });
+
+  it("supports legacy single-image captures without a manifest", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "boss-legacy-ocr-test-")); directories.push(directory);
+    const path = join(directory, "resume.png");
+    const png = Buffer.alloc(32); Buffer.from([137,80,78,71,13,10,26,10]).copy(png); png.writeUInt32BE(900,16); png.writeUInt32BE(1600,20);
+    await writeFile(path, png);
+    let calls = 0;
+    const result = await recognizeResumeWithTencentOcr(path, { client: { async GeneralBasicOCR() { calls++; return { TextDetections: [{ DetectedText: "教育经历：本科" }] }; } }, cache: true });
+    expect(result.text).toBe("教育经历：本科");
+    expect(calls).toBe(1);
+    expect(JSON.parse(await readFile(path + ".ocr.json", "utf8")).version).toBe(1);
+  });
+
+  it("falls back successfully when the OCR cache cannot be written", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "boss-cache-fallback-test-")); directories.push(directory);
+    const path = join(directory, "resume.png");
+    const png = Buffer.alloc(32); Buffer.from([137,80,78,71,13,10,26,10]).copy(png); png.writeUInt32BE(900,16); png.writeUInt32BE(1600,20);
+    await writeFile(path, png);
+    const result = await recognizeResumeWithTencentOcr(path, { cache: true, cachePath: join(directory, "missing", "resume.ocr.json"), client: { async GeneralBasicOCR() { return { TextDetections: [{ DetectedText: "教育经历：本科" }] }; } } });
+    expect(result.text).toBe("教育经历：本科");
+  });
+});
+
+describe("bounded OCR worker pool", () => {
+  it("preserves order and stops claiming new items after a failure", async () => {
+    const started: number[] = [];
+    await expect(mapWithConcurrency([0, 1, 2, 3, 4], 2, async (item) => {
+      started.push(item);
+      if (item === 1) throw new Error("boom");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return item;
+    })).rejects.toThrow("boom");
+    expect(started).toEqual([0, 1]);
   });
 });
 

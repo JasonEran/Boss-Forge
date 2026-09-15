@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { readResumeArtifact, readResumePart } from "@boss-forge/boss-cli-adapter";
 import { ocr } from "tencentcloud-sdk-nodejs-ocr";
 
@@ -12,17 +12,33 @@ function ocrConcurrency(): number {
   return Number.isFinite(value) ? Math.max(1, Math.min(8, value)) : DEFAULT_OCR_CONCURRENCY;
 }
 
-async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+/**
+ * Run work with a bounded number of workers while preserving input order. Once
+ * one item fails, workers already in flight are allowed to finish, but no
+ * worker claims another item. This prevents a failed OCR batch from silently
+ * continuing to consume API quota.
+ */
+export async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
+  let failure: unknown;
   async function worker(): Promise<void> {
     while (true) {
+      if (failed) return;
       const index = next++;
       if (index >= items.length) return;
-      results[index] = await fn(items[index]!, index);
+      try {
+        results[index] = await fn(items[index]!, index);
+      } catch (error) {
+        if (!failed) failure = error;
+        failed = true;
+        return;
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  if (failed) throw failure;
   return results;
 }
 
@@ -49,11 +65,19 @@ export function resumeOcrLooksUsable(text: string): boolean {
   return normalized.length >= 30 && RESUME_CONTENT_MARKER.test(normalized);
 }
 
-type TencentOcrOptions = {
+export type TencentOcrOptions = {
   client?: TencentOcrClient;
   secretId?: string;
   secretKey?: string;
   region?: string;
+  /** Enable/disable the on-disk OCR cache. Defaults to enabled for SDK calls. */
+  cache?: boolean;
+  /** Override the cache file location (useful for tests and isolated workers). */
+  cachePath?: string;
+  /** Override concurrency; otherwise BOSS_FORGE_OCR_CONCURRENCY is used. */
+  concurrency?: number;
+  /** Receives duration only; no image path or candidate data is emitted. */
+  onTiming?: (elapsedMs: number) => void;
 };
 
 function requiredSecret(value: string | undefined, name: string): string {
@@ -153,26 +177,51 @@ async function recognizeBufferWithTencentOcr(image: Buffer, options: TencentOcrO
   };
 }
 
+function validCachedResult(value: unknown): value is TencentOcrResult {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Partial<TencentOcrResult>;
+  const lineCount = result.lineCount;
+  return typeof result.text === "string" && typeof lineCount === "number" && Number.isInteger(lineCount) && lineCount >= 0 &&
+    (result.averageConfidence === null || (typeof result.averageConfidence === "number" && Number.isFinite(result.averageConfidence))) &&
+    (result.requestId === null || typeof result.requestId === "string");
+}
+
+function captureHash(manifest: Buffer | null, parts: readonly Buffer[]): string {
+  const hash = createHash("sha256");
+  // Preserve the established manifest key format for compatibility with
+  // existing caches. The marker keeps legacy captures in a separate key space.
+  hash.update(manifest ?? Buffer.from("boss-forge-legacy-capture-v1\n"));
+  for (const part of parts) hash.update(part);
+  return hash.digest("hex");
+}
+
 /** Every captured segment participates; a failed segment invalidates the OCR result. */
 export async function recognizeResumeWithTencentOcr(
   imagePath: string, options: TencentOcrOptions = {}
 ): Promise<TencentOcrResult> {
   const artifact = await readResumeArtifact(imagePath);
-  if (!options.client) {
+  const cacheEnabled = options.cache ?? !options.client;
+  const cachePath = options.cachePath ?? `${imagePath}.ocr.json`;
+  let manifest: Buffer | null = null;
+  try { manifest = await readFile(`${imagePath}.manifest.json`); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const partBuffers = await Promise.all(
+    artifact.parts.map((_, index) => readResumePart(imagePath, artifact, index))
+  );
+  const hash = captureHash(manifest, partBuffers);
+  if (cacheEnabled) {
     try {
-      const cached = JSON.parse(await readFile(imagePath + '.ocr.json', 'utf8')) as { version: number; captureHash: string; result: TencentOcrResult };
-      const hash = createHash('sha256').update(await readFile(imagePath + '.manifest.json'));
-      for (let index = 0; index < artifact.parts.length; index++) hash.update(await readResumePart(imagePath, artifact, index));
-      if (cached.version === 1 && cached.captureHash === hash.digest('hex') && typeof cached.result?.text === 'string' && Number.isInteger(cached.result.lineCount)) return cached.result;
+      const cached = JSON.parse(await readFile(cachePath, "utf8")) as { version?: number; captureHash?: string; result?: unknown };
+      if (cached.version === 1 && cached.captureHash === hash && validCachedResult(cached.result)) return cached.result;
     } catch { /* Older captures have no cached OCR. Read them normally. */ }
   }
   const results: TencentOcrResult[] = [];
   const client = options.client ?? createTencentOcrClient(options);
   const startedAt = Date.now();
-  const partBuffers = await Promise.all(
-    artifact.parts.map((_, index) => readResumePart(imagePath, artifact, index))
-  );
-  const partResults = await mapWithConcurrency(partBuffers, ocrConcurrency(), async (part) =>
+  const limit = options.concurrency === undefined ? ocrConcurrency() : Math.max(1, Math.min(8, Math.floor(options.concurrency)));
+  const partResults = await mapWithConcurrency(partBuffers, limit, async (part) =>
     recognizeBufferWithTencentOcr(part, { ...options, client })
   );
   results.push(...partResults);
@@ -186,13 +235,18 @@ export async function recognizeResumeWithTencentOcr(
     averageConfidence: confidenceLines ? confident.reduce((sum, result) => sum + result.averageConfidence! * result.lineCount, 0) / confidenceLines : null,
     requestId: results.map(result => result.requestId).filter(Boolean).join(',') || null
   };
-  if (!options.client) {
-    const manifestHash = createHash("sha256").update(await readFile(imagePath + '.manifest.json'));
-    for (const part of partBuffers) manifestHash.update(part);
-    const cachePath = imagePath + '.ocr.json';
-    const temporaryPath = `${cachePath}.${process.pid}.tmp`;
-    await writeFile(temporaryPath, JSON.stringify({ version: 1, captureHash: manifestHash.digest('hex'), result, elapsedMs: Date.now() - startedAt }) + '\n', { mode: 0o600 });
-    await rename(temporaryPath, cachePath);
+  const elapsedMs = Date.now() - startedAt;
+  options.onTiming?.(elapsedMs);
+  if (cacheEnabled) {
+    const temporaryPath = `${cachePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, JSON.stringify({ version: 1, captureHash: hash, result, elapsedMs }) + "\n", { mode: 0o600 });
+      await rename(temporaryPath, cachePath);
+    } catch {
+      // Cache is an optimization. A read-only directory or concurrent writer
+      // must never turn an otherwise successful OCR request into a failure.
+      try { await unlink(temporaryPath); } catch { /* ignore cleanup failure */ }
+    }
   }
   return result;
 }
