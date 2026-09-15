@@ -12,6 +12,10 @@ function ocrConcurrency(): number {
   return Number.isFinite(value) ? Math.max(1, Math.min(8, value)) : DEFAULT_OCR_CONCURRENCY;
 }
 
+function boundedOcrConcurrency(value: number): number {
+  return Number.isSafeInteger(value) ? Math.max(1, Math.min(8, value)) : DEFAULT_OCR_CONCURRENCY;
+}
+
 /**
  * Run work with a bounded number of workers while preserving input order. Once
  * one item fails, workers already in flight are allowed to finish, but no
@@ -220,7 +224,7 @@ export async function recognizeResumeWithTencentOcr(
   const results: TencentOcrResult[] = [];
   const client = options.client ?? createTencentOcrClient(options);
   const startedAt = Date.now();
-  const limit = options.concurrency === undefined ? ocrConcurrency() : Math.max(1, Math.min(8, Math.floor(options.concurrency)));
+  const limit = options.concurrency === undefined ? ocrConcurrency() : boundedOcrConcurrency(options.concurrency);
   const partResults = await mapWithConcurrency(partBuffers, limit, async (part) =>
     recognizeBufferWithTencentOcr(part, { ...options, client })
   );
