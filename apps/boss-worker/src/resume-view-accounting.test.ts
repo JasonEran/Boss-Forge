@@ -36,7 +36,7 @@ describe("resume preview accounting", () => {
     expect(recordIndex).toBeGreaterThan(previewIndex);
     const attempt = between("async function readSingleResumePreviewAttempt(", "async function processNextTask(");
     expect(attempt.indexOf("await beforePreview()")).toBeGreaterThan(attempt.indexOf("refreshResumeCandidateTarget(job)"));
-    expect(attempt.indexOf("await beforePreview()")).toBeLessThan(attempt.indexOf("readResumePreview(previewCommandForCandidate(target), provider, onScreenshot)"));
+    expect(attempt.indexOf("await beforePreview()")).toBeLessThan(attempt.indexOf("readResumePreview(previewCommandForCandidate(target),"));
   });
 
   it("restores the task context before every preview, including a first attempt with a locator", () => {
@@ -48,7 +48,7 @@ describe("resume preview accounting", () => {
     expect(attempt).not.toContain("job.resumeScreeningAttempts > 1");
     expect(attempt).not.toContain("if (refreshContext)");
     expect(attempt.indexOf("refreshResumeCandidateTarget(job)")).toBeLessThan(
-      attempt.indexOf("readResumePreview(previewCommandForCandidate(target), provider, onScreenshot)")
+      attempt.indexOf("readResumePreview(previewCommandForCandidate(target),")
     );
   });
 });

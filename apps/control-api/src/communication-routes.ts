@@ -82,10 +82,11 @@ export async function communicationRoutes(input: {
       request.method === 'GET' &&
       url.pathname === '/api/communication/conversations'
     ) {
-      send(response, 200, {
-        conversations: await repository.list(principal),
-        connection: await input.connection(),
-      });
+      const [conversations, connection] = await Promise.all([
+        repository.list(principal),
+        input.connection(),
+      ]);
+      send(response, 200, { conversations, connection });
       return true;
     }
     if (
@@ -142,8 +143,8 @@ export async function communicationRoutes(input: {
     const online = url.pathname.match(/^\/api\/communication\/conversations\/([0-9a-f-]+)\/online-resume(?:\/(\d+))?$/i);
     if (online && uuid(online[1])) {
       const id = online[1];
-      const target = await repository.target(principal,id);
       if (request.method === 'POST' && online[2] === undefined) {
+        const target = await repository.target(principal,id);
         const leaseId = await assertLiveMode();
         const connection = await input.connection();
         if (!connection.connected) throw new BossBrowserControlError('not_authenticated',connection.message);

@@ -1,5 +1,5 @@
 import { withScreeningBrowser } from './workspace-browser.js';
-import { remainingResumeDwellMs } from './resume-dwell.js';
+import { releaseResumeBrowserAfterDwell, remainingResumeDwellMs } from './resume-dwell.js';
 import { readBoundBossRecommendation } from "./boss-jobs.js";
 import { describeBossFilters, planBossRecommendationFilters } from "@boss-forge/contracts";
 import { createHash } from "node:crypto";
@@ -375,8 +375,10 @@ async function refreshResumeCandidateTarget(
 async function readResumePreview(
   command: BossCommand,
   provider: ReturnType<typeof resumeOcrProvider>,
-  onScreenshot: (path: string) => Promise<void>
+  onScreenshot: (path: string) => Promise<void>,
+  onTiming: (phase: string, elapsedMs: number) => void
 ): Promise<ResumePreviewArtifact> {
+  const captureStarted = performance.now();
   const previewResult = await runBossCommand(command, {
     timeoutMs: 240_000,
     env: workerBossEnvironment()
@@ -392,7 +394,10 @@ async function readResumePreview(
   if (!preview.resume.screenshotPath || !(await readResumeArtifact(preview.resume.screenshotPath)).complete) {
     throw new Error("BOSS_RESUME_INCOMPLETE：本次简历未取得完整截图，请重新读取。");
   }
+  onTiming("capture", performance.now() - captureStarted);
+  const saveStarted = performance.now();
   await onScreenshot(preview.resume.screenshotPath);
+  onTiming("screenshot_save", performance.now() - saveStarted);
   let resumeText = preview.resume.ocrText?.trim() || "";
   let ocrLineCount: number | null = resumeText
     ? resumeText.split(/\r?\n/u).length
@@ -400,7 +405,9 @@ async function readResumePreview(
   let ocrAverageConfidence: number | null = null;
   let ocrRequestId: string | null = null;
   if (!resumeText && provider === "tencent" && preview.resume.screenshotPath) {
+    const ocrStarted = performance.now();
     const ocrResult = await recognizeResumeWithTencentOcr(preview.resume.screenshotPath);
+    onTiming("ocr", performance.now() - ocrStarted);
     resumeText = ocrResult.text.trim();
     ocrLineCount = ocrResult.lineCount;
     ocrAverageConfidence = ocrResult.averageConfidence;
@@ -428,7 +435,8 @@ export async function readSingleResumePreviewAttempt(
   job: ResumeScreeningJob,
   provider: ReturnType<typeof resumeOcrProvider>,
   beforePreview: () => Promise<void> = async () => undefined,
-  onScreenshot: (path: string) => Promise<void> = async () => undefined
+  onScreenshot: (path: string) => Promise<void> = async () => undefined,
+  onTiming: (phase: string, elapsedMs: number) => void = () => undefined
 ): Promise<ResumePreviewArtifact> {
   // One claimed attempt may issue at most one preview command. A failed preview
   // can already have opened the resume and consumed a platform view, so recovery
@@ -439,9 +447,11 @@ export async function readSingleResumePreviewAttempt(
   // between claims (including the very first attempt). Restore this task's list
   // and resolve the current card on EVERY claim. runRecommend keeps the existing
   // list when its job already matches; it does not force a browser refresh.
+  const restoreStarted = performance.now();
   const target = await refreshResumeCandidateTarget(job);
+  onTiming("candidate_restore", performance.now() - restoreStarted);
   await beforePreview();
-  return readResumePreview(previewCommandForCandidate(target), provider, onScreenshot);
+  return readResumePreview(previewCommandForCandidate(target), provider, onScreenshot, onTiming);
 }
 
 async function processNextTask(repository: BossForgeRepository, activity: WorkspaceActivityRepository): Promise<boolean> {
@@ -529,7 +539,7 @@ async function processNextResumeScreening(
   }
   await repository.clearResumeScreeningWait(accountId);
   let postLockBatchBreakMs = 0;
-  const processed = await withScreeningBrowser(accountId, activity, async () => {
+  const processed = await withScreeningBrowser(accountId, activity, async (releaseBrowser) => {
     const job = await repository.claimNextResumeScreening(
       workerId,
       accountId,
@@ -546,6 +556,10 @@ async function processNextResumeScreening(
     let dwellSeconds = RESUME_VIEW_POLICY.dwellTargetSeconds;
     let riskDetected = false;
     const processingStartedAt = Date.now();
+    const timing = (phase: string, elapsedMs: number) => console.log(JSON.stringify({
+      event: "m1.resume_screening.timing", stateId: job.stateId, phase, elapsedMs: Math.round(elapsedMs * 100) / 100
+    }));
+    const browserRelease: { current: Promise<{ error?: unknown }> | null } = { current: null };
     try {
       const provider = resumeOcrProvider();
       const {
@@ -573,7 +587,20 @@ async function processNextResumeScreening(
         // readResumePreview verifies a complete captured resume before this callback.
         resumeLoadedAt = Date.now();
         await repository.saveResumeScreenshot({ stateId: job.stateId, taskId: job.taskId, workerId, screenshotPath: path });
-      });
+        // Everything after this callback uses saved evidence. Keep the longest
+        // configured reading dwell, overlapping it with OCR, then yield the page.
+        browserRelease.current = releaseResumeBrowserAfterDwell(
+          resumeLoadedAt,
+          RESUME_VIEW_POLICY.dwellMaxSeconds,
+          waitWhileRunning,
+          releaseBrowser
+        )
+          .then(() => {
+            console.log(JSON.stringify({ event: "m1.resume_screening.timing", stateId: job.stateId, phase: "browser_released", elapsedMs: Date.now() - processingStartedAt }));
+            return {};
+          }, (error: unknown) => ({ error }))
+          .catch((error: unknown) => ({ error }));
+      }, timing);
       const previewElapsedMs = Date.now() - processingStartedAt;
       dwellSeconds = resumeDwellSeconds(RESUME_VIEW_POLICY, resumeText.length);
       console.log(JSON.stringify({ ok: true, event: "m1.resume_screening.timing", stateId: job.stateId, phase: "preview_ocr", elapsedMs: previewElapsedMs, ocrLineCount, resumeTextLength: resumeText.length }));
@@ -590,6 +617,7 @@ async function processNextResumeScreening(
         collectSemanticRules(job.ruleConfig),
         job.semanticCatalogEntries
       );
+      const semanticStarted = performance.now();
       const semanticEvaluations =
         semanticRules.length === 0
           ? []
@@ -600,6 +628,8 @@ async function processNextResumeScreening(
               runtimeMode: job.semanticMode,
               catalogVersion: job.semanticCatalogVersionId
             });
+      timing("semantic", performance.now() - semanticStarted);
+      const ruleStarted = performance.now();
       const record = evaluateCandidate(
         job.candidate,
         job.ruleConfig,
@@ -607,6 +637,8 @@ async function processNextResumeScreening(
         semanticEvaluations,
         job.sourceBossFilters
       );
+      timing("rules", performance.now() - ruleStarted);
+      const persistStarted = performance.now();
       await repository.completeResumeScreening({
         job,
         record,
@@ -618,7 +650,8 @@ async function processNextResumeScreening(
         ocrAverageConfidence,
         ocrRequestId
       });
-      console.log(JSON.stringify({ ok: true, event: "m1.resume_screening.timing", stateId: job.stateId, phase: "total", elapsedMs: Date.now() - processingStartedAt, dwellSeconds }));
+      timing("persist", performance.now() - persistStarted);
+      console.log(JSON.stringify({ ok: true, event: "m1.resume_screening.timing", stateId: job.stateId, phase: "processing_total", elapsedMs: Date.now() - processingStartedAt, dwellSeconds }));
       console.log(
         JSON.stringify({
           ok: true,
@@ -705,6 +738,10 @@ async function processNextResumeScreening(
         );
       }
     } finally {
+      if (browserRelease.current) {
+        const released = await browserRelease.current;
+        if (released.error) throw released.error;
+      }
       if (!riskDetected) {
         const remainingMs = remainingResumeDwellMs(resumeLoadedAt, Date.now(), dwellSeconds);
         if (remainingMs > 0) await waitWhileRunning(remainingMs);

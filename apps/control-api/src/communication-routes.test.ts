@@ -12,6 +12,38 @@ import {
 } from '@boss-forge/data';
 import { communicationRoutes } from './communication-routes.js';
 
+it('loads cached conversations and connection status concurrently without a live browser lease', async () => {
+  let resolveList!: (value: never[]) => void;
+  const listReady = new Promise<never[]>(resolve => { resolveList = resolve; });
+  let resolveConnection!: (value: { connected: boolean; canSend: boolean; message: string }) => void;
+  const connectionReady = new Promise<{ connected: boolean; canSend: boolean; message: string }>(resolve => { resolveConnection = resolve; });
+  let listStarted = false;
+  let connectionStarted = false;
+  let result: unknown;
+  const pending = communicationRoutes({
+    request: { method: 'GET', headers: {} } as IncomingMessage,
+    response: {} as ServerResponse,
+    url: new URL('http://localhost/api/communication/conversations'),
+    principal: { role: 'admin' } as SessionPrincipal,
+    repository: {
+      list: () => { listStarted = true; return listReady; },
+    } as unknown as CommunicationRepository,
+    activity: { leaseActive: async () => { throw new Error('unexpected live browser access'); } },
+    accountId: 'account-test',
+    socketPath: 'unused',
+    connection: () => { connectionStarted = true; return connectionReady; },
+    readJson: async () => ({}),
+    send: (_response, status, body) => { expect(status).toBe(200); result = body; },
+  });
+  expect(listStarted).toBe(true);
+  expect(connectionStarted).toBe(true);
+  const connection = { connected: false, canSend: false, message: 'offline' };
+  resolveList([]);
+  resolveConnection(connection);
+  expect(await pending).toBe(true);
+  expect(result).toEqual({ conversations: [], connection });
+});
+
 async function scenario(
   options: {
     loginFails?: boolean;

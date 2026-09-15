@@ -1,15 +1,34 @@
-import { withAccountLock } from './account-lock.js';
+import { acquireAccountLock } from './account-lock.js';
+import { BossAccountLockTimeoutError } from '@boss-forge/boss-cli-adapter';
 import type { WorkspaceActivityRepository } from '@boss-forge/data';
 
-/** Check again under the browser lock before claiming any database job. */
+/** Only immutable, saved evidence may be processed after releaseBrowser(). */
 export async function withScreeningBrowser(
   accountId: string,
   activity: Pick<WorkspaceActivityRepository, 'communicationActive'>,
-  operation: () => Promise<boolean>,
+  operation: (releaseBrowser: () => Promise<void>) => Promise<boolean>,
 ): Promise<boolean> {
   if (await activity.communicationActive(accountId)) return false;
-  return withAccountLock(accountId, async () => {
+  let lock;
+  try {
+    lock = await acquireAccountLock(accountId, { timeoutMs: 1, pollMs: 10 });
+  } catch (error) {
+    // A busy browser is normal scheduling contention, not a failed task.
+    if (error instanceof BossAccountLockTimeoutError) return false;
+    throw error;
+  }
+  // The resume pipeline can release as soon as its screenshot is durable while
+  // this wrapper still owns the callback. Reuse that promise in finally so a
+  // second release cannot race the unlink or hide an ownership failure.
+  let releasePromise: Promise<void> | null = null;
+  const releaseBrowser = () => {
+    releasePromise ??= lock.release();
+    return releasePromise;
+  };
+  try {
     if (await activity.communicationActive(accountId)) return false;
-    return operation();
-  });
+    return await operation(releaseBrowser);
+  } finally {
+    await releaseBrowser();
+  }
 }
