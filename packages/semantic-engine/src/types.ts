@@ -1,6 +1,6 @@
 export type SemanticExecutionMode = "normalized_entity" | "semantic_rubric";
 export type SemanticResult = "matched" | "not_matched" | "unknown";
-export type SemanticRuntimeMode = "shadow" | "active";
+export type SemanticRuntimeMode = "off" | "shadow" | "active";
 export type SemanticJsonValue =
   | null
   | boolean

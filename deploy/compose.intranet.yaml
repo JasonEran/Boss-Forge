@@ -9,15 +9,38 @@ x-common-logging: &common-logging
 x-boss-environment: &boss-environment
   DATABASE_URL: postgres://${BOSS_DB_USER:?set BOSS_DB_USER}:${BOSS_DB_PASSWORD:?set BOSS_DB_PASSWORD}@postgres:5432/${BOSS_DB_NAME:?set BOSS_DB_NAME}
   TZ: Asia/Shanghai
-  # Fail closed. There is no real-contact service in this topology.
-  BOSS_FORGE_REAL_GREET_ENABLED: "0"
+  # Override the image default explicitly so API and workers report the same
+  # release selected by the deployment environment. Preflight also verifies
+  # that the immutable image was built with this exact release ID.
+  BOSS_FORGE_RELEASE_ID: ${BOSS_FORGE_RELEASE_ID:-unversioned}
+  # Real contact remains off unless both this flag and dispatch mode=real are
+  # explicitly selected. Every actual action still requires a signed preview.
+  BOSS_FORGE_REAL_GREET_ENABLED: ${BOSS_FORGE_REAL_GREET_ENABLED:-0}
+  # Resume screening and contact dispatch are independently armed. The safe
+  # production default starts only the resume worker after login.
+  BOSS_FORGE_CONTACT_DISPATCH_MODE: ${BOSS_FORGE_CONTACT_DISPATCH_MODE:-disabled}
+  BOSS_FORGE_CONTACT_PREVIEW_SIGNING_KEY: ${BOSS_FORGE_CONTACT_PREVIEW_SIGNING_KEY:-}
+  BOSS_FORGE_ACCOUNT_HEALTH_MAX_AGE_MS: ${BOSS_FORGE_ACCOUNT_HEALTH_MAX_AGE_MS:-1800000}
+  BOSS_FORGE_ACCOUNT_ID: ${BOSS_FORGE_ACCOUNT_ID:-boss-account-01}
+  BOSS_FORGE_RESUME_DWELL_MIN_SECONDS: ${BOSS_FORGE_RESUME_DWELL_MIN_SECONDS:-10}
+  BOSS_FORGE_RESUME_DWELL_TARGET_SECONDS: ${BOSS_FORGE_RESUME_DWELL_TARGET_SECONDS:-10}
+  BOSS_FORGE_RESUME_DWELL_MAX_SECONDS: ${BOSS_FORGE_RESUME_DWELL_MAX_SECONDS:-10}
+  BOSS_FORGE_RESUME_DAILY_LIMIT: ${BOSS_FORGE_RESUME_DAILY_LIMIT:-120}
+  BOSS_FORGE_RESUME_HOURLY_LIMIT: ${BOSS_FORGE_RESUME_HOURLY_LIMIT:-50}
+  BOSS_FORGE_RESUME_BATCH_SIZE: ${BOSS_FORGE_RESUME_BATCH_SIZE:-20}
+  BOSS_FORGE_RESUME_BREAK_MINUTES: ${BOSS_FORGE_RESUME_BREAK_MINUTES:-10}
+  BOSS_FORGE_RESUME_WORKDAY_START_HOUR: ${BOSS_FORGE_RESUME_WORKDAY_START_HOUR:-9}
+  BOSS_FORGE_RESUME_WORKDAY_END_HOUR: ${BOSS_FORGE_RESUME_WORKDAY_END_HOUR:-18}
 
 x-boss-build: &boss-build
   context: ..
   dockerfile: deploy/docker/Dockerfile.boss-forge
   args:
     NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    BOSS_FORGE_RELEASE_ID: ${BOSS_FORGE_RELEASE_ID:-unversioned}
     NEXT_PUBLIC_CONTROL_API_URL: ${NEXT_PUBLIC_CONTROL_API_URL:-http://127.0.0.1:3100}
+    DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+    DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-}
 
 services:
   postgres:
@@ -38,6 +61,37 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks: [data]
     logging: *common-logging
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-512m}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-128}
+
+  postgres-backup:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    command: ["/bin/sh", "/opt/boss-forge/postgres-backup.sh"]
+    environment:
+      POSTGRES_DB: ${BOSS_DB_NAME:?set BOSS_DB_NAME in the env file}
+      POSTGRES_USER: ${BOSS_DB_USER:?set BOSS_DB_USER in the env file}
+      POSTGRES_PASSWORD: ${BOSS_DB_PASSWORD:?set BOSS_DB_PASSWORD in the env file}
+      BOSS_FORGE_BACKUP_INTERVAL_SECONDS: ${BOSS_FORGE_BACKUP_INTERVAL_SECONDS:-86400}
+      BOSS_FORGE_BACKUP_RETENTION_DAYS: ${BOSS_FORGE_BACKUP_RETENTION_DAYS:-14}
+      TZ: Asia/Shanghai
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./postgres-backup.sh:/opt/boss-forge/postgres-backup.sh:ro
+      - postgres_backups:/backups
+    networks: [data]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *common-logging
+    mem_limit: ${BACKUP_MEMORY_LIMIT:-192m}
+    pids_limit: ${BACKUP_PIDS_LIMIT:-64}
 
   migrate:
     image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
@@ -50,6 +104,8 @@ services:
         condition: service_healthy
     networks: [data]
     logging: *common-logging
+    mem_limit: ${MIGRATE_MEMORY_LIMIT:-768m}
+    pids_limit: ${MIGRATE_PIDS_LIMIT:-256}
 
   api:
     image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
@@ -61,6 +117,17 @@ services:
       CONTROL_API_HOST: 0.0.0.0
       CONTROL_API_PORT: "3100"
       CONTROL_WEB_ORIGIN: ${CONTROL_WEB_ORIGIN:-http://127.0.0.1:3000}
+      BOSS_FORGE_BOOTSTRAP_DEPARTMENT: ${BOSS_FORGE_BOOTSTRAP_DEPARTMENT:-默认招聘部门}
+      BOSS_FORGE_BOOTSTRAP_ADMIN_EMAIL: ${BOSS_FORGE_BOOTSTRAP_ADMIN_EMAIL:-admin@boss-forge.internal}
+      BOSS_FORGE_BOOTSTRAP_ADMIN_NAME: ${BOSS_FORGE_BOOTSTRAP_ADMIN_NAME:-HR 管理员}
+      BOSS_FORGE_BOOTSTRAP_PASSWORD: ${BOSS_FORGE_BOOTSTRAP_PASSWORD:?set BOSS_FORGE_BOOTSTRAP_PASSWORD}
+      BOSS_FORGE_RUNTIME_DIR: /var/lib/boss-forge/runtime
+      BOSS_FORGE_SEMANTIC_ENABLED: ${BOSS_FORGE_SEMANTIC_ENABLED:-0}
+      BOSS_FORGE_SEMANTIC_BASE_URL: ${BOSS_FORGE_SEMANTIC_BASE_URL:-}
+      BOSS_FORGE_SEMANTIC_MODEL: ${BOSS_FORGE_SEMANTIC_MODEL:-}
+      BOSS_FORGE_SEMANTIC_FALLBACK_MODEL: ${BOSS_FORGE_SEMANTIC_FALLBACK_MODEL:-}
+      BOSS_FORGE_SEMANTIC_API_KEY: ${BOSS_FORGE_SEMANTIC_API_KEY:-}
+      BOSS_FORGE_SEMANTIC_TIMEOUT_MS: ${BOSS_FORGE_SEMANTIC_TIMEOUT_MS:-45000}
     ports:
       - "${INTRANET_BIND_IP:-127.0.0.1}:${BOSS_API_PORT:-3100}:3100"
     healthcheck:
@@ -75,14 +142,19 @@ services:
       migrate:
         condition: service_completed_successfully
     networks: [app, data]
+    volumes:
+      - worker_runtime:/var/lib/boss-forge/runtime
+      - boss_cli_data:/home/node/.boss-cli:ro
     stop_grace_period: 30s
     logging: *common-logging
+    mem_limit: ${API_MEMORY_LIMIT:-512m}
+    pids_limit: ${API_PIDS_LIMIT:-192}
 
   web:
     image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
     build: *boss-build
     restart: unless-stopped
-    command: ["pnpm", "--dir", "apps/web", "start", "--ip", "0.0.0.0", "--port", "3000"]
+    command: ["pnpm", "--dir", "apps/web", "start", "--hostname", "0.0.0.0", "--port", "3000"]
     ports:
       - "${INTRANET_BIND_IP:-127.0.0.1}:${BOSS_WEB_PORT:-3000}:3000"
     healthcheck:
@@ -97,15 +169,52 @@ services:
     networks: [app]
     stop_grace_period: 30s
     logging: *common-logging
+    mem_limit: ${WEB_MEMORY_LIMIT:-768m}
+    pids_limit: ${WEB_PIDS_LIMIT:-256}
 
-  # Always-on simulation worker. It never calls BOSS or boss-cli.
+  # Optional standalone TLS gateway. It only reads the host certificate and
+  # does not modify or reload the host Nginx service.
+  gateway:
+    profiles: ["https"]
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    restart: unless-stopped
+    environment:
+      BOSS_FORGE_TLS_CERTIFICATE: ${BOSS_FORGE_TLS_CERTIFICATE:-/etc/letsencrypt/live/boss-forge/fullchain.pem}
+      BOSS_FORGE_TLS_PRIVATE_KEY: ${BOSS_FORGE_TLS_PRIVATE_KEY:-/etc/letsencrypt/live/boss-forge/privkey.pem}
+    ports:
+      - "${PUBLIC_BIND_IP:-0.0.0.0}:${BOSS_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./nginx/boss-forge.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/99-reload-certificates.sh:/docker-entrypoint.d/99-reload-certificates.sh:ro
+      - "${TLS_DIRECTORY:-/etc/letsencrypt}:/etc/letsencrypt:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate --quiet --output-document=/dev/null https://127.0.0.1:8443/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks: [app]
+    stop_grace_period: 30s
+    logging: *common-logging
+    mem_limit: ${GATEWAY_MEMORY_LIMIT:-192m}
+    pids_limit: ${GATEWAY_PIDS_LIMIT:-64}
+
+  # Opt-in simulation worker. Never run it alongside the authenticated supervisor,
+  # because both workers would compete for the same contact intents.
   contact-worker-fake:
+    profiles: ["contact-fake"]
     image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
     build: *boss-build
     restart: unless-stopped
-    command: ["pnpm", "m2:contact-worker:fake", "--", "--loop"]
+    command: ["pnpm", "m2:contact-worker:fake"]
     environment:
       <<: *boss-environment
+      BOSS_FORGE_CONTACT_DISPATCH_MODE: fake
       BOSS_FORGE_CONTACT_WORKER_ID: ${BOSS_FORGE_CONTACT_WORKER_ID:-contact-fake-01}
       BOSS_FORGE_ACCOUNT_ID: ${BOSS_FORGE_ACCOUNT_ID:-boss-account-01}
     depends_on:
@@ -116,6 +225,99 @@ services:
     networks: [data]
     stop_grace_period: 30s
     logging: *common-logging
+    mem_limit: ${CONTACT_WORKER_MEMORY_LIMIT:-512m}
+    pids_limit: ${CONTACT_WORKER_PIDS_LIMIT:-192}
+
+  # BOSS session supervisor: shows the QR login page, then automatically hands
+  # the same persistent Chromium session to the screening Worker after login.
+  # Never run this service at the same time as the legacy boss-worker profile.
+  boss-login:
+    profiles: ["boss-login"]
+    image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
+    build: *boss-build
+    # Use `no` for a bounded canary so an abnormal container exit cannot reset
+    # its in-memory attempt counter. Restore on-failure for normal operation.
+    restart: ${BOSS_FORGE_BOSS_LOGIN_RESTART_POLICY:-on-failure}
+    command:
+      - /bin/sh
+      - -lc
+      - >-
+        rm -f --
+        "$${BOSS_BROWSER_USER_DATA_DIR}/SingletonLock"
+        "$${BOSS_BROWSER_USER_DATA_DIR}/SingletonSocket"
+        "$${BOSS_BROWSER_USER_DATA_DIR}/SingletonCookie";
+        exec xvfb-run --auto-servernum
+        --server-args="-screen 0 1100x820x24 -nolisten tcp -noreset"
+        /bin/sh -lc '
+        chromium --no-sandbox --disable-dev-shm-usage --disable-gpu
+        --window-size=1100,820
+        --remote-debugging-address=127.0.0.1
+        --remote-debugging-port="$${BOSS_BROWSER_REMOTE_DEBUGGING_PORT}"
+        --user-data-dir="$${BOSS_BROWSER_USER_DATA_DIR}"
+        --profile-directory="$${BOSS_BROWSER_PROFILE_DIRECTORY}"
+        about:blank >/tmp/boss-login-chromium.log 2>&1 &
+        exec pnpm boss-session-supervisor'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      <<: *boss-environment
+      BOSS_FORGE_WORKER_ID: ${BOSS_FORGE_WORKER_ID:-worker-ubuntu-01}
+      BOSS_FORGE_RUNTIME_DIR: /var/lib/boss-forge/runtime
+      BOSS_FORGE_ACCOUNT_ID: ${BOSS_FORGE_ACCOUNT_ID:-boss-account-01}
+      BOSS_FORGE_M1_MODE: ${BOSS_FORGE_M1_MODE:-}
+      BOSS_FORGE_CANARY_MAX_RESUME_ATTEMPTS: ${BOSS_FORGE_CANARY_MAX_RESUME_ATTEMPTS:-}
+      BOSS_FORGE_RESUME_PREVIEW_ENABLED: ${BOSS_FORGE_RESUME_PREVIEW_ENABLED:-0}
+      BOSS_FORGE_OCR_PROVIDER: ${BOSS_FORGE_OCR_PROVIDER:-tencent}
+      BOSS_RESUME_OCR: ${BOSS_RESUME_OCR:-0}
+      TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
+      TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
+      TENCENTCLOUD_OCR_REGION: ${TENCENTCLOUD_OCR_REGION:-ap-guangzhou}
+      BOSS_FORGE_SEMANTIC_ENABLED: ${BOSS_FORGE_SEMANTIC_ENABLED:-0}
+      BOSS_FORGE_SEMANTIC_MODE: ${BOSS_FORGE_SEMANTIC_MODE:-shadow}
+      BOSS_FORGE_SEMANTIC_BASE_URL: ${BOSS_FORGE_SEMANTIC_BASE_URL:-}
+      BOSS_FORGE_SEMANTIC_MODEL: ${BOSS_FORGE_SEMANTIC_MODEL:-}
+      BOSS_FORGE_SEMANTIC_FALLBACK_MODEL: ${BOSS_FORGE_SEMANTIC_FALLBACK_MODEL:-}
+      BOSS_FORGE_SEMANTIC_API_KEY: ${BOSS_FORGE_SEMANTIC_API_KEY:-}
+      BOSS_FORGE_SEMANTIC_TIMEOUT_MS: ${BOSS_FORGE_SEMANTIC_TIMEOUT_MS:-45000}
+      CHROME_PATH: /usr/bin/chromium
+      # Keep one persistent headed Chromium session. Never toggle this profile
+      # between headed and headless with the same account/profile.
+      BOSS_BROWSER_HEADLESS: "false"
+      BOSS_BROWSER_HEADLESS_LOGIN: "false"
+      BOSS_BROWSER_QR_RELAY: "true"
+      BOSS_BROWSER_USER_DATA_DIR: /var/lib/boss-forge/browser
+      BOSS_BROWSER_PROFILE_DIRECTORY: ${BOSS_BROWSER_PROFILE_DIRECTORY:-Default}
+      BOSS_BROWSER_REMOTE_DEBUGGING_PORT: ${BOSS_BROWSER_REMOTE_DEBUGGING_PORT:-53470}
+      # All supervisor child commands must attach to the Chromium started above.
+      # A failed CDP probe is fatal and must never spawn a second browser.
+      BOSS_BROWSER_REMOTE_ONLY: "1"
+      BOSS_BROWSER_VIEWPORT_WIDTH: "1100"
+      BOSS_BROWSER_VIEWPORT_HEIGHT: "820"
+      BOSS_BROWSER_DISABLE_GPU: "true"
+      BOSS_BROWSER_NO_SANDBOX: "true"
+      BOSS_FORGE_LOGIN_RELAY_POLL_MS: ${BOSS_FORGE_LOGIN_RELAY_POLL_MS:-1000}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const fs=require('fs'); const h=JSON.parse(fs.readFileSync('/var/lib/boss-forge/runtime/boss-login-status.json','utf8')); process.exit(Date.now()-Date.parse(h.updatedAt)<20000 ? 0 : 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    volumes:
+      - worker_runtime:/var/lib/boss-forge/runtime
+      - browser_profile:/var/lib/boss-forge/browser
+      - boss_cli_data:/home/node/.boss-cli
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [app, data]
+    stop_grace_period: 60s
+    logging: *common-logging
+    mem_limit: ${BOSS_LOGIN_MEMORY_LIMIT:-1792m}
+    pids_limit: ${BOSS_LOGIN_PIDS_LIMIT:-512}
 
   # Read/preview/screen Worker remains opt-in because it uses the BOSS login session.
   boss-worker:
@@ -123,7 +325,16 @@ services:
     image: ${BOSS_FORGE_IMAGE:-boss-forge:intranet}
     build: *boss-build
     restart: unless-stopped
-    command: ["pnpm", "m1:worker"]
+    command:
+      - xvfb-run
+      - --auto-servernum
+      - --server-args=-screen 0 1100x820x24 -nolisten tcp -noreset
+      - pnpm
+      - m1:worker
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       <<: *boss-environment
       BOSS_FORGE_WORKER_ID: ${BOSS_FORGE_WORKER_ID:-worker-ubuntu-01}
@@ -139,10 +350,14 @@ services:
       BOSS_FORGE_SEMANTIC_MODE: ${BOSS_FORGE_SEMANTIC_MODE:-shadow}
       BOSS_FORGE_SEMANTIC_BASE_URL: ${BOSS_FORGE_SEMANTIC_BASE_URL:-}
       BOSS_FORGE_SEMANTIC_MODEL: ${BOSS_FORGE_SEMANTIC_MODEL:-}
+      BOSS_FORGE_SEMANTIC_FALLBACK_MODEL: ${BOSS_FORGE_SEMANTIC_FALLBACK_MODEL:-}
       BOSS_FORGE_SEMANTIC_API_KEY: ${BOSS_FORGE_SEMANTIC_API_KEY:-}
       BOSS_FORGE_SEMANTIC_TIMEOUT_MS: ${BOSS_FORGE_SEMANTIC_TIMEOUT_MS:-45000}
       CHROME_PATH: /usr/bin/chromium
-      BOSS_BROWSER_HEADLESS: "true"
+      BOSS_BROWSER_HEADLESS: "false"
+      # Ubuntu 24.04 blocks Chromium's unprivileged user namespace sandbox in containers.
+      # Keep the container itself constrained with no-new-privileges and no capabilities.
+      BOSS_BROWSER_NO_SANDBOX: "true"
       BOSS_BROWSER_USER_DATA_DIR: /var/lib/boss-forge/browser
       BOSS_BROWSER_PROFILE_DIRECTORY: ${BOSS_BROWSER_PROFILE_DIRECTORY:-Default}
       BOSS_BROWSER_REMOTE_DEBUGGING_PORT: ${BOSS_BROWSER_REMOTE_DEBUGGING_PORT:-53470}
@@ -164,6 +379,8 @@ services:
     networks: [app, data]
     stop_grace_period: 60s
     logging: *common-logging
+    mem_limit: ${BOSS_WORKER_MEMORY_LIMIT:-1792m}
+    pids_limit: ${BOSS_WORKER_PIDS_LIMIT:-512}
 
 networks:
   app:
@@ -174,6 +391,11 @@ networks:
 
 volumes:
   postgres_data:
+  postgres_backups:
   worker_runtime:
   browser_profile:
+    external: true
+    name: ${BOSS_BROWSER_PROFILE_VOLUME:?set BOSS_BROWSER_PROFILE_VOLUME to the existing persistent browser volume}
   boss_cli_data:
+    external: true
+    name: ${BOSS_CLI_DATA_VOLUME:?set BOSS_CLI_DATA_VOLUME to the existing persistent boss-cli volume}

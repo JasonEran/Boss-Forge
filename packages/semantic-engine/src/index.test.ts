@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   OpenAiCompatibleSemanticProvider,
+  applySemanticCatalogEntries,
   evaluateAliases,
   evaluateSemanticRules,
   parseSemanticModelResponse,
   semanticProviderFromEnvironment,
-  semanticRuntimeMode,
+  semanticProviderReadinessFromEnvironment,
   type SemanticProvider,
   type SemanticRule
 } from "./index.js";
@@ -97,11 +98,36 @@ describe("semantic engine", () => {
     expect(result.reasonCodes).toContain("semantic_evidence_not_in_source");
   });
 
+  it("accepts harmless quote wrappers around an otherwise exact source excerpt", () => {
+    const result = parseSemanticModelResponse(
+      {
+        evaluations: [
+          {
+            criterionId: rubricRule.criterionId,
+            result: "matched",
+            normalizedValue: '{"market":"overseas"}',
+            qualifier: "confirmed",
+            evidence: ["“高效响应海外客户多样化需求”"],
+            confidence: 0.93,
+            reasonCodes: ["explicit_overseas_customer_experience"]
+          }
+        ]
+      },
+      [rubricRule],
+      "local-model-v1",
+      "active",
+      "负责外宾接待，高效响应海外客户多样化需求。"
+    )[0]!;
+    expect(result.result).toBe("matched");
+    expect(result.confidence).toBe(0.93);
+    expect(result.reasonCodes).not.toContain("semantic_evidence_not_in_source");
+  });
+
   it("calls an OpenAI-compatible endpoint with a strict schema", async () => {
     let requestBody: Record<string, unknown> | null = null;
     let authorization: string | null = null;
     const provider = new OpenAiCompatibleSemanticProvider({
-      baseUrl: "http://semantic-model.internal/v1/",
+      baseUrl: "https://semantic-model.internal/v1/",
       apiKey: "test-key",
       model: "semantic-test-v1",
       fetchImpl: async (_input, init) => {
@@ -187,11 +213,98 @@ describe("semantic engine", () => {
     expect(result.result).toBe("matched");
   });
 
-  it("defaults runtime to shadow and requires endpoint/model when enabled", () => {
-    expect(semanticRuntimeMode({})).toBe("shadow");
+  it("fails a provider error closed to an unknown shadow result", async () => {
+    const provider: SemanticProvider = {
+      modelVersion: "fake-model",
+      async evaluate() {
+        throw new Error("provider unavailable");
+      }
+    };
+    const result = (await evaluateSemanticRules({
+      candidateText: "负责12人研发团队的排期、绩效和交付",
+      rules: [rubricRule],
+      provider,
+      runtimeMode: "shadow"
+    }))[0]!;
+    expect(result).toMatchObject({
+      result: "unknown",
+      runtimeMode: "shadow",
+      confidence: 0,
+      reasonCodes: ["semantic_model_error"]
+    });
+  });
+
+  it("uses the position catalog version and skips extraction when the position is off", async () => {
+    const result = (await evaluateSemanticRules({
+      candidateText: "熟练 Java 后端开发",
+      rules: [entityRule],
+      runtimeMode: "off",
+      catalogVersion: "catalog-position-v3"
+    }))[0]!;
+    expect(result).toMatchObject({
+      result: "unknown",
+      runtimeMode: "off",
+      catalogVersion: "catalog-position-v3",
+      reasonCodes: ["semantic_mode_off"]
+    });
+  });
+
+  it("merges published catalog aliases into matching position rules", () => {
+    const [rule] = applySemanticCatalogEntries([entityRule], [
+      { canonical: "Java", aliases: ["JVM 开发", "爪哇"] },
+      { canonical: "Python", aliases: ["Py"] }
+    ]);
+    expect(rule?.aliases?.Java).toEqual([
+      "J2EE",
+      "Java 后端",
+      "JVM 开发",
+      "爪哇"
+    ]);
+    expect(evaluateAliases(rule!, "负责 JVM 开发平台", "active")?.result).toBe(
+      "matched"
+    );
+  });
+
+  it("requires an explicit enable flag and a complete secure configuration", () => {
     expect(semanticProviderFromEnvironment({ BOSS_FORGE_SEMANTIC_ENABLED: "0" })).toBeNull();
-    expect(() =>
-      semanticProviderFromEnvironment({ BOSS_FORGE_SEMANTIC_ENABLED: "1" })
-    ).toThrow(/BASE_URL/u);
+    expect(semanticProviderFromEnvironment({ BOSS_FORGE_SEMANTIC_ENABLED: "yes" })).toBeNull();
+    expect(
+      semanticProviderFromEnvironment({
+        BOSS_FORGE_SEMANTIC_ENABLED: "1",
+        BOSS_FORGE_SEMANTIC_BASE_URL: "https://semantic-model.internal/v1",
+        BOSS_FORGE_SEMANTIC_MODEL: "semantic-test-v1"
+      })
+    ).toBeNull();
+    const missingCredential = semanticProviderReadinessFromEnvironment({
+      BOSS_FORGE_SEMANTIC_ENABLED: "1",
+      BOSS_FORGE_SEMANTIC_BASE_URL: "https://semantic-model.internal/v1",
+      BOSS_FORGE_SEMANTIC_MODEL: "semantic-test-v1"
+    });
+    expect(missingCredential).toEqual({
+      enabled: true,
+      ready: false,
+      reason: "missing_credential",
+      endpointHost: "semantic-model.internal",
+      model: "semantic-test-v1",
+      credentialConfigured: false,
+      timeoutMs: 45000
+    });
+    expect(JSON.stringify(missingCredential)).not.toContain("/v1");
+    expect(
+      semanticProviderReadinessFromEnvironment({
+        BOSS_FORGE_SEMANTIC_ENABLED: "1",
+        BOSS_FORGE_SEMANTIC_BASE_URL: "http://semantic-model.internal/v1",
+        BOSS_FORGE_SEMANTIC_MODEL: "semantic-test-v1",
+        BOSS_FORGE_SEMANTIC_API_KEY: "rotated-test-key"
+      }).reason
+    ).toBe("invalid_endpoint");
+    expect(
+      semanticProviderFromEnvironment({
+        BOSS_FORGE_SEMANTIC_ENABLED: "true",
+        BOSS_FORGE_SEMANTIC_BASE_URL: "https://semantic-model.internal/v1",
+        BOSS_FORGE_SEMANTIC_MODEL: "semantic-test-v1",
+        BOSS_FORGE_SEMANTIC_API_KEY: "rotated-test-key"
+      })
+    ).not.toBeNull();
   });
 });

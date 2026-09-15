@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import puppeteer from 'puppeteer-core';
+const web = new URL('../../web/', import.meta.url).pathname;
+const requireWeb = createRequire(path.join(web, 'package.json'));
+const { createServer } = await import(requireWeb.resolve('vite'));
+const { default: react } = await import(requireWeb.resolve('@vitejs/plugin-react'));
+const { default: tailwind } = await import(requireWeb.resolve('@tailwindcss/postcss'));
+const dir = await mkdtemp(path.join(web, '.vip-filters-fixture-'));
+const output = new URL('../../../artifacts/boss-vip-mapping-20260909/', import.meta.url).pathname;
+await mkdir(output, {recursive:true});
+const groups = [{label:'语言类',options:['英语','法语','日语','德语','俄语','韩语']},{label:'经管类',options:['电子商务类','工商管理类']},{label:'文史哲类',options:['新闻传播类']}];
+const extras = {age:[],activation:['刚刚活跃','今日活跃','3日内活跃'],gender:['男','女'],recentNotView:['近14天没有'],exchangeResumeWithColleague:['近一个月没有'],school:['985','211','双一流院校','留学','公办本科','QS 100','QS 500'],firstDegree:['仅看第一学历'],switchJobFrequency:['5年少于3份','平均每份工作大于1年'],experience:['在校/应届','26年毕业','27年毕业','27年后毕业','1年以内','1-3年','3-5年','5-10年','10年以上'],intention:['离职-随时到岗','在职-暂不考虑','在职-考虑机会','在职-月内到岗'],degree:['初中及以下','中专/中技','高中','大专','本科','硕士','博士'],salary:['3K以下','3-5K','5-10K','10-20K','20-50K','50K以上']};
+const names = {age:'年龄',activation:'活跃度',gender:'性别',recentNotView:'近期未看过',exchangeResumeWithColleague:'是否与同事交换简历',school:'院校',firstDegree:'第一学历',switchJobFrequency:'跳槽频率',experience:'经验',intention:'求职状态',degree:'学历',salary:'薪资待遇',major:'专业',keyword1:'牛人关键词'};
+const definitions = ['age','activation','gender','keyword1','recentNotView','exchangeResumeWithColleague','school','firstDegree','major','switchJobFrequency','experience','intention','degree','salary'].map(key=>({key,label:names[key],source:['degree','experience','intention','salary'].includes(key)?'normal':'vip',kind:key==='age'?'range':['degree','experience','intention','school','major','keyword1'].includes(key)?'multiple':'single',available:true,...(key==='age'?{range:{min:16,max:45,step:1}}:{maxSelected:key==='major'?5:200})}));
+const snapshot = { positionId:'position', bossJobId:'job',bossJobName:'亚马逊运营',fetchedAt:new Date().toISOString(),majorGroups:groups,majorAliases:{新闻传播学类:'新闻传播类'},definitions,fields:{...extras,major:[...groups.flatMap(g=>g.options),'新闻传播学类'],keyword1:['英语读写','店铺运营']} };
+await writeFile(path.join(dir,'index.html'),'<html lang="zh-CN"><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="./fixture.tsx"></script></html>');
+await writeFile(path.join(dir,'fixture.tsx'),`import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{BossFiltersEditor}from'../app/boss-filters-editor';import'../app/globals.css';function Fixture(){const[value,onChange]=useState({mode:'custom',fields:{major:['新闻传播学类']}});const[snapshot,setSnapshot]=useState(null);const[show,setShow]=useState(true);function onOptionsChange(next){setSnapshot(next);onChange(current=>({...current,optionsSnapshot:next}))}return <main className="mx-auto max-w-4xl p-4"><h1 className="mb-4 text-xl font-semibold">岗位筛选 · 亚马逊运营</h1>{show?<BossFiltersEditor positionId="position" bossJobId="job" controlApi={location.origin} {...{value,onChange,snapshot,onOptionsChange}}/>:null}<button id="reopen" onClick={()=>{const saved=JSON.stringify(value);setShow(false);setTimeout(()=>{const next=JSON.parse(saved);onChange(next);setSnapshot(next.optionsSnapshot);setShow(true)},50)}}>保存并重新打开</button><output id="value" className="sr-only">{JSON.stringify(value)}</output></main>};createRoot(document.getElementById('root')).render(<Fixture/>);`);
+
+const server = await createServer({configFile:false,root:web,plugins:[react()],resolve:{alias:{'@':web}},define:{'process.env.NEXT_PUBLIC_CONTROL_API_URL':'""'},css:{postcss:{plugins:[tailwind()]}},server:{port:3038,strictPort:true,host:'127.0.0.1'},logLevel:'warn'});
+await server.listen();
+const browser=await puppeteer.launch({executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+const page=await browser.newPage();const errors=[];let fail=false;let wrongJob=false;let reads=0;
+page.on('pageerror',error=>errors.push(error.message));
+await page.setRequestInterception(true);
+page.on('request',request=>{const url=new URL(request.url());if(!['localhost','127.0.0.1'].includes(url.hostname))return request.abort();if(url.pathname.startsWith('/api/')){reads++;return request.respond({status:fail?503:200,contentType:'application/json',body:JSON.stringify(fail?{message:'测试：BOSS 暂时繁忙'}:{...snapshot,bossJobId:wrongJob?'another':snapshot.bossJobId})})};return request.continue()});
+const click=async label=>{const h=await page.waitForFunction(label=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===label&&!b.disabled),{},label);await h.asElement().click();await h.dispose()};
+const waitText=text=>page.waitForFunction(text=>document.body.innerText.includes(text),{},text);
+const selected=()=>page.$eval('#value',el=>JSON.parse(el.textContent).fields.major);
+try{
+  await page.setViewport({width:1280,height:1000});await page.goto(`http://127.0.0.1:3038/${path.basename(dir)}/index.html`,{waitUntil:'networkidle0'});
+  await click('一键获取 BOSS VIP 筛选');await waitText('已更新');
+  assert.equal(await page.$$eval('section fieldset',nodes=>nodes.length),14);
+  await click('今日活跃');await click('3日内活跃');
+  await click('QS 100');await click('985');await click('27年毕业');await click('本科');await click('硕士');await click('5-10K');await click('10-20K');
+  await click('近一个月没有');await click('5年少于3份');await click('离职-随时到岗');await click('仅看第一学历');
+  await page.select('[aria-label="最低年龄"]','22');await page.select('[aria-label="最高年龄"]','35');
+  const fields=await page.$eval('#value',el=>JSON.parse(el.textContent).fields);
+  assert.deepEqual(fields.activation,['3日内活跃']);assert.deepEqual(fields.salary,['10-20K']);assert.deepEqual(fields.school,['QS 100','985']);assert.deepEqual(fields.age,['22','35']);
+  const beforeReopen=reads;await page.click('#reopen');await waitText('BOSS 完整筛选');assert.equal(reads,beforeReopen,'Opening saved configuration must not require another BOSS read');
+  assert.deepEqual(await page.$eval('#value',el=>JSON.parse(el.textContent).fields),fields);
+
+  assert.deepEqual(await selected(),['新闻传播学类']);
+  assert.equal(await page.$$eval('[aria-label="专业选项"] button',nodes=>nodes.filter(n=>n.textContent.includes('新闻传播')).length),1);
+  await page.select('select:not([aria-label])','经管类');await page.type('input[type="search"]','英语');await waitText('已搜索全部分类');
+  assert.equal(await page.$$eval('[aria-label="专业选项"] button',nodes=>nodes.length),1);await click('英语');
+  assert.deepEqual(await selected(),['新闻传播学类','英语']);
+  await click('一键获取 BOSS VIP 筛选');await page.waitForFunction(()=>!document.querySelector('section').getAttribute('aria-busy')||document.querySelector('section').getAttribute('aria-busy')==='false');
+  assert.deepEqual(await selected(),['新闻传播学类','英语']);
+  await page.screenshot({path:path.join(output,'vip-filters-desktop.png'),fullPage:true});
+  await page.$eval('input[type="search"]',el=>{const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(el,'');el.dispatchEvent(new Event('input',{bubbles:true}))});
+  await page.select('select:not([aria-label])','语言类');await click('法语');await click('日语');await click('德语');
+  assert.equal((await selected()).length,5);
+  assert.equal(await page.$$eval('[aria-label="专业选项"] button',nodes=>nodes.filter(n=>n.disabled).length),2);
+  await page.click('[aria-label="移除专业 新闻传播学类"]');await click('俄语');
+  await page.setViewport({width:375,height:1000});await page.screenshot({path:path.join(output,'vip-filters-mobile.png'),fullPage:true});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.emulateMediaFeatures([{name:'prefers-reduced-motion',value:'reduce'}]);
+  await page.evaluate(()=>document.documentElement.classList.add('dark'));await page.screenshot({path:path.join(output,'vip-filters-dark.png'),fullPage:true});
+  await page.evaluate(()=>document.documentElement.classList.remove('dark'));
+
+  await page.type('input[type="search"]','不存在的专业');await waitText('未找到匹配专业');
+  fail=true;await click('一键获取 BOSS VIP 筛选');await waitText('测试：BOSS 暂时繁忙');assert.equal((await selected()).length,5);
+  fail=false;wrongJob=true;await click('一键获取 BOSS VIP 筛选');await waitText('岗位已变化');assert.equal((await selected()).length,5);
+  wrongJob=false;snapshot.fields.salary=['3-5K'];await click('一键获取 BOSS VIP 筛选');await waitText('10-20K（已失效，点击移除）');
+  await click('10-20K（已失效，点击移除）');assert.deepEqual(await page.$eval('#value',el=>JSON.parse(el.textContent).fields.salary),[]);
+
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,all14Fields:true,singleChoiceReplacement:true,rangeSelection:true,savedSnapshotReopened:true,invalidatedSalaryRemovable:true,englishSearchAcrossCategories:true,oldRuleAliasPreserved:true,refreshPreservesSelections:true,limitFive:true,mobile375:true,noResults:true,requestFailure:true,wrongJobRejected:true}));
+}finally{await browser.close();await server.close();await rm(dir,{recursive:true,force:true})}

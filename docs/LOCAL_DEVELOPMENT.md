@@ -137,20 +137,19 @@ pnpm m0 -- live preview \
 
 ```text
 BOSS_FORGE_SEMANTIC_ENABLED=0
-BOSS_FORGE_SEMANTIC_MODE=shadow
-BOSS_FORGE_SEMANTIC_BASE_URL=http://model.internal:8000/v1
+BOSS_FORGE_SEMANTIC_BASE_URL=https://model.internal/v1
 BOSS_FORGE_SEMANTIC_MODEL=approved-model-name
 BOSS_FORGE_SEMANTIC_API_KEY=...
 BOSS_FORGE_SEMANTIC_TIMEOUT_MS=45000
 ```
 
-Worker 调用 `<BASE_URL>/chat/completions`。首次接入必须设置 `ENABLED=1`、`MODE=shadow`：模型结论和版本会保存，但不影响通过/淘汰。用固定历史样本核对准确率、未知率和原文证据后，才可由管理员改为 `active`。凭据只进入 `.env`/Worker；不得进入前端、日志或 Git。
+启用时 `<BASE_URL>` 必须使用 HTTPS，且 `BOSS_FORGE_SEMANTIC_API_KEY` 必填；本地 mock 也应使用仅供测试的非生产令牌。Worker 和岗位页的“生成同义词”按钮都调用 `<BASE_URL>/chat/completions`。HR 在“岗位设置 → 编辑岗位规则”填写一个识别内容，AI 结果必须预览并由用户应用后才写入新版本。岗位只允许 off/shadow；`SEMANTIC_ACTIVE_DECISIONS_AVAILABLE=false`，影子结果不进入规则结论。模式来自岗位配置，修改后无需重启 Worker；端点和凭据只进入 `.env`/服务端，不得进入前端、日志或 Git。
 
 没有模型配置、请求失败、输出不符合 Schema、缺少原文证据或低于岗位阈值时，系统失败关闭为 `unknown/manual_review`；原有确定性规则继续运行。
 
-## 8. Fake 联系 Worker
+## 8. 隔离 Fake 联系 Worker
 
-Dashboard 创建的联系意图固定为 Fake。启动循环 Worker：
+Fake 状态机只用于明确隔离且允许 mock 联系 fixture 的测试，不是常规开发/E2E 的必经步骤。只在一次性本地测试数据库中启动：
 
 ```bash
 pnpm m2:contact-worker:fake -- --loop
@@ -158,20 +157,28 @@ pnpm m2:contact-worker:fake -- --loop
 
 结果应进入 `simulated`，不能出现 BOSS 外部消息 ID，也不能计为真实发送。
 
-不要在常规开发中运行 `pnpm m2:contact-worker`。Real 路径未完成产品验收，并因缺少权威账号健康源在 Repository 中失败关闭。
+不要把 Fake Worker 当成产品发送能力。当前工作树的真实联系能力已经交付，但默认关闭，且只能由同一 `boss-login` supervisor 在完成全部门禁后启动；普通本地开发和隔离 E2E 不运行它。
 
-## 9. M0 真实 greet 诊断边界
+## 9. 真实 greet/message 开发边界
 
-M0 保留独立的真实 `greet` 命令：
+当前工作树将外部写拆为两个相互独立的动作：
 
-```bash
-BOSS_FORGE_REAL_GREET_ENABLED=1 pnpm m0 -- live greet \
-  --job "岗位名称" \
-  --candidate "候选人姓名" \
-  --approve-greet
+- `greet`：读取并展示当前 BOSS 岗位的精确招呼语，许可后只执行一次打招呼。
+- `message`：展示岗位模板渲染后的精确正文，许可后只执行一次正文发送，不隐式打招呼。
+
+API 的 `greet-preview` 与 `message-preview` 为具体候选人签发短效 HMAC 许可，逐字绑定动作、操作者、BOSS 发件账号、浏览器 profile、候选人稳定 locator、岗位、任务、模板/provider 标识和正文哈希。对象、正文、登录账号或时效任一变化都必须重新预览；两个动作的许可不可互换。
+
+真实运行同时要求：
+
+```text
+BOSS_FORGE_CONTACT_DISPATCH_MODE=real
+BOSS_FORGE_REAL_GREET_ENABLED=1
+BOSS_FORGE_CONTACT_PREVIEW_SIGNING_KEY=<至少 32 字节的部署专用随机密钥>
 ```
 
-它需要命令行批准和环境变量同时存在，会直接联系真实候选人，不经过 Dashboard 联系策略。当前项目没有执行过该验收。除非用户对具体候选人、岗位和本次操作明确授权，否则不得运行。
+此外还必须由 `boss-login` supervisor 以真实 Worker 明确确认参数启动，并通过登录、release、策略、四级联系开关、DNC、额度、时段、冷却和全局写入 fence 检查。M0 不提供可绕过上述许可的 greet/send 命令；不要直接运行浏览器脚本或调用 BOSS 写接口。
+
+生产 release `audit-events-20260904-1614cst` 已部署，真实 runtime 已开启，但全局/部门控制 safe-off，尚未执行真实写入。首次真实 canary 前必须展示具体动作、候选人、BOSS 发件账号和完整正文，并取得用户对该组合与正文的精确许可；没有许可只允许预览。
 
 ## 10. 自动化验证
 
@@ -186,10 +193,11 @@ pnpm test:e2e:user
 
 当前基线：
 
-- Vitest：17 个文件、164 个测试。
-- Web：13 个路由构建通过。
-- 数据集成：真实 PostgreSQL、Fake 联系、幂等和计划物化通过。
-- 用户 E2E：必须输出 `realGreetingExecuted: false`，并清理合成数据。
+- Vitest：最新全量 523 项通过；双动作许可、全局写入 fence、回执、语义、只读简历与 API 同源回退定向回归均已计入，不重复相加。
+- Web：14 个页面路由生产构建通过。
+- 数据集成：一次性本地 PostgreSQL，默认零联系数据；任务、幂等、计划和逐任务历史通过。
+- 用户 E2E：必须输出 `realGreetingExecuted: false`，默认不创建联系记录并清理合成数据。
+- migration 001–026 已在一次性隔离 PostgreSQL 通过；contact fixture 只验证数据约束和模拟状态，不启动真实 BOSS 浏览器或执行外部联系。
 
 ## 11. 常见问题
 

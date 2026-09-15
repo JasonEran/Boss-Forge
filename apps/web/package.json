@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "start": "wrangler dev --config dist/server/wrangler.json",
+    "start": "vinext start",
     "lint": "oxlint app components/ui/badge.tsx components/ui/button.tsx components/ui/card.tsx components/ui/dialog.tsx components/ui/input.tsx components/ui/progress.tsx components/ui/select.tsx components/ui/switch.tsx components/ui/table.tsx components/ui/textarea.tsx lib/utils.ts",
     "format": "oxfmt",
     "typecheck": "tsc --noEmit"

@@ -55,3 +55,109 @@ describe("semantic rule config", () => {
     ).toThrow(/duplicates/u);
   });
 });
+
+describe("HR profile rule config", () => {
+  it("accepts age, graduation year, graduate status, gender, and CET6-or-TEM8 rules", () => {
+    const parsed = parseRuleConfig({
+      schemaVersion: "1.0",
+      root: {
+        operator: "AND",
+        children: [
+          {
+            type: "english_credential",
+            accepted: ["cet6", "tem8"],
+            mode: "any",
+            minimumConfidence: 0.86,
+            unknownPolicy: "manual_review"
+          },
+          { type: "range", field: "age", minimum: 22, maximum: 35, unknownPolicy: "manual_review" },
+          { type: "range", field: "graduationYear", maximum: 2026, unknownPolicy: "manual_review" },
+          {
+            type: "graduate_status",
+            values: ["current_or_upcoming_graduate"],
+            mode: "any",
+            unknownPolicy: "manual_review"
+          },
+          {
+            type: "enum",
+            field: "gender",
+            values: ["女"],
+            mode: "any",
+            match: "exact",
+            unknownPolicy: "manual_review"
+          }
+        ]
+      }
+    });
+    expect(parsed).toMatchObject({
+      root: {
+        children: [
+          { type: "english_credential", accepted: ["cet6", "tem8"], mode: "any" },
+          { type: "range", field: "age", minimum: 22, maximum: 35 },
+          { type: "range", field: "graduationYear", maximum: 2026 },
+          {
+            type: "graduate_status",
+            values: ["current_or_upcoming_graduate"],
+            mode: "any"
+          },
+          { type: "enum", field: "gender", values: ["女"] }
+        ]
+      }
+    });
+  });
+
+  it("rejects unknown or logically impossible graduate-status settings", () => {
+    for (const node of [
+      {
+        type: "graduate_status",
+        values: ["intern"],
+        mode: "any",
+        unknownPolicy: "manual_review"
+      },
+      {
+        type: "graduate_status",
+        values: ["current_or_upcoming_graduate", "experienced"],
+        mode: "all",
+        unknownPolicy: "manual_review"
+      }
+    ]) {
+      expect(() =>
+        parseRuleConfig({
+          schemaVersion: "1.0",
+          root: { operator: "AND", children: [node] }
+        })
+      ).toThrow(RuleConfigValidationError);
+    }
+  });
+
+  it("rejects unsupported credentials and unrealistic profile boundaries", () => {
+    expect(() =>
+      parseRuleConfig({
+        schemaVersion: "1.0",
+        root: {
+          operator: "AND",
+          children: [
+            {
+              type: "english_credential",
+              accepted: ["cet4"],
+              mode: "any",
+              minimumConfidence: 0.8,
+              unknownPolicy: "manual_review"
+            }
+          ]
+        }
+      })
+    ).toThrow(/tem8 and cet6/u);
+    expect(() =>
+      parseRuleConfig({
+        schemaVersion: "1.0",
+        root: {
+          operator: "AND",
+          children: [
+            { type: "range", field: "age", minimum: 8, unknownPolicy: "manual_review" }
+          ]
+        }
+      })
+    ).toThrow(/between 16 and 100/u);
+  });
+});

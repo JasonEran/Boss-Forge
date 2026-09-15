@@ -1,0 +1,68 @@
+server {
+    listen 8443 ssl;
+    listen [::]:8443 ssl;
+    server_name _;
+
+    ssl_certificate ${BOSS_FORGE_TLS_CERTIFICATE};
+    ssl_certificate_key ${BOSS_FORGE_TLS_PRIVATE_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:BossForgeTLS:10m;
+    ssl_session_timeout 1d;
+
+    client_max_body_size 25m;
+
+    # Docker service IPs can change when only API or Web is recreated. Resolve
+    # them through Docker DNS on every request instead of caching the startup IP.
+    resolver 127.0.0.11 ipv6=off valid=10s;
+    resolver_timeout 5s;
+    set $boss_forge_api http://api:3100;
+    set $boss_forge_web http://web:3000;
+
+    # Model calls may use a 90s primary followed by a 180s fallback.
+    location = /api/semantic/synonyms {
+        proxy_pass $boss_forge_api;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # Complete online résumé capture and OCR may exceed the default 60s.
+    location ~ ^/api/communication/conversations/[0-9a-f-]+/online-resume$ {
+        proxy_pass $boss_forge_api;
+        proxy_read_timeout 260s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /api/ {
+        proxy_pass $boss_forge_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location = /health {
+        proxy_pass $boss_forge_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass $boss_forge_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}

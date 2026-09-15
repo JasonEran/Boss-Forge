@@ -17,7 +17,7 @@ async function main(): Promise<void> {
       config: {
         requiredCapabilities: [{ capability: "tem8", minimumConfidence: 0.86 }]
       },
-      dictionaryVersion: "2026.08.2",
+      dictionaryVersion: "2026.09.1",
       createdBy: "system:m1-seed"
     });
     const templateVersionId = await m2Repository.ensureMessageTemplate({

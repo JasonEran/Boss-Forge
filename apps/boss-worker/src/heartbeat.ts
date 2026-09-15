@@ -56,3 +56,49 @@ export async function writeHeartbeat(input: HeartbeatInput): Promise<{
   await rename(temporaryPath, path);
   return { heartbeat, path };
 }
+
+export type HeartbeatLoop = {
+  pulse(): Promise<void>;
+  stop(): Promise<void>;
+};
+
+/**
+ * Keep the status file fresh even while the worker is idle or waiting. Writes
+ * are serialized so an older pulse cannot overwrite a newer state transition.
+ */
+export function startHeartbeatLoop(
+  readInput: () => HeartbeatInput,
+  options: {
+    intervalMs?: number;
+    writer?: (input: HeartbeatInput) => Promise<unknown>;
+    onError?: (error: unknown) => void;
+  } = {}
+): HeartbeatLoop {
+  const intervalMs = Math.max(1_000, options.intervalMs ?? 10_000);
+  const writer = options.writer ?? writeHeartbeat;
+  let pending: Promise<void> = Promise.resolve();
+  let stopped = false;
+  const enqueue = (): Promise<void> => {
+    if (stopped) return pending;
+    pending = pending
+      .then(async () => {
+        await writer(readInput());
+      })
+      .catch((error: unknown) => {
+        options.onError?.(error);
+      });
+    return pending;
+  };
+  const timer = setInterval(() => {
+    void enqueue();
+  }, intervalMs);
+  timer.unref?.();
+  return {
+    pulse: enqueue,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await pending;
+    }
+  };
+}

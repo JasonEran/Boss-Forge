@@ -5,11 +5,16 @@ import {
   type InstitutionCategoryRule
 } from "@boss-forge/rule-engine";
 import type { SemanticRule } from "@boss-forge/semantic-engine";
+import { recruitmentConfigSchema, bossRecommendationFilterConfigSchema, hasBossFilters, isBossManagedResumeNode } from "@boss-forge/contracts";
 import type {
   CompositeRuleConfig,
   EducationLevel,
   EducationLevelRuleNode,
+  EnglishCredentialCode,
+  EnglishCredentialRuleNode,
   EnumRuleNode,
+  GraduateStatusCode,
+  GraduateStatusRuleNode,
   KeywordRuleNode,
   LegacyRuleConfig,
   RangeRuleNode,
@@ -36,6 +41,11 @@ const EDUCATION_LEVELS = new Set<EducationLevel>([
   "bachelor",
   "master",
   "doctor"
+]);
+const ENGLISH_CREDENTIALS = new Set<EnglishCredentialCode>(["tem8", "cet6"]);
+const GRADUATE_STATUSES = new Set<GraduateStatusCode>([
+  "current_or_upcoming_graduate",
+  "experienced"
 ]);
 const CATALOG_KEYS = new Set([
   "schemaVersion",
@@ -207,6 +217,8 @@ type ParseContext = {
   institutionLeaves: InstitutionCategoryRule[];
   semanticCriterionIds: Set<string>;
   schemaVersion: "1.0" | "1.1";
+  splitFlow?: boolean;
+  allowEmptyRoot?: boolean;
 };
 
 function parseSemanticAliases(
@@ -240,9 +252,12 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
   }
 
   const node = record(value, path);
+  if (context.splitFlow && isBossManagedResumeNode(node)) {
+    throw new RuleConfigValidationError(["学历、工作经验、院校和专业请在第一步 BOSS 官方筛选中设置，第二步无需重复核验。"]);
+  }
   if (node.operator === "AND" || node.operator === "OR" || node.operator === "NOT") {
     exactKeys(node, new Set(["operator", "children"]), path);
-    if (!Array.isArray(node.children) || node.children.length === 0) {
+    if (!Array.isArray(node.children) || (node.children.length === 0 && !(context.allowEmptyRoot && depth === 0 && node.operator === "AND"))) {
       throw new RuleConfigValidationError([`${path}.children must not be empty.`]);
     }
     if (node.operator === "NOT" && node.children.length !== 1) {
@@ -300,15 +315,44 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
     } satisfies Tem8CapabilityRuleNode;
   }
 
+  if (node.type === "english_credential") {
+    exactKeys(
+      node,
+      new Set(["type", "accepted", "mode", "minimumConfidence", "unknownPolicy"]),
+      path
+    );
+    const accepted = parseValues(node.accepted, `${path}.accepted`);
+    if (!accepted.every((value) => ENGLISH_CREDENTIALS.has(value as EnglishCredentialCode))) {
+      throw new RuleConfigValidationError([
+        `${path}.accepted supports only tem8 and cet6.`
+      ]);
+    }
+    return {
+      type: "english_credential",
+      accepted: accepted as EnglishCredentialCode[],
+      mode: mode(node.mode, `${path}.mode`),
+      minimumConfidence: confidence(
+        node.minimumConfidence,
+        `${path}.minimumConfidence`,
+        0
+      ),
+      unknownPolicy: parseUnknownPolicy(node.unknownPolicy, `${path}.unknownPolicy`)
+    } satisfies EnglishCredentialRuleNode;
+  }
+
   if (node.type === "range") {
     exactKeys(
       node,
       new Set(["type", "field", "minimum", "maximum", "unknownPolicy"]),
       path
     );
-    if (node.field !== "yearsOfExperience") {
+    if (
+      node.field !== "yearsOfExperience" &&
+      node.field !== "age" &&
+      node.field !== "graduationYear"
+    ) {
       throw new RuleConfigValidationError([
-        `${path}.field supports only yearsOfExperience in schema 1.0.`
+        `${path}.field must be yearsOfExperience, age, or graduationYear.`
       ]);
     }
     if (node.minimum === undefined && node.maximum === undefined) {
@@ -316,11 +360,23 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
         `${path} requires minimum, maximum, or both.`
       ]);
     }
+    const field = node.field;
+    const boundaryLimits =
+      field === "graduationYear"
+        ? { minimum: 1900, maximum: 2100 }
+        : field === "age"
+          ? { minimum: 16, maximum: 100 }
+          : { minimum: 0, maximum: 100 };
     const parseBoundary = (value: unknown, boundaryPath: string): number | undefined => {
       if (value === undefined) return undefined;
-      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < boundaryLimits.minimum ||
+        value > boundaryLimits.maximum
+      ) {
         throw new RuleConfigValidationError([
-          `${boundaryPath} must be a finite number between 0 and 100.`
+          `${boundaryPath} must be a finite number between ${boundaryLimits.minimum} and ${boundaryLimits.maximum}.`
         ]);
       }
       return value;
@@ -332,7 +388,7 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
     }
     return {
       type: "range",
-      field: "yearsOfExperience",
+      field,
       ...(minimum === undefined ? {} : { minimum }),
       ...(maximum === undefined ? {} : { maximum }),
       unknownPolicy: parseUnknownPolicy(node.unknownPolicy, `${path}.unknownPolicy`)
@@ -393,6 +449,27 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
       minimum: node.minimum as EducationLevel,
       unknownPolicy: parseUnknownPolicy(node.unknownPolicy, `${path}.unknownPolicy`)
     } satisfies EducationLevelRuleNode;
+  }
+
+  if (node.type === "graduate_status") {
+    exactKeys(node, new Set(["type", "values", "mode", "unknownPolicy"]), path);
+    const values = parseValues(node.values, `${path}.values`);
+    if (!values.every((value) => GRADUATE_STATUSES.has(value as GraduateStatusCode))) {
+      throw new RuleConfigValidationError([
+        `${path}.values supports only current_or_upcoming_graduate and experienced.`
+      ]);
+    }
+    if (node.mode !== "any") {
+      throw new RuleConfigValidationError([
+        `${path}.mode must be any because graduate statuses are mutually exclusive.`
+      ]);
+    }
+    return {
+      type: "graduate_status",
+      values: values as GraduateStatusCode[],
+      mode: "any",
+      unknownPolicy: parseUnknownPolicy(node.unknownPolicy, `${path}.unknownPolicy`)
+    } satisfies GraduateStatusRuleNode;
   }
 
   if (node.type === "semantic") {
@@ -516,7 +593,18 @@ function parseNode(value: unknown, path: string, depth: number, context: ParseCo
 }
 
 function parseComposite(value: JsonObject): CompositeRuleConfig {
-  exactKeys(value, new Set(["schemaVersion", "name", "root", "institutionCatalog"]), "config");
+  exactKeys(value, new Set(["schemaVersion", "name", "root", "institutionCatalog", "bossRecommendationFilters", "screeningFlow", "recruitment"]), "config");
+  if (value.screeningFlow !== undefined && value.screeningFlow !== "boss_then_resume") {
+    throw new RuleConfigValidationError(["config.screeningFlow is invalid."]);
+  }
+  const bossFilters = value.bossRecommendationFilters === undefined ? null : bossRecommendationFilterConfigSchema.safeParse(value.bossRecommendationFilters);
+  if (bossFilters && !bossFilters.success) throw new RuleConfigValidationError([`BOSS 官方筛选配置无效：${bossFilters.error.message}`]);
+  const recruitment = value.recruitment === undefined ? null : recruitmentConfigSchema.safeParse(value.recruitment);
+  if (recruitment && !recruitment.success) throw new RuleConfigValidationError([`招聘目标配置无效：${recruitment.error.message}`]);
+  const splitFlow = value.screeningFlow === "boss_then_resume";
+  if (splitFlow && (!bossFilters?.success || bossFilters.data.mode !== "custom")) {
+    throw new RuleConfigValidationError(["分工筛选需要明确配置第一步 BOSS 官方条件。"]);
+  }
   if (value.schemaVersion !== "1.0" && value.schemaVersion !== "1.1") {
     throw new RuleConfigValidationError(["config.schemaVersion must be 1.0 or 1.1."]);
   }
@@ -527,7 +615,9 @@ function parseComposite(value: JsonObject): CompositeRuleConfig {
     nodeCount: 0,
     institutionLeaves: [],
     semanticCriterionIds: new Set(),
-    schemaVersion: value.schemaVersion
+    schemaVersion: value.schemaVersion,
+    splitFlow,
+    allowEmptyRoot: (splitFlow && bossFilters?.success === true && hasBossFilters(bossFilters.data.fields)) || recruitment?.success === true && (recruitment.data.aiEnabled || recruitment.data.salaryCeilingYuan !== null)
   };
   const root = parseNode(value.root, "config.root", 0, context);
   if (!("children" in root)) {
@@ -579,6 +669,9 @@ function parseComposite(value: JsonObject): CompositeRuleConfig {
     schemaVersion: value.schemaVersion,
     ...(typeof value.name === "string" ? { name: value.name.trim() } : {}),
     root,
+    ...(recruitment?.success ? { recruitment: recruitment.data } : {}),
+    ...(splitFlow ? { screeningFlow: "boss_then_resume" as const } : {}),
+    ...(bossFilters?.success ? { bossRecommendationFilters: bossFilters.data } : {}),
     ...(institutionCatalog ? { institutionCatalog } : {})
   };
 }
@@ -592,4 +685,12 @@ export function parseRuleConfig(value: unknown): RuleConfig {
   const config = record(value, "config");
   if ("requiredCapabilities" in config) return parseLegacy(config);
   return parseComposite(config);
+}
+
+/** Official filters belong to the bound job's recommendation pool. */
+export function assertRuleScreeningSource(config: unknown, source: string, bossJobId: string | null): void {
+  const value = config as { screeningFlow?: string } | null;
+  if (value?.screeningFlow === "boss_then_resume" && (source !== "recommend" || !bossJobId)) {
+    throw new Error("请先同步并选择对应的 BOSS 岗位，再从推荐牛人启动筛选。");
+  }
 }

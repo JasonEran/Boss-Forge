@@ -1,9 +1,12 @@
 import type { ParsedCandidate } from "@boss-forge/contracts";
+import { educationPeriodEndYear, ongoingEducationEvidence } from "./education-period.js";
 import type {
   CandidateEvaluationRecord,
   EducationLevel,
   EducationLevelRuleNode,
   EnumRuleNode,
+  GraduateStatusCode,
+  GraduateStatusRuleNode,
   KeywordRuleNode,
   RangeRuleNode,
   TextRuleNode,
@@ -18,7 +21,8 @@ export type GenericRuleNode =
   | KeywordRuleNode
   | EnumRuleNode
   | TextRuleNode
-  | EducationLevelRuleNode;
+  | EducationLevelRuleNode
+  | GraduateStatusRuleNode;
 
 export type RuntimeNodeDecision = CandidateDecision | "ignored";
 
@@ -34,6 +38,8 @@ export type GenericRuleEvaluation = {
 type SourceValue = {
   sourceText: string;
   value: string;
+  /** Higher-priority values are explicit profile facts, not inferred history. */
+  priority?: number;
 };
 
 type UnknownInput = {
@@ -57,6 +63,9 @@ const FIELD_ALIASES: Readonly<Record<string, readonly string[]>> = {
     "从业年限",
     "经验年限"
   ],
+  age: ["age", "年龄", "候选人年龄"],
+  graduationyear: ["graduationyear", "graduateyear", "毕业年份", "毕业年度", "应届年份"],
+  gender: ["gender", "sex", "性别"],
   educationlevel: ["educationlevel", "学历", "最高学历", "学历层次", "学位"],
   skills: ["skills", "skill", "技能", "专业技能", "核心技能", "技能特长", "技术栈"],
   location: ["location", "地点", "城市", "工作地点", "期望地点", "期望城市"],
@@ -74,6 +83,9 @@ const FIELD_ALIASES: Readonly<Record<string, readonly string[]>> = {
 
 const EXPERIENCE_FIELD_KEYS = new Set(FIELD_ALIASES.yearsofexperience);
 const EDUCATION_FIELD_KEYS = new Set(FIELD_ALIASES.educationlevel);
+const BOSS_SUMMARY_FIELD_KEYS = new Set(["信息", "基本信息", "候选人信息"]);
+const BOSS_SUMMARY_EDUCATION_TOKEN =
+  /(?:^|[\s/|｜·,，;；])(?:博士研究生|博士|ph\.?d\.?|doctorate|硕士研究生|硕士|master|本科|学士|bachelor|专科|大专|副学士|associate|高中|中专|中等专业|职高|high\s*school)(?=$|[\s/|｜·,，;；])/iu;
 const EDUCATION_RANK: Readonly<Record<EducationLevel, number>> = {
   high_school: 0,
   associate: 1,
@@ -166,9 +178,18 @@ function selectedValues(
   ruleText: string,
   resumeText: string | null | undefined
 ): SourceValue[] {
-  return normalizeField(field) === "all"
-    ? allTextValues(candidate, ruleText, resumeText)
-    : explicitFieldValues(candidate, field);
+  const normalized = normalizeField(field);
+  if (normalized === "all") return allTextValues(candidate, ruleText, resumeText);
+  const explicit = explicitFieldValues(candidate, field);
+  if (normalized !== "gender") return explicit;
+  for (const [key, value] of Object.entries(candidate.fields)) {
+    if (!BOSS_SUMMARY_FIELD_KEYS.has(normalizeField(key))) continue;
+    const match = value.match(/(?:^|[\s/|｜·,，;；])(男|女)(?=$|[\s/|｜·,，;；])/u);
+    if (match?.[1]) {
+      explicit.push({ sourceText: `${key}：${value.trim()}`, value: match[1] });
+    }
+  }
+  return explicit;
 }
 
 function leafEvidence(
@@ -451,6 +472,9 @@ function evaluateRange(
   candidate: ParsedCandidate,
   resumeText: string | null | undefined
 ): GenericRuleEvaluation {
+  if (node.field === "age" || node.field === "graduationYear") {
+    return evaluateScalarRange(node, candidate, resumeText);
+  }
   const capabilityId = "range.yearsOfExperience";
   const canonicalLabel = `工作经验 ${node.minimum ?? "不限"}–${node.maximum ?? "不限"} 年`;
   const sources = labeledExperienceValues(candidate, resumeText);
@@ -518,6 +542,170 @@ function evaluateRange(
   };
 }
 
+type ScalarRangeValue = {
+  value: number;
+  sourceText: string;
+};
+
+function directScalarValue(source: SourceValue, field: "age" | "graduationYear"): ScalarRangeValue | null {
+  const normalized = normalizeText(source.value);
+  const match =
+    field === "age"
+      ? normalized.match(/(?:^|\D)(\d{1,3})\s*(?:岁|周岁|years?\s*old)(?:\D|$)/iu) ??
+        normalized.match(/^\s*(\d{1,3})\s*$/u)
+      : normalized.match(
+          /(?:^|\D)((?:19|20)\d{2}|\d{2})\s*(?:年)?\s*(?:届|应届(?:生|毕业生)?|毕业)?(?:\D|$)/u
+        );
+  if (!match?.[1]) return null;
+  let value = Number(match[1]);
+  if (field === "graduationYear" && value < 100) {
+    value += value >= 50 ? 1_900 : 2_000;
+  }
+  if (
+    !Number.isFinite(value) ||
+    (field === "age" && (value < 16 || value > 100)) ||
+    (field === "graduationYear" && (value < 1_900 || value > 2_100))
+  ) {
+    return null;
+  }
+  return { value, sourceText: source.sourceText };
+}
+
+function labeledScalarValues(
+  candidate: ParsedCandidate,
+  field: "age" | "graduationYear",
+  resumeText: string | null | undefined
+): SourceValue[] {
+  const values = explicitFieldValues(candidate, field).map((value) => ({
+    ...value,
+    priority: 3
+  }));
+  for (const [key, rawValue] of Object.entries(candidate.fields)) {
+    if (!BOSS_SUMMARY_FIELD_KEYS.has(normalizeField(key))) continue;
+    const value = rawValue.trim();
+    const match =
+      field === "age"
+        ? value.match(/(?:^|[\s/|｜·,，;；])(\d{1,3})\s*岁(?=$|[\s/|｜·,，;；])/u)
+        : value.match(
+            /(?:^|[\s/|｜·,，;；])((?:19|20)\d{2}|\d{2})\s*(?:年\s*(?:应届(?:生|毕业生)?|毕业)|届)(?=$|[\s/|｜·,，;；])/u
+          );
+    if (match?.[1]) {
+      values.push({ sourceText: `${key}：${value}`, value: match[1], priority: 3 });
+    }
+  }
+
+  const textSources = [candidate.raw, resumeText ?? ""].filter((value) => Boolean(value.trim()));
+  const patterns = field === "age"
+    ? [
+        /(?:年龄|age)\s*[:：=]?\s*(\d{1,3})\s*(?:岁|周岁|years?\s*old)?/giu,
+        /(?:^|[\s/|｜·,，;；])(\d{1,3})\s*(?:岁|周岁)(?=$|[\s/|｜·,，;；])/gu
+      ]
+    : [
+        /(?:毕业年份|毕业年度|应届年份)\s*[:：=]?\s*((?:19|20)\d{2}|\d{2})/gu,
+        /(?:预计|计划)?\s*((?:19|20)\d{2}|\d{2})\s*年\s*(?:应届(?:生|毕业生)?|毕业)/gu,
+        /((?:19|20)\d{2}|\d{2})\s*届/gu
+      ];
+  for (const text of textSources) {
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        if (match[1]) {
+          values.push({
+            sourceText: match[0].trim(),
+            value: match[1],
+            priority: /毕业年份|毕业年度|应届年份/u.test(match[0]) ? 3 : 2
+          });
+        }
+      }
+    }
+  }
+  if (field === "graduationYear" && values.length === 0 && resumeText) {
+    const period = educationPeriodEndYear(resumeText);
+    if (period) values.push({ ...period, priority: 1 });
+  }
+  return values;
+}
+
+function evaluateScalarRange(
+  node: RangeRuleNode,
+  candidate: ParsedCandidate,
+  resumeText: string | null | undefined
+): GenericRuleEvaluation {
+  if (node.field === "yearsOfExperience") {
+    throw new Error("Experience ranges must use the experience interval evaluator.");
+  }
+  const field = node.field;
+  const isAge = field === "age";
+  const capabilityId = `range.${field}`;
+  const unit = isAge ? "岁" : "年";
+  const canonicalLabel = `${isAge ? "年龄" : "毕业年份"} ${node.minimum ?? "不限"}–${node.maximum ?? "不限"}${unit}`;
+  const sources = labeledScalarValues(candidate, field, resumeText);
+  const maximumPriority = Math.max(0, ...sources.map((source) => source.priority ?? 0));
+  const preferredSources = sources.filter(
+    (source) => (source.priority ?? 0) === maximumPriority
+  );
+  const parsed = preferredSources
+    .map((source) => directScalarValue(source, field))
+    .filter((value): value is ScalarRangeValue => value !== null);
+  const distinct = new Map<number, ScalarRangeValue>();
+  for (const value of parsed) {
+    if (!distinct.has(value.value)) distinct.set(value.value, value);
+  }
+  if (distinct.size === 0) {
+    // Missing graduation metadata is not proof of a disqualifying cohort.
+    // Only waive an upper-year check; exact years/minimum years still require evidence.
+    if (!isAge && node.minimum === undefined && node.maximum !== undefined &&
+        !detectGraduateStatus(candidate, resumeText).some(item => item.status === "current_or_upcoming_graduate")) {
+      return unknownEvaluation({
+        policy: "ignore", capabilityId, canonicalLabel,
+        sourceText: "未提取到明确毕业年份，且没有明确在读或应届标记；按当前策略不因缺失年份淘汰，实际毕业年份仍为未知。",
+        normalizedAlias: "missing_graduation_year",
+        reasonCodes: ["graduation_metadata_missing_non_blocking"]
+      });
+    }
+    return unknownEvaluation({
+      policy: node.unknownPolicy,
+      capabilityId,
+      canonicalLabel,
+      sourceText: sources[0]?.sourceText ?? `未提取到明确${isAge ? "年龄" : "毕业年份"}`,
+      normalizedAlias: isAge ? "missing_age" : "missing_graduation_year",
+      reasonCodes: sources.length > 0 ? ["range_unparseable"] : ["field_missing"]
+    });
+  }
+  if (distinct.size > 1) {
+    return unknownEvaluation({
+      policy: node.unknownPolicy,
+      capabilityId,
+      canonicalLabel,
+      sourceText: [...distinct.values()].map((value) => value.sourceText).join(" / "),
+      normalizedAlias: isAge ? "conflicting_age" : "conflicting_graduation_year",
+      reasonCodes: ["range_conflicting_values"],
+      kind: "ambiguous"
+    });
+  }
+  const observed = [...distinct.values()][0]!;
+  const matched =
+    observed.value >= (node.minimum ?? Number.NEGATIVE_INFINITY) &&
+    observed.value <= (node.maximum ?? Number.POSITIVE_INFINITY);
+  const reasonCodes = [matched ? "range_matched" : "range_not_matched"];
+  return {
+    decision: matched ? "matched" : "not_matched",
+    confidence: 1,
+    reasonCodes,
+    evidence: [
+      leafEvidence(
+        capabilityId,
+        canonicalLabel,
+        observed.sourceText,
+        String(observed.value),
+        matched ? "positive" : "negative",
+        1,
+        reasonCodes
+      )
+    ],
+    unknown: false
+  };
+}
+
 type EducationValue = {
   level: EducationLevel;
   sourceText: string;
@@ -545,15 +733,47 @@ function parseEducationValue(source: SourceValue): EducationValue | "ambiguous" 
 }
 
 function labeledEducationValues(candidate: ParsedCandidate, resumeText?: string | null): SourceValue[] {
-  const values = Object.entries(candidate.fields)
+  const explicit = Object.entries(candidate.fields)
     .filter(([key, value]) => EDUCATION_FIELD_KEYS.has(normalizeField(key)) && Boolean(value.trim()))
-    .map(([key, value]) => ({ sourceText: `${key}：${value.trim()}`, value: value.trim() }));
+    .map(([key, value]) => ({
+      sourceText: `${key}：${value.trim()}`,
+      value: value.trim(),
+      priority: /最高学历|highesteducation/iu.test(normalizeField(key)) ? 3 : 2
+    }));
+  const values: SourceValue[] = [...explicit];
+  for (const [key, value] of Object.entries(candidate.fields)) {
+    const normalizedValue = value.trim();
+    if (
+      BOSS_SUMMARY_FIELD_KEYS.has(normalizeField(key)) &&
+      BOSS_SUMMARY_EDUCATION_TOKEN.test(normalizedValue)
+    ) {
+      values.push({
+        sourceText: `${key}：${normalizedValue}`,
+        value: normalizedValue,
+        priority: 2
+      });
+    }
+  }
   const textSources = [candidate.raw, resumeText ?? ""].filter((value) => Boolean(value.trim()));
-  const pattern = /(?:最高学历|学历层次|学历|学位|highest\s+education|education\s+level|degree)\s*[:：=]\s*([^,，。;；\n|｜]{1,30})/giu;
+  const highestPattern = /(?:最高学历|highest\s+education)\s*[:：=]\s*([^,，。;；\n|｜]{1,30})/giu;
+  const generalPattern = /(?:学历层次|学历|学位|education\s+level|degree)\s*[:：=]\s*([^,，。;；\n|｜]{1,30})/giu;
   for (const text of textSources) {
-    for (const match of text.matchAll(pattern)) {
+    for (const match of text.matchAll(highestPattern)) {
       if (match[1]?.trim()) {
-        values.push({ sourceText: match[0].trim(), value: match[1].trim() });
+        values.push({
+          sourceText: match[0].trim(),
+          value: match[1].trim(),
+          priority: 3
+        });
+      }
+    }
+    for (const match of text.matchAll(generalPattern)) {
+      if (match[1]?.trim()) {
+        values.push({
+          sourceText: match[0].trim(),
+          value: match[1].trim(),
+          priority: 1
+        });
       }
     }
   }
@@ -568,13 +788,17 @@ function evaluateEducationLevel(
   const capabilityId = "education.education_level";
   const canonicalLabel = `最低学历：${EDUCATION_LABEL[node.minimum]}`;
   const sources = labeledEducationValues(candidate, resumeText);
-  const parsed = sources.map(parseEducationValue);
+  const maximumPriority = Math.max(0, ...sources.map((source) => source.priority ?? 0));
+  const preferredSources = sources.filter(
+    (source) => (source.priority ?? 0) === maximumPriority
+  );
+  const parsed = preferredSources.map(parseEducationValue);
   const levels = unique(
     parsed
       .filter((value): value is EducationValue => typeof value === "object" && value !== null)
       .map((value) => value.level)
   ) as EducationLevel[];
-  if (parsed.includes("ambiguous") || levels.length > 1) {
+  if (parsed.includes("ambiguous") && levels.length === 0) {
     return unknownEvaluation({
       policy: node.unknownPolicy,
       capabilityId,
@@ -595,7 +819,23 @@ function evaluateEducationLevel(
       reasonCodes: sources.length > 0 ? ["education_level_unparseable"] : ["field_missing"]
     });
   }
-  const level = levels[0]!;
+  // When only education-history rows are available, multiple degrees describe
+  // progression rather than a contradiction.  Evaluate the highest attained
+  // level.  Conflicting explicit "最高学历" values still require review.
+  if (maximumPriority >= 3 && levels.length > 1) {
+    return unknownEvaluation({
+      policy: node.unknownPolicy,
+      capabilityId,
+      canonicalLabel,
+      sourceText: preferredSources.map((value) => value.sourceText).join(" / "),
+      normalizedAlias: "ambiguous_highest_education_level",
+      reasonCodes: ["education_level_conflicting_explicit_highest"],
+      kind: "ambiguous"
+    });
+  }
+  const level = [...levels].sort(
+    (left, right) => EDUCATION_RANK[right] - EDUCATION_RANK[left]
+  )[0]!;
   const matched = EDUCATION_RANK[level] >= EDUCATION_RANK[node.minimum];
   const reasonCodes = [matched ? "education_level_matched" : "education_level_not_matched"];
   const sourceText = parsed.find(
@@ -611,6 +851,131 @@ function evaluateEducationLevel(
         canonicalLabel,
         sourceText,
         level,
+        matched ? "positive" : "negative",
+        1,
+        reasonCodes
+      )
+    ],
+    unknown: false
+  };
+}
+
+type GraduateStatusEvidence = {
+  status: GraduateStatusCode;
+  sourceText: string;
+};
+
+function detectGraduateStatus(
+  candidate: ParsedCandidate,
+  resumeText: string | null | undefined
+): GraduateStatusEvidence[] {
+  const sources = allTextValues(candidate, candidate.raw, resumeText);
+  const detected: GraduateStatusEvidence[] = [];
+  if (resumeText) for (const sourceText of ongoingEducationEvidence(resumeText)) {
+    detected.push({ status: "current_or_upcoming_graduate", sourceText });
+  }
+  const currentPattern = /(?:(?<!非)应届(?:生|毕业生)?|未毕业|在读(?!期间|经历|时)|在校(?!经历|表现|实践|期间|活动|学习|获奖|成绩|时)|预计.{0,12}毕业|fresh\s+graduate|graduating)/iu;
+  const experiencedPattern = /(?:往届(?:生|毕业生)?|非应届|已毕业|社会招聘|experienced\s+hire)/iu;
+  const cohortPattern = /((?:19|20)\d{2}|\d{2})\s*届/gu;
+  const currentYear = Number(
+    new Intl.DateTimeFormat("en", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric"
+    }).format(new Date())
+  );
+  // Explicit profile years (including "2026 年毕业") must prevent the missing-
+  // metadata policy from treating a known current/future cohort as non-blocking.
+  const yearSources = labeledScalarValues(candidate, "graduationYear", resumeText);
+  const priority = Math.max(0, ...yearSources.map(source => source.priority ?? 0));
+  for (const source of yearSources.filter(source => (source.priority ?? 0) === priority)) {
+    const parsed = directScalarValue(source, "graduationYear");
+    if (parsed) detected.push({
+      status: parsed.value >= currentYear ? "current_or_upcoming_graduate" : "experienced",
+      sourceText: parsed.sourceText
+    });
+  }
+  for (const source of sources) {
+    const current = source.value.match(currentPattern);
+    if (current) {
+      detected.push({
+        status: "current_or_upcoming_graduate",
+        sourceText: evidenceSnippet(source.sourceText, current[0])
+      });
+    }
+    const experienced = source.value.match(experiencedPattern);
+    if (experienced) {
+      detected.push({
+        status: "experienced",
+        sourceText: evidenceSnippet(source.sourceText, experienced[0])
+      });
+    }
+    for (const cohort of source.value.matchAll(cohortPattern)) {
+      let year = Number(cohort[1]);
+      if (year < 100) year += year >= 50 ? 1_900 : 2_000;
+      detected.push({
+        status: year >= currentYear ? "current_or_upcoming_graduate" : "experienced",
+        sourceText: evidenceSnippet(source.sourceText, cohort[0])
+      });
+    }
+  }
+  return detected;
+}
+
+function evaluateGraduateStatus(
+  node: GraduateStatusRuleNode,
+  candidate: ParsedCandidate,
+  resumeText: string | null | undefined
+): GenericRuleEvaluation {
+  const capabilityId = "profile.graduate_status";
+  const labels: Record<GraduateStatusCode, string> = {
+    current_or_upcoming_graduate: "应届或即将毕业",
+    experienced: "往届或社会招聘"
+  };
+  const canonicalLabel = `毕业状态：${node.values.map((value) => labels[value]).join(" 或 ")}`;
+  const detected = detectGraduateStatus(candidate, resumeText);
+  const statuses = unique(detected.map((item) => item.status)) as GraduateStatusCode[];
+  if (statuses.length === 0) {
+    if (node.values.includes("experienced")) {
+      return unknownEvaluation({
+        policy: "ignore", capabilityId, canonicalLabel,
+        sourceText: "未识别到毕业年份或明确应届状态；按默认策略不因毕业信息缺失淘汰。此为筛选策略，实际毕业年份和状态仍待核实。",
+        normalizedAlias: "missing_graduate_status",
+        reasonCodes: ["graduation_metadata_missing_non_blocking"]
+      });
+    }
+    return unknownEvaluation({
+      policy: node.unknownPolicy,
+      capabilityId,
+      canonicalLabel,
+      sourceText: "未提取到明确的应届或往届状态",
+      normalizedAlias: "missing_graduate_status",
+      reasonCodes: ["graduate_status_missing"]
+    });
+  }
+  if (statuses.length > 1) {
+    return unknownEvaluation({
+      policy: node.unknownPolicy,
+      capabilityId,
+      canonicalLabel,
+      sourceText: detected.map((item) => item.sourceText).join(" / "),
+      normalizedAlias: "conflicting_graduate_status",
+      reasonCodes: ["graduate_status_conflicting"],
+      kind: "ambiguous"
+    });
+  }
+  const observed = statuses[0]!;
+  const matched = node.values.includes(observed);
+  const reasonCodes = [matched ? "graduate_status_matched" : "graduate_status_not_matched"];
+  return {
+    decision: matched ? "matched" : "not_matched",
+    confidence: 1,
+    reasonCodes,
+    evidence: [
+      leafEvidence(
+        capabilityId,
+        canonicalLabel,
+        detected.find((item) => item.status === observed)!.sourceText,
+        observed,
         matched ? "positive" : "negative",
         1,
         reasonCodes
@@ -637,5 +1002,7 @@ export function evaluateGenericRuleNode(
       return evaluateText(node, candidate, ruleText, resumeText);
     case "education_level":
       return evaluateEducationLevel(node, candidate, resumeText);
+    case "graduate_status":
+      return evaluateGraduateStatus(node, candidate, resumeText);
   }
 }

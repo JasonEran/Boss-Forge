@@ -1,0 +1,1 @@
+17 2,14 * * * root /usr/bin/flock -n /run/lock/boss-forge-cert-renewal.lock /opt/boss-forge/deploy/renew-ip-certificate.sh 2>&1 | /usr/bin/logger -t boss-forge-cert-renewal

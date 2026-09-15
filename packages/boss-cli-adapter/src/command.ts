@@ -1,3 +1,5 @@
+import type { CandidateSourceLocator } from "@boss-forge/contracts";
+
 export type BossAction =
   | "resume"
   | "not-fit"
@@ -13,6 +15,7 @@ export type BossCommand =
   | { type: "login" }
   | { type: "positions" }
   | { type: "jd"; positionName: string }
+  | { type: "greeting-preview"; jobKeyword: string }
   | { type: "recommend"; jobKeyword?: string }
   | { type: "search"; keyword?: string }
   | {
@@ -22,9 +25,27 @@ export type BossCommand =
       bonus: string[];
       match: boolean;
     }
-  | { type: "preview"; candidateTarget: string }
-  | { type: "greet"; candidateTarget: string; jobKeyword?: string }
+  | {
+      type: "preview";
+      candidateTarget: string;
+      sourceLocator?: CandidateSourceLocator;
+    }
+  | {
+      type: "greet";
+      candidateTarget: string;
+      sourceLocator?: CandidateSourceLocator;
+      jobKeyword: string;
+      expectedJobId: string;
+      expectedGreetingId: string;
+      expectedMessageSha256: string;
+    }
   | { type: "list"; unreadOnly: boolean }
+  | {
+      type: "chat-by-name";
+      candidateName: string;
+      sourceLocator?: CandidateSourceLocator;
+      strict: boolean;
+    }
   | {
       type: "chat-by-index";
       index: number;
@@ -32,7 +53,12 @@ export type BossCommand =
       expectedName?: string;
       strict: boolean;
     }
-  | { type: "send"; text: string; requestResume: boolean }
+  | {
+      type: "send";
+      text: string;
+      candidateTarget: string;
+      sourceLocator?: CandidateSourceLocator;
+    }
   | { type: "action"; action: BossAction; remark?: string };
 
 export type BossCommandRisk = "read" | "quota-consuming-read" | "external-write";
@@ -43,6 +69,38 @@ function requireText(value: string, field: string): string {
     throw new Error(`${field} must not be empty.`);
   }
   return normalized;
+}
+
+function requireProviderIdentifier(value: string, field: string): string {
+  const normalized = requireText(value, field);
+  if (normalized.length > 256 || !/^[A-Za-z0-9_~=-]+$/u.test(normalized)) {
+    throw new Error(`${field} is not a valid BOSS provider identifier.`);
+  }
+  return normalized;
+}
+
+function requireSha256(value: string, field: string): string {
+  const normalized = requireText(value, field);
+  if (!/^[a-f0-9]{64}$/u.test(normalized)) {
+    throw new Error(`${field} must be a lowercase SHA-256 hex digest.`);
+  }
+  return normalized;
+}
+
+export const BOSS_GEEK_ID_TARGET_PREFIX = "__boss_geek_id__:";
+
+function exactCandidateTarget(
+  fallback: string,
+  sourceLocator?: CandidateSourceLocator
+): string {
+  if (sourceLocator?.kind === "boss_geek_id") {
+    const value = requireText(sourceLocator.value, "sourceLocator.value");
+    if (!/^[A-Za-z0-9_~-]{8,160}$/u.test(value)) {
+      throw new Error("sourceLocator.value is not a valid BOSS candidate ID.");
+    }
+    return `${BOSS_GEEK_ID_TARGET_PREFIX}${encodeURIComponent(value)}`;
+  }
+  return requireText(fallback, "candidateTarget");
 }
 export function commandRisk(command: BossCommand): BossCommandRisk {
   switch (command.type) {
@@ -74,6 +132,12 @@ export function buildBossArgv(command: BossCommand): string[] {
       return ["positions"];
     case "jd":
       return ["jd", requireText(command.positionName, "positionName")];
+    case "greeting-preview":
+      return [
+        "greeting-preview",
+        "--job",
+        requireText(command.jobKeyword, "jobKeyword")
+      ];
     case "recommend":
       return command.jobKeyword
         ? ["recommend", requireText(command.jobKeyword, "jobKeyword")]
@@ -99,16 +163,34 @@ export function buildBossArgv(command: BossCommand): string[] {
       return argv;
     }
     case "preview":
-      return ["preview", requireText(command.candidateTarget, "candidateTarget")];
+      return [
+        "preview",
+        exactCandidateTarget(command.candidateTarget, command.sourceLocator)
+      ];
     case "greet": {
-      const argv = ["greet", requireText(command.candidateTarget, "candidateTarget")];
-      if (command.jobKeyword) {
-        argv.push("--job", requireText(command.jobKeyword, "jobKeyword"));
-      }
-      return argv;
+      return [
+        "greet",
+        exactCandidateTarget(command.candidateTarget, command.sourceLocator),
+        "--job",
+        requireText(command.jobKeyword, "jobKeyword"),
+        "--expected-job-id",
+        requireProviderIdentifier(command.expectedJobId, "expectedJobId"),
+        "--expected-greeting-id",
+        requireProviderIdentifier(command.expectedGreetingId, "expectedGreetingId"),
+        "--expected-message-sha256",
+        requireSha256(command.expectedMessageSha256, "expectedMessageSha256")
+      ];
     }
     case "list":
       return command.unreadOnly ? ["list", "--unread"] : ["list"];
+    case "chat-by-name": {
+      const argv = [
+        "chat",
+        exactCandidateTarget(command.candidateName, command.sourceLocator)
+      ];
+      if (command.strict) argv.push("--strict");
+      return argv;
+    }
     case "chat-by-index": {
       if (!Number.isInteger(command.index) || command.index < 1) {
         throw new Error("index must be a positive integer.");
@@ -123,8 +205,13 @@ export function buildBossArgv(command: BossCommand): string[] {
       return argv;
     }
     case "send": {
-      const argv = ["send", "--text", requireText(command.text, "text")];
-      if (command.requestResume) argv.push("--request-resume");
+      const argv = [
+        "send",
+        "--text",
+        requireText(command.text, "text"),
+        "--candidate",
+        exactCandidateTarget(command.candidateTarget, command.sourceLocator)
+      ];
       return argv;
     }
     case "action": {

@@ -8,7 +8,7 @@ import type {
 
 const CAPABILITY_ID = "language.english.tem8";
 const CANONICAL_LABEL = "TEM-8（英语专业八级）";
-const DICTIONARY_VERSION = "2026.08.2";
+export const TEM8_DICTIONARY_VERSION = "2026.09.1";
 const CONTEXT_RADIUS = 14;
 
 type AliasPattern = {
@@ -61,10 +61,10 @@ const ALIASES: readonly AliasPattern[] = [
 const NEGATIVE_CONTEXT =
   /未\s*(?:通过|取得|获得|持有|达到|考过|拿到)|没\s*(?:通过|取得|获得|考过|拿到)|没有\s*(?:通过|取得|获得|证书)|不具备|未获证|挂科/iu;
 const PLANNED_CONTEXT =
-  /备考|准备|计划|报考|即将\s*(?:参加|考试)|将\s*(?:参加|考试)|正在\s*(?:考|准备)|待考|目标|争取/iu;
+  /备考|准备|计划|报考|即将\s*(?:参加|考试)|将\s*(?:参加|考试)|正在\s*(?:考|准备)|待考|目标|争取|(?:今年|明年|本月|下月|下个月|本周|下周|近期|年底|年内)\s*(?:[一二三四五六七八九十\d]{1,3}\s*月(?:份)?)?\s*(?:参加|考试|考)(?!过)/iu;
 const SUBJECTIVE_CONTEXT = /水平|接近|相当于|媲美|能力\s*(?:达到|接近)/iu;
 const CONFUSABLE_CREDENTIAL =
-  /\b(?:CET|TEM)[\s-]*(?:4|6)\b|大学英语\s*(?:四|六|4|6)\s*级|英语\s*专业\s*(?:四|4)\s*级|英语专四|专四|雅思|IELTS|托福|TOEFL|BEC|剑桥商务英语/iu;
+  /\b(?:CET|TEM)[\s-]*(?:4|6)\b|(?:大学)?英语\s*(?:四|六|4|6)\s*级|英语\s*专业\s*(?:四|4)\s*级|英语专四|专四|雅思|IELTS|托福|TOEFL|BEC|剑桥商务英语/iu;
 
 type EnglishLevelPattern = {
   code: DetectedEnglishLevel["code"];
@@ -82,7 +82,7 @@ const ENGLISH_LEVEL_PATTERNS: readonly EnglishLevelPattern[] = [
   },
   {
     code: "cet6",
-    pattern: /\bCET[\s‐‑‒–—−-]*6\b|大学英语\s*(?:六|6)\s*级/giu,
+    pattern: /\bCET[\s‐‑‒–—−-]*6\b|(?:大学)?英语\s*(?:六|6)\s*级/giu,
     label: () => "CET-6（大学英语六级）",
     confidence: 0.98
   },
@@ -187,13 +187,15 @@ function detectEnglishLevels(
   tem8Evidence: CapabilityEvidence[]
 ): DetectedEnglishLevel[] {
   const levels: DetectedEnglishLevel[] = [];
-  if (tem8Evidence.some((item) => item.status === "positive")) {
-    const sourceText = tem8Evidence.find((item) => item.status === "positive")!.sourceText;
+  const confirmedTem8 = tem8Evidence
+    .filter((item) => item.status === "positive")
+    .sort((left, right) => right.confidence - left.confidence)[0];
+  if (confirmedTem8) {
     levels.push({
       code: "tem8",
       label: CANONICAL_LABEL,
-      sourceText,
-      confidence: 0.99
+      sourceText: confirmedTem8.sourceText,
+      confidence: confirmedTem8.confidence
     });
   }
   for (const definition of ENGLISH_LEVEL_PATTERNS) {
@@ -236,7 +238,7 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
     return {
       capabilityId: CAPABILITY_ID,
       canonicalLabel: CANONICAL_LABEL,
-      dictionaryVersion: DICTIONARY_VERSION,
+      dictionaryVersion: TEM8_DICTIONARY_VERSION,
       decision: "ambiguous",
       confidence: 0.5,
       reasonCodes: ["conflicting_evidence"],
@@ -249,7 +251,7 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
     return {
       capabilityId: CAPABILITY_ID,
       canonicalLabel: CANONICAL_LABEL,
-      dictionaryVersion: DICTIONARY_VERSION,
+      dictionaryVersion: TEM8_DICTIONARY_VERSION,
       decision: "matched",
       confidence: Math.max(...positive.map((item) => item.confidence)),
       reasonCodes: ["confirmed_alias"],
@@ -267,7 +269,7 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
     return {
       capabilityId: CAPABILITY_ID,
       canonicalLabel: CANONICAL_LABEL,
-      dictionaryVersion: DICTIONARY_VERSION,
+      dictionaryVersion: TEM8_DICTIONARY_VERSION,
       decision: "ambiguous",
       confidence: 0.6,
       reasonCodes: uniqueReasons(reasons),
@@ -280,7 +282,7 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
     return {
       capabilityId: CAPABILITY_ID,
       canonicalLabel: CANONICAL_LABEL,
-      dictionaryVersion: DICTIONARY_VERSION,
+      dictionaryVersion: TEM8_DICTIONARY_VERSION,
       decision: "not_matched",
       confidence: 0.99,
       reasonCodes: ["negative_context"],
@@ -293,9 +295,11 @@ export function evaluateTem8(rawText: string): CapabilityEvaluation {
   return {
     capabilityId: CAPABILITY_ID,
     canonicalLabel: CANONICAL_LABEL,
-    dictionaryVersion: DICTIONARY_VERSION,
-    decision: hasConfusableCredential ? "not_matched" : "insufficient",
-    confidence: hasConfusableCredential ? 0.98 : 0,
+    dictionaryVersion: TEM8_DICTIONARY_VERSION,
+    // A different certificate is evidence of that certificate, not evidence
+    // that the candidate lacks TEM8. Only explicit negative context can fail.
+    decision: "insufficient",
+    confidence: 0,
     reasonCodes: [hasConfusableCredential ? "confusable_credential" : "no_evidence"],
     evidence: [],
     detectedEnglishLevels

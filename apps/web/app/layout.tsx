@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { WorkspaceApp } from './workspace-app';
 
 export const metadata: Metadata = {
   title: 'Boss Forge · HR 招聘工作台',
@@ -13,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <WorkspaceApp>{children}</WorkspaceApp>
+      </body>
     </html>
   );
 }

@@ -1,0 +1,7 @@
+SCHEDULE publication then dispatch attempt 1 task rule version must be published
+SCHEDULE publication then dispatch attempt 2 task rule version must be published
+SCHEDULE remains enabled, old rule still bound: true
+SCHEDULE healthy plan also produced tasks: 0
+SCHEDULE after three days offline, consecutive materializations: 4
+OWNER after assigning new owner, actual owner still old: true
+OWNER new assigned owner cannot start task after old owner disabled: Position needs an assigned owner and a published active rule before creating tasks.

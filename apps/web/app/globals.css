@@ -52,42 +52,51 @@ body {
   font-family: var(--font-sans-ui);
 }
 
+@keyframes workspace-indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
+}
+.workspace-indeterminate { animation: workspace-indeterminate 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-indeterminate { animation: none; width: 100%; opacity: .65; }
+}
+
 :root {
   --font-sans-ui:
     Inter, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono-ui: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  --background: #f5f9fc;
-  --foreground: #102a3a;
+  --background: #f6f7f9;
+  --foreground: #1c2637;
   --card: #ffffff;
   --card-foreground: #102a3a;
   --popover: #ffffff;
   --popover-foreground: #102a3a;
-  --primary: #0369a1;
+  --primary: #2558d9;
   --primary-foreground: #ffffff;
-  --secondary: #e0f2fe;
-  --secondary-foreground: #075985;
-  --muted: #eaf1f5;
-  --muted-foreground: #536674;
-  --accent: #dcfce7;
-  --accent-foreground: #166534;
+  --secondary: #edf2ff;
+  --secondary-foreground: #244aa5;
+  --muted: #f0f2f5;
+  --muted-foreground: #647084;
+  --accent: #edf2ff;
+  --accent-foreground: #244aa5;
   --destructive: #dc2626;
-  --border: #cfe2ec;
-  --input: #cfe2ec;
-  --ring: #0369a1;
+  --border: #e0e5ed;
+  --input: #d5dce7;
+  --ring: #2558d9;
   --chart-1: #0369a1;
   --chart-2: #16a34a;
   --chart-3: #d97706;
   --chart-4: #7c3aed;
   --chart-5: #dc2626;
-  --radius: 0.7rem;
-  --sidebar: #ffffff;
-  --sidebar-foreground: #102a3a;
-  --sidebar-primary: #0369a1;
+  --radius: 0.65rem;
+  --sidebar: #172237;
+  --sidebar-foreground: #e5ecf7;
+  --sidebar-primary: #749bff;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e0f2fe;
-  --sidebar-accent-foreground: #075985;
-  --sidebar-border: #cfe2ec;
-  --sidebar-ring: #0369a1;
+  --sidebar-accent: #2b3b57;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #334158;
+  --sidebar-ring: #749bff;
   --success: #15803d;
   --warning: #d97706;
   --warning-foreground: #92400e;
@@ -134,9 +143,20 @@ body {
   body {
     @apply bg-background text-foreground;
     min-width: 320px;
+    -webkit-font-smoothing: antialiased;
   }
   html {
     @apply font-sans;
+  }
+  button:not(:disabled),
+  summary,
+  a {
+    cursor: pointer;
+  }
+  a:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
   }
 }
 

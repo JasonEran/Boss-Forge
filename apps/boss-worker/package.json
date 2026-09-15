@@ -9,6 +9,7 @@
     "@boss-forge/data": "workspace:*",
     "@boss-forge/m1-core": "workspace:*",
     "@boss-forge/semantic-engine": "workspace:*",
+    "puppeteer-core": "25.10.0",
     "tencentcloud-sdk-nodejs-ocr": "4.1.302"
   }
 }

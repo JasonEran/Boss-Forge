@@ -1,1 +1,5 @@
-import { SemanticClient } from './semantic-client'; export default function Page(){return <SemanticClient/>}
+import { redirect } from 'next/navigation';
+
+export default function Page() {
+  redirect('/positions');
+}

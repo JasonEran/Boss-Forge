@@ -20,6 +20,7 @@ describe("boss-cli 0.6.6 output parser", () => {
       }
     ]);
     expect(output).toContain("标签:985/双一流");
+    expect(output).toContain("BOSS候选人ID:fixture-1");
     expect(output).toContain("优势: 五年产品经验");
   });
 
@@ -57,6 +58,26 @@ describe("boss-cli 0.6.6 output parser", () => {
         evidence: ["英语专业八级 / 海外教学经验"]
       })
     ]);
+  });
+
+  it("extracts the stable BOSS candidate ID without exposing it as a rule field", () => {
+    const output = `推荐列表（按来源分组）：共 1 人。
+
+常规推荐（1）
+  - 1. 张三｜BOSS候选人ID:253deb7b64a5b4a50nN72dS1F1ZZ｜信息:北京 / 5年 / 本科｜可打招呼
+    优势:海外运营经验
+
+打招呼产生的推荐（0）
+  - 暂无`;
+    const result = parseBossOutput("0.6.6", { type: "recommend" }, output);
+    expect(result.kind).toBe("candidates");
+    if (result.kind !== "candidates") return;
+    expect(result.candidates[0]?.sourceLocator).toEqual({
+      kind: "boss_geek_id",
+      value: "253deb7b64a5b4a50nN72dS1F1ZZ"
+    });
+    expect(result.candidates[0]?.fields.BOSS候选人ID).toBeUndefined();
+    expect(result.candidates[0]?.raw).not.toContain("BOSS候选人ID");
   });
 
   it("keeps recommend highlights as explicit BOSS academic platform tags", () => {

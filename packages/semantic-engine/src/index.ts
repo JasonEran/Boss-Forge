@@ -1,3 +1,5 @@
+export * from './model-fallback.js';
+import { chatModelParameters, semanticModels, withSemanticModelFallback } from './model-fallback.js';
 export * from "./types.js";
 
 import type {
@@ -15,6 +17,26 @@ export const SEMANTIC_CATALOG_VERSION = "semantic-catalog-1.0";
 const MAX_CANDIDATE_TEXT = 60_000;
 const MAX_EVIDENCE_ITEMS = 8;
 const MAX_EVIDENCE_LENGTH = 1_500;
+
+export type SemanticProviderReadinessReason =
+  | "ready"
+  | "disabled"
+  | "missing_endpoint"
+  | "invalid_endpoint"
+  | "missing_model"
+  | "missing_credential"
+  | "invalid_timeout";
+
+export type SemanticProviderReadiness = {
+  enabled: boolean;
+  ready: boolean;
+  reason: SemanticProviderReadinessReason;
+  endpointHost: string | null;
+  model: string | null;
+  fallbackModel?: string | null;
+  credentialConfigured: boolean;
+  timeoutMs: number | null;
+};
 
 type JsonObject = Record<string, unknown>;
 
@@ -36,6 +58,83 @@ function requiredString(value: unknown, path: string, maximum = 500): string {
   const parsed = value.trim();
   if (parsed.length > maximum) throw new Error(`${path} exceeds ${maximum} characters.`);
   return parsed;
+}
+
+function explicitlyEnabled(value: string | undefined): boolean {
+  return ["1", "true"].includes((value ?? "0").trim().toLowerCase());
+}
+
+function secureBaseUrl(value: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("semantic endpoint must be a valid HTTPS URL.");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(
+      "semantic endpoint must use HTTPS without embedded credentials, query, or fragment."
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Describes model readiness without returning the endpoint path or credential.
+ * An incomplete configuration deliberately behaves like an unavailable provider,
+ * so a shadow-only model can never make the core resume workflow fail.
+ */
+export function semanticProviderReadinessFromEnvironment(
+  environment: NodeJS.ProcessEnv = process.env
+): SemanticProviderReadiness {
+  const enabled = explicitlyEnabled(environment.BOSS_FORGE_SEMANTIC_ENABLED);
+  const baseUrl = environment.BOSS_FORGE_SEMANTIC_BASE_URL?.trim() ?? "";
+  const model = environment.BOSS_FORGE_SEMANTIC_MODEL?.trim() || null;
+  const credentialConfigured = Boolean(
+    environment.BOSS_FORGE_SEMANTIC_API_KEY?.trim()
+  );
+  const timeout = Number(environment.BOSS_FORGE_SEMANTIC_TIMEOUT_MS ?? "45000");
+  let endpointHost: string | null = null;
+  let endpointValid = false;
+  if (baseUrl) {
+    try {
+      const parsed = secureBaseUrl(baseUrl);
+      endpointHost = parsed.host;
+      endpointValid = true;
+    } catch {
+      endpointValid = false;
+    }
+  }
+  const timeoutValid = Number.isFinite(timeout) && timeout >= 1_000 && timeout <= 180_000;
+  const reason: SemanticProviderReadinessReason = !enabled
+    ? "disabled"
+    : !baseUrl
+      ? "missing_endpoint"
+      : !endpointValid
+        ? "invalid_endpoint"
+        : !model
+          ? "missing_model"
+          : !credentialConfigured
+            ? "missing_credential"
+            : !timeoutValid
+              ? "invalid_timeout"
+              : "ready";
+  return {
+    enabled,
+    ready: reason === "ready",
+    reason,
+    endpointHost,
+    model,
+    ...(semanticModels(environment).length > 1 ? { fallbackModel: semanticModels(environment)[1]! } : {}),
+    credentialConfigured,
+    timeoutMs: timeoutValid ? timeout : null
+  };
 }
 
 function optionalString(value: unknown, path: string, maximum = 500): string | null {
@@ -94,6 +193,24 @@ function normalizeText(value: string): string {
     .replace(/[\u00a0\u2000-\u200d\u202f\u205f\u3000]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function normalizeEvidenceSnippet(value: string): string {
+  const normalized = normalizeText(value);
+  const quotePairs = [
+    ["“", "”"],
+    ["‘", "’"],
+    ["「", "」"],
+    ["『", "』"],
+    ['"', '"'],
+    ["'", "'"]
+  ] as const;
+  for (const [opening, closing] of quotePairs) {
+    if (normalized.startsWith(opening) && normalized.endsWith(closing)) {
+      return normalized.slice(opening.length, -closing.length).trim();
+    }
+  }
+  return normalized;
 }
 
 function unique(values: string[]): string[] {
@@ -262,7 +379,10 @@ export function parseSemanticModelResponse(
     const unverifiableEvidence =
       item.result !== "unknown" &&
       source !== null &&
-      evidence.some((snippet) => !source.includes(normalizeText(snippet)));
+      evidence.some((snippet) => {
+        const normalizedSnippet = normalizeEvidenceSnippet(snippet);
+        return !normalizedSnippet || !source.includes(normalizedSnippet);
+      });
     const forcedUnknown = missingEvidence || unverifiableEvidence;
     return {
       criterionId,
@@ -357,43 +477,53 @@ function responseSchema(rules: readonly SemanticRule[]): JsonObject {
 export class OpenAiCompatibleSemanticProvider implements SemanticProvider {
   readonly modelVersion: string;
   private readonly baseUrl: string;
-  private readonly apiKey: string | null;
+  private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly models: string[];
 
   constructor(input: {
     baseUrl: string;
-    apiKey?: string | null | undefined;
+    apiKey: string;
     model: string;
+    fallbackModel?: string;
     timeoutMs?: number;
     fetchImpl?: typeof fetch;
   }) {
-    this.baseUrl = input.baseUrl.replace(/\/+$/u, "");
-    this.apiKey = input.apiKey?.trim() || null;
+    this.baseUrl = secureBaseUrl(input.baseUrl).toString().replace(/\/+$/u, "");
+    this.apiKey = requiredString(input.apiKey, "semantic credential", 10_000);
     this.modelVersion = requiredString(input.model, "semantic model", 200);
+    this.models = semanticModels({ BOSS_FORGE_SEMANTIC_MODEL: this.modelVersion, BOSS_FORGE_SEMANTIC_FALLBACK_MODEL: input.fallbackModel });
     this.timeoutMs = input.timeoutMs ?? 45_000;
+    if (
+      !Number.isFinite(this.timeoutMs) ||
+      this.timeoutMs < 1_000 ||
+      this.timeoutMs > 180_000
+    ) {
+      throw new Error(
+        "semantic timeout must be between 1000 and 180000 milliseconds."
+      );
+    }
     this.fetchImpl = input.fetchImpl ?? fetch;
   }
 
   async evaluate(input: SemanticProviderInput): Promise<SemanticEvaluation[]> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
+    return withSemanticModelFallback(this.models, this.timeoutMs, async (model, signal) => {
       const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {})
+          authorization: `Bearer ${this.apiKey}`
         },
-        signal: controller.signal,
+        signal,
         body: JSON.stringify({
-          model: this.modelVersion,
-          temperature: 0,
+          model,
+          ...chatModelParameters(model),
           messages: [
             {
               role: "system",
               content:
-                "你是简历事实提取器。只依据原文逐项判断，不推断敏感属性，不生成录用建议。matched/not_matched 必须引用原文；无法确认返回 unknown。normalizedValue 必须是序列化后的 JSON 字符串，未知时返回 null。"
+                "你是简历事实提取器。只依据原文逐项判断，不推断敏感属性，不生成录用建议。matched/not_matched 的 evidence 必须逐字复制原文片段，不要自行添加引号；无法确认返回 unknown。normalizedValue 必须是序列化后的 JSON 字符串，未知时返回 null。"
             },
             {
               role: "user",
@@ -436,50 +566,26 @@ export class OpenAiCompatibleSemanticProvider implements SemanticProvider {
       return parseSemanticModelResponse(
         JSON.parse(choice.message.content),
         input.rules,
-        this.modelVersion,
+        model,
         "active",
         input.candidateText
       );
-    } finally {
-      clearTimeout(timeout);
-    }
+    });
   }
-}
-
-export function semanticRuntimeMode(
-  environment: NodeJS.ProcessEnv = process.env
-): SemanticRuntimeMode {
-  return environment.BOSS_FORGE_SEMANTIC_MODE?.trim().toLowerCase() === "active"
-    ? "active"
-    : "shadow";
 }
 
 export function semanticProviderFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
   fetchImpl: typeof fetch = fetch
 ): SemanticProvider | null {
-  const enabled = !["0", "false", "no", "off"].includes(
-    (environment.BOSS_FORGE_SEMANTIC_ENABLED ?? "0").trim().toLowerCase()
-  );
-  if (!enabled) return null;
-  const baseUrl = environment.BOSS_FORGE_SEMANTIC_BASE_URL?.trim();
-  const model = environment.BOSS_FORGE_SEMANTIC_MODEL?.trim();
-  if (!baseUrl || !model) {
-    throw new Error(
-      "Semantic model requires BOSS_FORGE_SEMANTIC_BASE_URL and BOSS_FORGE_SEMANTIC_MODEL."
-    );
-  }
-  const timeout = Number(environment.BOSS_FORGE_SEMANTIC_TIMEOUT_MS ?? "45000");
-  if (!Number.isFinite(timeout) || timeout < 1_000 || timeout > 180_000) {
-    throw new Error(
-      "BOSS_FORGE_SEMANTIC_TIMEOUT_MS must be between 1000 and 180000."
-    );
-  }
+  const readiness = semanticProviderReadinessFromEnvironment(environment);
+  if (!readiness.ready) return null;
   return new OpenAiCompatibleSemanticProvider({
-    baseUrl,
-    apiKey: environment.BOSS_FORGE_SEMANTIC_API_KEY,
-    model,
-    timeoutMs: timeout,
+    baseUrl: environment.BOSS_FORGE_SEMANTIC_BASE_URL!,
+    apiKey: environment.BOSS_FORGE_SEMANTIC_API_KEY!,
+    model: readiness.model!,
+    ...(readiness.fallbackModel ? { fallbackModel: readiness.fallbackModel } : {}),
+    timeoutMs: readiness.timeoutMs!,
     fetchImpl
   });
 }
@@ -489,8 +595,16 @@ export async function evaluateSemanticRules(input: {
   rules: SemanticRule[];
   provider?: SemanticProvider | null;
   runtimeMode?: SemanticRuntimeMode;
+  catalogVersion?: string | null;
 }): Promise<SemanticEvaluation[]> {
   const runtimeMode = input.runtimeMode ?? "shadow";
+  const catalogVersion = input.catalogVersion?.trim() || SEMANTIC_CATALOG_VERSION;
+  if (runtimeMode === "off") {
+    return input.rules.map((rule) => ({
+      ...unknownEvaluation(rule, runtimeMode, ["semantic_mode_off"]),
+      catalogVersion
+    }));
+  }
   const deterministic = new Map<string, SemanticEvaluation>();
   const unresolved: SemanticRule[] = [];
   for (const rule of input.rules) {
@@ -514,12 +628,43 @@ export async function evaluateSemanticRules(input: {
     }
   }
   const modelById = new Map(modelResults.map((item) => [item.criterionId, item]));
-  return input.rules.map(
-    (rule) =>
-      deterministic.get(rule.criterionId) ??
+  return input.rules.map((rule) => ({
+    ...(deterministic.get(rule.criterionId) ??
       modelById.get(rule.criterionId) ??
       unknownEvaluation(rule, runtimeMode, [
         input.provider ? "semantic_model_missing_result" : "semantic_model_unavailable"
-      ])
-  );
+      ])),
+    catalogVersion
+  }));
 }
+
+export function applySemanticCatalogEntries(
+  rules: readonly SemanticRule[],
+  entries: unknown
+): SemanticRule[] {
+  if (!Array.isArray(entries)) return [...rules];
+  const aliasesByCanonical = new Map<string, string[]>();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const canonical = (entry as { canonical?: unknown }).canonical;
+    const aliases = (entry as { aliases?: unknown }).aliases;
+    if (typeof canonical !== "string" || !Array.isArray(aliases)) continue;
+    const normalizedAliases = aliases.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0
+    );
+    aliasesByCanonical.set(canonical.trim().toLocaleLowerCase(), normalizedAliases);
+  }
+  return rules.map((rule) => {
+    if (rule.executionMode !== "normalized_entity") return rule;
+    const merged = { ...(rule.aliases ?? {}) };
+    for (const canonical of rule.expectedValues ?? []) {
+      const catalogAliases = aliasesByCanonical.get(canonical.trim().toLocaleLowerCase()) ?? [];
+      if (catalogAliases.length > 0) {
+        merged[canonical] = unique([...(merged[canonical] ?? []), ...catalogAliases]);
+      }
+    }
+    return Object.keys(merged).length > 0 ? { ...rule, aliases: merged } : rule;
+  });
+}
+
+export * from "./recruitment-assessment.js";

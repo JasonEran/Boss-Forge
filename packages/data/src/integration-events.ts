@@ -123,7 +123,9 @@ export async function enqueueTaskCompletionIfReady(
   if (Number(metrics.review_count) === 0) {
     await sql`
       UPDATE tasks SET status = 'completed', finished_at = COALESCE(finished_at, now()),
-        claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+        claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
+        wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+        last_progress_at = now(), version = version + 1
       WHERE id = ${taskId} AND status = 'waiting_review'
     `;
   }

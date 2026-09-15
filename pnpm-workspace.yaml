@@ -6,7 +6,8 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
-  "@puppeteer/browsers": 3.2.1
+  "puppeteer-core": 25.10.0
+  "@puppeteer/browsers": 3.2.2
 allowBuilds:
   esbuild: true
   sharp: true

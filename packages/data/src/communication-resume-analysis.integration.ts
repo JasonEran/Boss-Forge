@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {createDatabase,assertIsolatedTestDatabase,DepartmentAtsRepository,BossForgeRepository,CommunicationRepository,type SessionPrincipal} from './index.js';
+assertIsolatedTestDatabase(process.env,{contactSideEffects:false});
+const sql=createDatabase(),chat=new CommunicationRepository(sql),repo=new BossForgeRepository(sql);
+try{
+ await new DepartmentAtsRepository(sql).ensureBootstrap({departmentName:'图像先返回测试',adminEmail:'progressive-test@example.com',adminName:'隔离测试',password:'Progressive-Test-Only!'});
+ const [u]=await sql`SELECT * FROM users WHERE role='admin' LIMIT 1`;
+ const principal:SessionPrincipal={userId:u!.id,departmentId:u!.department_id,email:u!.email,displayName:u!.display_name,role:'admin'};
+ const accountId='progressive-'+randomUUID(),geekId='geek-'+randomUUID();
+ const position=await repo.createPosition({bossAccountId:accountId,name:'异步分析测试',ownerName:principal.displayName});
+ await sql`UPDATE positions SET department_id=${principal.departmentId},owner_user_id=${principal.userId},boss_job_id='progressive-job' WHERE id=${position.id}`;
+ await chat.saveInbox(accountId,{fetchedAt:new Date().toISOString(),conversations:[{geekId,candidateName:'虚构候选人',bossJobId:'progressive-job',positionName:position.name,preview:'测试',lastMessageAt:new Date().toISOString(),timeLabel:'刚刚',unreadCount:0}]});
+ const target=(await chat.targets(principal)).find(t=>t.geekId===geekId)!;assert(target);
+ const screenshot={geekId,capturedAt:new Date().toISOString(),screenshotPath:'/saved/capture-a.png',text:'',textStatus:'pending' as const,analysisVersion:1};
+ await chat.saveOnlineResume(principal,target.id,screenshot);
+ assert.equal((await chat.onlineResume(principal,target.id))?.textStatus,'pending','Saved image is available before analysis');
+ assert.equal(await chat.claimOnlineResumeAnalysis('wrong-account'),null);
+ const first=await chat.claimOnlineResumeAnalysis(accountId);assert(first);assert.equal(await chat.claimOnlineResumeAnalysis(accountId),null,'Only one worker owns a running image');
+ const newer={...screenshot,capturedAt:new Date(Date.now()+1000).toISOString(),screenshotPath:'/saved/capture-b.png'};
+ await chat.saveOnlineResume(principal,target.id,newer);
+ assert.equal(await chat.finishOnlineResumeAnalysis(first,{text:'stale text'}),false,'Older analysis never replaces a newer screenshot');
+ const second=await chat.claimOnlineResumeAnalysis(accountId);assert(second);
+ await sql`UPDATE communication_online_resumes SET analysis_claimed_at=now()-interval '3 minutes' WHERE conversation_id=${target.id}`;
+ const recovered=await chat.claimOnlineResumeAnalysis(accountId);assert(recovered);assert.notEqual(recovered.claimId,second.claimId);
+ assert.equal(await chat.renewOnlineResumeAnalysis(second),false);
+ assert.equal(await chat.finishOnlineResumeAnalysis(second,{text:'stale worker text'}),false);
+ assert(await chat.finishOnlineResumeAnalysis(recovered,{text:'',error:'retryable'}));
+ const failed=await chat.onlineResume(principal,target.id);assert.equal(failed?.textStatus,'unavailable');assert.equal(failed?.screenshotPath,newer.screenshotPath);
+ await chat.queueOnlineResumeAnalysis(principal,target.id);const retry=await chat.claimOnlineResumeAnalysis(accountId);assert(retry);
+ assert(await chat.finishOnlineResumeAnalysis(retry,{text:'教育经历：英语专业本科，已通过英语专业八级。'}));
+ const complete=await chat.onlineResume(principal,target.id);assert.equal(complete?.textStatus,'ready');assert((complete?.analysisVersion??0)>(failed?.analysisVersion??0));
+ await chat.queueOnlineResumeAnalysis(principal,target.id);assert.equal(await chat.claimOnlineResumeAnalysis(accountId),null,'Completed analysis does not repeat');
+ console.log(JSON.stringify({ok:true,imageBeforeAnalysis:true,accountIsolation:true,oneClaim:true,staleCaptureRejected:true,crashRecovery:true,retryKeepsScreenshot:true,monotonicVersion:true,browserOperations:0}));
+}finally{await sql.end();}

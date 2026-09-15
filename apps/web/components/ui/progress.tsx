@@ -19,7 +19,9 @@ function Progress({
     >
       {children}
       <ProgressTrack>
-        <ProgressIndicator />
+        <ProgressIndicator
+          className={value === null ? 'workspace-indeterminate w-1/3' : ''}
+        />
       </ProgressTrack>
     </ProgressPrimitive.Root>
   );

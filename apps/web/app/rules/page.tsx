@@ -1,1 +1,5 @@
-import { RulesClient } from './rules-client'; export default function Page(){return <RulesClient/>}
+import { redirect } from 'next/navigation';
+
+export default function Page() {
+  redirect('/positions');
+}

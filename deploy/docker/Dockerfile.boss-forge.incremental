@@ -1,0 +1,22 @@
+# Rebuild application code from a previously verified Boss-Forge runtime image.
+# This is useful when registry or Debian mirrors are unavailable; it does not
+# change the browser runtime and still performs a frozen install and web build.
+ARG BASE_APPLICATION_IMAGE=boss-forge:intranet
+FROM ${BASE_APPLICATION_IMAGE}
+
+ARG TARGET_NEXT_PUBLIC_CONTROL_API_URL=http://127.0.0.1:3100
+ARG TARGET_BOSS_FORGE_RELEASE_ID=unversioned
+ENV NEXT_PUBLIC_CONTROL_API_URL=${TARGET_NEXT_PUBLIC_CONTROL_API_URL} \
+    BOSS_FORGE_RELEASE_ID=${TARGET_BOSS_FORGE_RELEASE_ID} \
+    CI=true
+
+USER root
+COPY --chown=node:node . /app
+RUN chown -R node:node /app
+USER node
+WORKDIR /app
+RUN pnpm install --frozen-lockfile --prod=false \
+    && pnpm web:build
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["pnpm", "api"]

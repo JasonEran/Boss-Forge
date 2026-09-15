@@ -13,9 +13,20 @@ export async function ensureRuntimeDirectory(): Promise<string> {
   return directory;
 }
 
-export function effectiveOcrEnabled(): boolean {
-  const value = (process.env.BOSS_RESUME_OCR ?? "0").trim().toLowerCase();
-  return value !== "0" && value !== "false" && value !== "no";
+function explicitlyEnabled(value: string | undefined): boolean {
+  return ["1", "true"].includes((value ?? "0").trim().toLowerCase());
+}
+
+export function resumePreviewEnabled(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return explicitlyEnabled(environment.BOSS_FORGE_RESUME_PREVIEW_ENABLED);
+}
+
+export function effectiveOcrEnabled(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return explicitlyEnabled(environment.BOSS_RESUME_OCR);
 }
 
 export type ResumeOcrProvider = "boss" | "tencent";
@@ -79,7 +90,14 @@ export function resolveChromePath(): string | null {
 export function workerBossEnvironment(): Readonly<Record<string, string>> {
   const chromePath = resolveChromePath();
   return {
-    BOSS_RESUME_OCR: process.env.BOSS_RESUME_OCR?.trim() || "0",
+    ...(resumeOcrProvider() === "tencent" ? { BOSS_RESUME_CAPTURE_HOOK: new URL("./resume-canvas-expansion.mjs", import.meta.url).href } : {}),
+    // Tencent OCR runs after boss-cli returns the resume screenshot. Keeping
+    // boss-cli OCR enabled here makes it attempt its built-in Baidu provider
+    // first and abort before the Tencent fallback can run.
+    BOSS_RESUME_OCR:
+      resumeOcrProvider() === "tencent"
+        ? "0"
+        : process.env.BOSS_RESUME_OCR?.trim() || "0",
     ...(chromePath ? { CHROME_PATH: chromePath } : {})
   };
 }

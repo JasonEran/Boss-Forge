@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import type { ParsedCandidate } from "@boss-forge/contracts";
+import { screenExpectedSalary, describeBossFilters, hasBossFilters, planBossRecommendationFilters, sameBossFilterFields, type BossRecommendationFilterPlan, type ParsedCandidate } from "@boss-forge/contracts";
 import {
   isLegacyRuleConfig,
   parseRuleConfig,
   type CandidateEducationEvidence,
   type CandidateEvaluationRecord,
   type CompositeRuleConfig,
+  type EnglishCredentialCode,
+  type EnglishCredentialRuleNode,
   type RuleConfig,
   type RuleGroupNode,
   type RuleNode,
@@ -16,6 +18,7 @@ import {
 import {
   evaluateInstitutionCategoryRule,
   evaluateTem8,
+  TEM8_DICTIONARY_VERSION,
   type InstitutionCatalog,
   type InstitutionCategoryRule,
   type InstitutionRuleEvidence
@@ -68,6 +71,14 @@ function identityFields(fields: Record<string, string>): Array<[string, string]>
 }
 
 export function candidateFingerprint(candidate: ParsedCandidate): string {
+  if (candidate.sourceLocator?.kind === "boss_geek_id") {
+    const locatorIdentity = JSON.stringify({
+      platform: "boss",
+      kind: candidate.sourceLocator.kind,
+      value: candidate.sourceLocator.value.trim()
+    });
+    return createHash("sha256").update(locatorIdentity).digest("hex");
+  }
   const identity = JSON.stringify({
     name: candidate.name.trim().toLocaleLowerCase("zh-CN"),
     fields: identityFields(candidate.fields)
@@ -163,6 +174,158 @@ function evaluateTem8Node(
     evidence,
     englishLevels: evaluation.detectedEnglishLevels.map((item) => item.label),
     unknown,
+    education: [],
+    institutionDecisions: []
+  };
+}
+
+const ENGLISH_CREDENTIAL_LABELS: Readonly<Record<EnglishCredentialCode, string>> = {
+  tem8: "TEM-8（英语专业八级）",
+  cet6: "CET-6（大学英语六级）"
+};
+
+function evaluateEnglishCredentialNode(
+  node: EnglishCredentialRuleNode,
+  ruleText: string
+): NodeEvaluation {
+  const evaluation = evaluateTem8(ruleText);
+  const detected = evaluation.detectedEnglishLevels;
+  const accepted = node.accepted.map((code) => ({
+    code,
+    level: detected
+      .filter((item) => item.code === code)
+      .sort((left, right) => right.confidence - left.confidence)[0]
+  }));
+  const confirmed = accepted.filter(
+    (item) => item.level && item.level.confidence >= node.minimumConfidence &&
+      (item.code !== "tem8" || evaluation.decision === "matched")
+  );
+  const belowConfidence = accepted.filter(
+    (item) => item.level && item.level.confidence < node.minimumConfidence
+  );
+  const matched =
+    node.mode === "all"
+      ? confirmed.length === accepted.length
+      : confirmed.length > 0;
+  const capabilityId = "language.english.credentials";
+  const separator = node.mode === "all" ? " 且 " : " 或 ";
+  const canonicalLabel = `英语证书：${node.accepted
+    .map((code) => ENGLISH_CREDENTIAL_LABELS[code])
+    .join(separator)}`;
+  if (matched) {
+    const reasonCodes = [
+      "english_credential_matched",
+      `english_credential_mode_${node.mode}`
+    ];
+    return {
+      decision: "matched",
+      confidence:
+        node.mode === "all"
+          ? Math.min(...confirmed.map((item) => item.level!.confidence))
+          : Math.max(...confirmed.map((item) => item.level!.confidence)),
+      reasonCodes,
+      evidence: confirmed.map((item) => ({
+        sourceText: item.level!.sourceText,
+        normalizedAlias: item.code,
+        status: "positive",
+        confidence: item.level!.confidence,
+        capabilityId,
+        canonicalLabel,
+        dictionaryVersion: TEM8_DICTIONARY_VERSION,
+        reasonCodes
+      })),
+      englishLevels: detected.map((item) => item.label),
+      unknown: false,
+      education: [],
+      institutionDecisions: []
+    };
+  }
+
+  const partialAll = node.mode === "all" && confirmed.length > 0;
+  const ambiguousTem8 =
+    node.accepted.includes("tem8") && evaluation.decision === "ambiguous";
+  const explicitlyExcluded = node.accepted.includes("tem8") &&
+    evaluation.reasonCodes.includes("negative_context") &&
+    (node.mode === "all" || node.accepted.length === 1);
+  const unknown = !explicitlyExcluded;
+  if (unknown) {
+    const policyReason = `unknown_policy_${node.unknownPolicy}`;
+    const reasonCodes = unique([
+      partialAll ? "english_credential_partial_match" : "english_credential_missing",
+      ...(detected.length > 0 ? ["other_english_credential_detected"] : []),
+      ...(belowConfidence.length > 0 ? ["below_configured_confidence"] : []),
+      ...(ambiguousTem8 ? evaluation.reasonCodes : []),
+      `english_credential_mode_${node.mode}`,
+      policyReason
+    ]);
+    const decision: RuntimeNodeDecision =
+      node.unknownPolicy === "fail"
+        ? "not_matched"
+        : node.unknownPolicy === "ignore"
+          ? "ignored"
+          : ambiguousTem8
+            ? "ambiguous"
+            : "insufficient";
+    return {
+      decision,
+      confidence: 0,
+      reasonCodes,
+      evidence: [
+        ...confirmed.map((item) => ({
+          sourceText: item.level!.sourceText,
+          normalizedAlias: item.code,
+          status: "positive" as const,
+          confidence: item.level!.confidence,
+          capabilityId,
+          canonicalLabel,
+          dictionaryVersion: TEM8_DICTIONARY_VERSION,
+          reasonCodes
+        })),
+        {
+          sourceText: `未提取到满足要求的英语证书：${node.accepted
+            .filter((code) => !confirmed.some((item) => item.code === code))
+            .map((code) => ENGLISH_CREDENTIAL_LABELS[code])
+            .join(separator)}`,
+          normalizedAlias: "missing_accepted_english_credential",
+          status: "ambiguous",
+          confidence: 0,
+          capabilityId,
+          canonicalLabel,
+          dictionaryVersion: TEM8_DICTIONARY_VERSION,
+          reasonCodes
+        }
+      ],
+      englishLevels: detected.map((item) => item.label),
+      unknown: true,
+      education: [],
+      institutionDecisions: []
+    };
+  }
+
+  const reasonCodes = [
+    "english_credential_not_matched",
+    `english_credential_mode_${node.mode}`
+  ];
+  return {
+    decision: "not_matched",
+    confidence: Math.max(0.98, ...detected.map((item) => item.confidence)),
+    reasonCodes,
+    evidence: [
+      {
+        sourceText:
+          evaluation.evidence.filter((item) => item.status === "negative").map((item) => item.sourceText).join(" / ") ||
+          `未匹配：${node.accepted.map((code) => ENGLISH_CREDENTIAL_LABELS[code]).join(separator)}`,
+        normalizedAlias: "explicit_credential_negative",
+        status: "negative",
+        confidence: 0.98,
+        capabilityId,
+        canonicalLabel,
+        dictionaryVersion: TEM8_DICTIONARY_VERSION,
+        reasonCodes
+      }
+    ],
+    englishLevels: detected.map((item) => item.label),
+    unknown: false,
     education: [],
     institutionDecisions: []
   };
@@ -349,8 +512,12 @@ function aggregateGroup(node: RuleGroupNode, children: NodeEvaluation[]): NodeEv
 
   const active = children.filter((child) => child.decision !== "ignored");
   if (active.length === 0) {
+    // Keep an explicitly waived graduation check neutral in nested groups and
+    // in the BOSS + resume flow. It must not become a missing-evidence rejection.
+    const graduationWaived = children.some(child =>
+      child.reasonCodes.includes("graduation_metadata_missing_non_blocking"));
     return {
-      decision: "insufficient",
+      decision: graduationWaived ? "ignored" : "insufficient",
       confidence: 0,
       reasonCodes: unique([
         `composite_${mode}_all_children_ignored`,
@@ -458,18 +625,54 @@ function evaluateSemanticNode(
   node: SemanticRule,
   evaluation: SemanticEvaluation | undefined
 ): NodeEvaluation {
-  const shadowedModelResult =
-    evaluation?.extractor === "llm" && evaluation.runtimeMode === "shadow";
+  const nonActiveResult =
+    evaluation !== undefined && evaluation.runtimeMode !== "active";
+  if (nonActiveResult) {
+    const sourceEvidence = evaluation.evidence.length
+      ? evaluation.evidence
+      : [evaluation.runtimeMode === "off" ? "岗位智能识别未启用" : "智能识别试运行结果未参与筛选"];
+    const status: RecordEvidence["status"] =
+      evaluation.result === "matched"
+        ? "positive"
+        : evaluation.result === "not_matched"
+          ? "negative"
+          : "ambiguous";
+    return {
+      decision: "ignored",
+      confidence: evaluation.confidence,
+      unknown: false,
+      reasonCodes: unique([
+        ...evaluation.reasonCodes,
+        `semantic_${evaluation.runtimeMode}_mode`,
+        "semantic_result_not_applied"
+      ]),
+      evidence: sourceEvidence.map((sourceText) => ({
+        sourceText,
+        normalizedAlias: semanticNormalizedAlias(evaluation),
+        status,
+        confidence: evaluation.confidence,
+        capabilityId: `semantic.${node.criterionId}`,
+        canonicalLabel: node.label,
+        dictionaryVersion: evaluation.catalogVersion,
+        reasonCodes: unique([
+          ...evaluation.reasonCodes,
+          `semantic_${evaluation.runtimeMode}_mode`,
+          "semantic_result_not_applied"
+        ])
+      })),
+      englishLevels: [],
+      education: [],
+      institutionDecisions: []
+    };
+  }
   const belowConfidence =
     evaluation !== undefined && evaluation.confidence < node.minimumConfidence;
   const unresolved =
     !evaluation ||
     evaluation.result === "unknown" ||
-    shadowedModelResult ||
     belowConfidence;
   const unresolvedReasons = unique([
     ...(evaluation?.reasonCodes ?? ["semantic_evaluation_missing"]),
-    ...(shadowedModelResult ? ["semantic_shadow_mode"] : []),
     ...(belowConfidence ? ["below_configured_confidence"] : [])
   ]);
   const outcome = unresolved
@@ -541,6 +744,18 @@ function evaluateNode(
   catalog: InstitutionCatalog | undefined,
   semanticById: ReadonlyMap<string, SemanticEvaluation>
 ): NodeEvaluation {
+  // Gender is not a job qualification. Preserve the historical rule/evidence
+  // for explanation, but never let it approve, reject, or stall a candidate.
+  if (!isGroupNode(node) && node.type === "enum" && node.field === "gender") {
+    return withEnglishLevels({
+      decision: "ignored", confidence: 0, unknown: false,
+      reasonCodes: ["non_qualification_condition_ignored"],
+      evidence: [{ capabilityId: "enum.gender", canonicalLabel: "性别（不参与自动筛选）",
+        dictionaryVersion: "qualification-policy-2026.09.07", sourceText: "自动筛选只使用岗位相关资格，性别不参与通过或淘汰判断。",
+        normalizedAlias: "not_applicable", status: "ambiguous", confidence: 0,
+        reasonCodes: ["non_qualification_condition_ignored"] }]
+    });
+  }
   if (isGroupNode(node)) {
     return aggregateGroup(
       node,
@@ -551,6 +766,9 @@ function evaluateNode(
   }
   if (node.type === "tem8" || node.type === "capability") {
     return evaluateTem8Node(node, ruleText);
+  }
+  if (node.type === "english_credential") {
+    return evaluateEnglishCredentialNode(node, ruleText);
   }
   if (node.type === "institution_category") {
     if (!catalog) {
@@ -578,6 +796,7 @@ function legacyEvaluation(
     evaluation.decision === "matched" && evaluation.confidence < tem8Requirement.minimumConfidence;
   return {
     sourceReference: `${candidate.source}:${candidate.index}:${candidate.name}`,
+    ...(candidate.sourceLocator ? { sourceLocator: candidate.sourceLocator } : {}),
     source: candidate.source,
     displayName: candidate.name,
     fingerprint: candidateFingerprint(candidate),
@@ -604,9 +823,10 @@ function compositeEvaluation(
   config: CompositeRuleConfig,
   ruleText: string,
   resumeText?: string | null,
-  semanticEvaluations: SemanticEvaluation[] = []
+  semanticEvaluations: SemanticEvaluation[] = [],
+  appliedBossFilters?: BossRecommendationFilterPlan | null
 ): CandidateEvaluationRecord {
-  const evaluation = evaluateNode(
+  let evaluation = evaluateNode(
     config.root,
     candidate,
     ruleText,
@@ -614,6 +834,35 @@ function compositeEvaluation(
     config.institutionCatalog,
     new Map(semanticEvaluations.map((item) => [item.criterionId, item]))
   );
+  if (config.screeningFlow === "boss_then_resume") {
+    const planned = planBossRecommendationFilters(config);
+    if (hasBossFilters(planned.fields)) {
+      const verified = candidate.source === "recommend" && appliedBossFilters != null && sameBossFilterFields(planned.fields, appliedBossFilters.fields);
+      const reason = verified ? "boss_official_filters_applied" : "boss_official_filters_unverified";
+      const official: NodeEvaluation = {
+        decision: verified ? "matched" : "insufficient", confidence: verified ? 1 : 0,
+        reasonCodes: [reason], englishLevels: [], unknown: !verified, education: [], institutionDecisions: [],
+        evidence: [{ capabilityId: "boss.official_filters", canonicalLabel: "BOSS 官方筛选", dictionaryVersion: "boss-filter-v1",
+          sourceText: verified ? `本次名单由 BOSS 按以下条件筛选：${describeBossFilters(planned)}` : "本次名单没有与当前规则一致的 BOSS 官方筛选记录，请重新采集。",
+          normalizedAlias: describeBossFilters(planned), status: verified ? "positive" : "ambiguous", confidence: verified ? 1 : 0, reasonCodes: [reason] }]
+      };
+      evaluation = config.root.children.length === 0 ? official : aggregateGroup({ operator: "AND", children: [] }, [official, evaluation]);
+    }
+    // A completed résumé must positively support the required qualifications.
+    // Collection cards and unverified provider context remain pending evidence.
+    if (resumeText?.trim() && ['ambiguous', 'insufficient'].includes(evaluation.decision) &&
+      !evaluation.reasonCodes.includes('boss_official_filters_unverified')) {
+      evaluation = { ...evaluation, decision: 'not_matched',
+        reasonCodes: unique([...evaluation.reasonCodes, 'required_resume_evidence_missing']),
+        evidence: [...evaluation.evidence, {
+          capabilityId: 'resume.evidence_requirement', canonicalLabel: '简历证据要求', dictionaryVersion: 'resume-evidence-v1',
+          sourceText: '完整简历已读取，但未识别到满足岗位要求的明确证据，按证据不足判为未通过。',
+          normalizedAlias: '缺少必需的简历证据', status: 'negative', confidence: 0,
+          reasonCodes: ['required_resume_evidence_missing'],
+        }],
+      };
+    }
+  }
   const education = uniqueEducation(evaluation.education);
   const institutionDecision: InstitutionDecision | undefined =
     evaluation.institutionDecisions.length === 0
@@ -635,6 +884,7 @@ function compositeEvaluation(
     .join("；");
   return {
     sourceReference: `${candidate.source}:${candidate.index}:${candidate.name}`,
+    ...(candidate.sourceLocator ? { sourceLocator: candidate.sourceLocator } : {}),
     source: candidate.source,
     displayName: candidate.name,
     fingerprint: candidateFingerprint(candidate),
@@ -664,11 +914,32 @@ export function evaluateCandidate(
   candidate: ParsedCandidate,
   ruleConfig: RuleConfig,
   resumeText?: string | null,
-  semanticEvaluations: SemanticEvaluation[] = []
+  semanticEvaluations: SemanticEvaluation[] = [],
+  appliedBossFilters?: BossRecommendationFilterPlan | null
 ): CandidateEvaluationRecord {
   // Revalidate persisted snapshots so direct database ingestion cannot bypass the API validator.
   const config = parseRuleConfig(ruleConfig);
   const ruleText = fullRuleText(candidate, resumeText);
   if (isLegacyRuleConfig(config)) return legacyEvaluation(candidate, config, ruleText);
-  return compositeEvaluation(candidate, config, ruleText, resumeText, semanticEvaluations);
+  const record = compositeEvaluation(candidate, config, ruleText, resumeText, semanticEvaluations, appliedBossFilters);
+  if (config.root.children.length === 0 && config.recruitment && !hasBossFilters(planBossRecommendationFilters(config).fields)) {
+    record.decision = "matched";
+    record.confidence = 1;
+  }
+  const ceiling = config.recruitment?.salaryCeilingYuan;
+  if (ceiling != null) {
+    const salary = screenExpectedSalary(candidate.fields, ceiling);
+    record.salaryScreening = salary;
+    const reason = salary.status === "above_budget" ? "salary_above_ceiling" : salary.status === "unknown" ? "salary_expectation_unknown" : "salary_within_ceiling";
+    record.reasonCodes.push(reason);
+    record.evidence.push({
+      capabilityId: "recruitment.salary", canonicalLabel: "期望薪资上限", dictionaryVersion: "salary-upper-v1",
+      sourceText: `期望薪资：${salary.expected || "未提供"}；岗位月薪上限：${ceiling} 元。` + (salary.status === "above_budget" ? "期望区间最高值超出预算，直接过滤，无需打开简历。" : salary.status === "unknown" ? "无法确定期望月薪上限，需人工核实。" : "期望区间最高值在预算内。"),
+      normalizedAlias: salary.expected, status: salary.status === "above_budget" ? "negative" : salary.status === "unknown" ? "ambiguous" : "positive",
+      confidence: salary.status === "unknown" ? 0 : 1, reasonCodes: [reason],
+    });
+    if (salary.status === "above_budget") { record.decision = "not_matched"; record.confidence = 1; }
+    else if (salary.status === "unknown" && record.decision === "matched") { record.decision = "insufficient"; record.confidence = 0; }
+  }
+  return record;
 }

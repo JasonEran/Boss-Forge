@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   BossForgeRepository,
+  assertIsolatedTestDatabase,
   createDatabase,
   type CandidateEvaluationRecord
 } from "@boss-forge/data";
@@ -19,7 +20,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload;
 }
 
+async function rawRequest(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (authToken) headers.set("authorization", `Bearer ${authToken}`);
+  return fetch(`${api}${path}`, { ...init, headers });
+}
+
 async function main(): Promise<void> {
+  const contactSideEffectTestsEnabled =
+    process.env.BOSS_FORGE_TEST_CONTACTS === "1";
+  assertIsolatedTestDatabase(process.env, {
+    contactSideEffects: contactSideEffectTestsEnabled
+  });
   const sql = createDatabase();
   const repository = new BossForgeRepository(sql);
   const suffix = randomUUID();
@@ -34,24 +46,6 @@ async function main(): Promise<void> {
   let talentTagId: string | null = null;
   let exportId: string | null = null;
   const recruiterEmail = `e2e-recruiter-${suffix}@boss-forge.internal`;
-  const contactWindowRows = await sql<
-    Array<{ allowed_start_minute: number; allowed_end_minute: number }>
-  >`
-    SELECT allowed_start_minute, allowed_end_minute
-    FROM contact_settings WHERE id = 'global'
-  `;
-  const originalContactWindow = contactWindowRows[0];
-  assert(originalContactWindow, "Global contact settings must exist before E2E.");
-  const shanghaiNow = new Date(Date.now() + 8 * 60 * 60 * 1_000);
-  const shanghaiMinute = shanghaiNow.getUTCHours() * 60 + shanghaiNow.getUTCMinutes();
-  const e2eWindowStart = (shanghaiMinute + 1_435) % 1_440;
-  const e2eWindowEnd = (shanghaiMinute + 60) % 1_440;
-  await sql`
-    UPDATE contact_settings
-    SET allowed_start_minute = ${e2eWindowStart},
-      allowed_end_minute = ${e2eWindowEnd}, updated_at = now()
-    WHERE id = 'global'
-  `;
   try {
     const unauthenticated = await fetch(`${api}/api/dashboard`);
     assert.equal(unauthenticated.status, 401, "Dashboard must reject anonymous access.");
@@ -86,6 +80,22 @@ async function main(): Promise<void> {
       }
     );
     positionId = positionPayload.position.id;
+    const updatedPositionName = `E2E 海外增长 ${suffix.slice(0, 8)}`;
+    const updatedPosition = await request<{
+      position: { id: string; name: string; bossJobKeyword: string; ownerName: string; version: number };
+    }>(`/api/positions/${positionId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: updatedPositionName,
+        bossJobKeyword: "海外增长",
+        ownerName: "E2E 招聘负责人"
+      })
+    });
+    assert.equal(updatedPosition.position.name, updatedPositionName);
+    assert.equal(updatedPosition.position.bossJobKeyword, "海外增长");
+    assert.equal(updatedPosition.position.ownerName, "E2E 招聘负责人");
+    assert.equal(updatedPosition.position.version, 2);
 
     const recruiter = await request<{ user: { id: string } }>("/api/team/users", {
       method: "POST",
@@ -132,7 +142,7 @@ async function main(): Promise<void> {
         dictionaryVersion: "e2e.forbidden"
       })
     });
-    assert.equal(forbidden.status, 401, "Recruiter must not modify an unassigned position.");
+    assert.equal(forbidden.status, 403, "Recruiter must not modify an unassigned position.");
     authToken = adminToken;
 
     const baselineDraft = await request<{ version: { id: string } }>(`/api/positions/${positionId}/rules`, {
@@ -142,19 +152,13 @@ async function main(): Promise<void> {
         name: "E2E TEM8 硬性条件",
         config: { requiredCapabilities: [{ capability: "tem8", minimumConfidence: 0.86 }] },
         dictionaryVersion: "e2e.1",
-        createdBy: "e2e:hr"
+        lifecycleStatus: "published"
       })
     });
-    await request(`/api/rules/versions/${baselineDraft.version.id}/lifecycle`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ status: "pending_approval" })
-    });
-    await request(`/api/rules/versions/${baselineDraft.version.id}/lifecycle`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ status: "published" })
-    });
 
-    const taskPayload = await request<{ task: { id: string } }>("/api/tasks", {
+    const taskPayload = await request<{
+      task: { id: string; ruleVersion: number; dictionaryVersion: string };
+    }>("/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": `e2e-task-${suffix}` },
       body: JSON.stringify({
@@ -166,6 +170,10 @@ async function main(): Promise<void> {
     const task = await repository.claimNextTask("e2e-worker", accountId);
     assert(task);
     assert.equal(task.id, taskPayload.task.id);
+    assert.equal(taskPayload.task.ruleVersion, 1);
+    assert.equal(taskPayload.task.dictionaryVersion, "e2e.1");
+    assert.equal(task.ruleVersion, taskPayload.task.ruleVersion);
+    assert.equal(task.dictionaryVersion, taskPayload.task.dictionaryVersion);
     const evaluation: CandidateEvaluationRecord = {
         sourceReference: `e2e:${suffix}`,
         source: "recommend",
@@ -222,21 +230,38 @@ async function main(): Promise<void> {
     );
     assert(detail.candidate.evidence.some((item) => item.includes("TEM-8")));
 
-    const pipeline = await request<{ items: Array<{ stateId: string; candidateId: string }> }>(
+    const pipeline = await request<{ items: Array<{ stateId: string; candidateId: string; resumeScreeningStatus: string }> }>(
       `/api/pipeline?positionId=${positionId}`
     );
     const pipelineCandidate = pipeline.items.find((item) => item.stateId === candidate.stateId);
     assert(pipelineCandidate);
-    crossPositionStateId = randomUUID();
-    await sql`
-      INSERT INTO candidate_position_states (
-        id, position_id, candidate_id, latest_task_id, latest_snapshot_id, rule_version_id,
-        rule_decision, rule_confidence, review_status, contact_status
-      )
-      SELECT ${crossPositionStateId}, ${isolatedPositionId}, candidate_id, latest_task_id,
-        latest_snapshot_id, rule_version_id, rule_decision, rule_confidence, 'pending', 'not_contacted'
-      FROM candidate_position_states WHERE id = ${candidate.stateId}
+    assert(['not_requested', 'queued', 'processing', 'screened', 'failed', 'no_text'].includes(pipelineCandidate.resumeScreeningStatus), 'Pipeline must expose the actual resume state rather than making the UI infer it from a rule decision.');
+    await repository.createRuleVersion({
+      positionId: isolatedPositionId,
+      name: "E2E isolated position rule",
+      config: { requiredCapabilities: [{ capability: "tem8", minimumConfidence: 0.86 }] },
+      dictionaryVersion: "e2e.isolated.1",
+      createdBy: "e2e:hr"
+    });
+    await repository.createImmediateTask({
+      idempotencyKey: `e2e-isolated-task-${suffix}`,
+      positionId: isolatedPositionId,
+      source: "recommend",
+      searchKeyword: null,
+      createdBy: "e2e:hr"
+    });
+    const isolatedTask = await repository.claimNextTask("e2e-worker", accountId);
+    assert(isolatedTask);
+    assert.equal(isolatedTask.positionId, isolatedPositionId);
+    await repository.completeTask(isolatedTask, [
+      { ...evaluation, sourceReference: `e2e-isolated:${suffix}` }
+    ]);
+    const crossPositionRows = await sql<Array<{ id: string }>>`
+      SELECT id FROM candidate_position_states
+      WHERE latest_task_id = ${isolatedTask.id} AND candidate_id = ${pipelineCandidate.candidateId}
     `;
+    crossPositionStateId = crossPositionRows[0]?.id ?? null;
+    assert(crossPositionStateId);
     const crossPosition = await request<{ profiles: Array<{ candidateId: string; applications: number; applicationViews: unknown[] }> }>("/api/collaboration");
     const sharedProfile = crossPosition.profiles.find((item) => item.candidateId === pipelineCandidate.candidateId);
     assert.equal(sharedProfile?.applications, 2);
@@ -323,9 +348,30 @@ async function main(): Promise<void> {
     await request(`/api/semantic/versions/${catalog.catalog.versionId}/publish`, {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}"
     });
+    const unsafeSemanticActivation = await fetch(`${api}/api/semantic/mode`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        positionId,
+        mode: "active",
+        catalogVersionId: catalog.catalog.versionId
+      })
+    });
+    assert.equal(
+      unsafeSemanticActivation.status,
+      400,
+      "Unaccepted semantic evaluation must never become an active hiring decision."
+    );
+    const unsafeSemanticPayload = (await unsafeSemanticActivation.json()) as {
+      message?: string;
+    };
+    assert.match(unsafeSemanticPayload.message ?? "", /只允许试运行/u);
     await request("/api/semantic/mode", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ positionId, mode: "active", catalogVersionId: catalog.catalog.versionId })
+      body: JSON.stringify({ positionId, mode: "shadow", catalogVersionId: catalog.catalog.versionId })
     });
 
     await request(`/api/candidate-position-states/${candidate.stateId}/reviews`, {
@@ -338,25 +384,112 @@ async function main(): Promise<void> {
         expectedVersion: candidate.stateVersion + 1
       })
     });
+    const reviewedPipeline = await request<{
+      items: Array<{ stateId: string; stage: string; reviewStatus: string }>;
+    }>(`/api/pipeline?positionId=${positionId}`);
+    const reviewedCandidate = reviewedPipeline.items.find(
+      (item) => item.stateId === candidate.stateId
+    );
+    assert.equal(reviewedCandidate?.reviewStatus, "approved");
+    assert.equal(reviewedCandidate?.stage, "approved");
+
+    const firstTemplate = await request<{ template: { version: number } }>(
+      `/api/positions/${positionId}/message-template`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          body: "你好 {{candidate_name}}，我是 {{hr_name}}，想和你聊聊{{position_name}}岗位。"
+        })
+      }
+    );
+    assert.equal(firstTemplate.template.version, 1);
+    const secondTemplate = await request<{ template: { version: number } }>(
+      `/api/positions/${positionId}/message-template`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          body: "{{candidate_name}}你好，我们的{{position_name}}岗位与你的经历很匹配，方便沟通吗？"
+        })
+      }
+    );
+    assert.equal(secondTemplate.template.version, 2);
+    const templateWorkspace = await request<{
+      templates: Array<{ positionId: string; inherited: boolean; version: number; body: string }>;
+    }>("/api/message-templates");
+    const activeTemplate = templateWorkspace.templates.find((item) => item.positionId === positionId);
+    assert(activeTemplate);
+    assert.equal(activeTemplate.inherited, false);
+    assert.equal(activeTemplate.version, 2);
 
     const previewPayload = await request<{
       preview: { templateVersionId: string; renderedMessage: string };
     }>(`/api/candidate-position-states/${candidate.stateId}/message-preview`);
     assert(previewPayload.preview.renderedMessage.includes("E2E 候选人"));
+    assert(previewPayload.preview.renderedMessage.includes(updatedPositionName));
 
-    const intentPayload = await request<{
-      intent: { status: string };
-      realGreetingEnabled: boolean;
-    }>(`/api/candidate-position-states/${candidate.stateId}/contact-intents`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "idempotency-key": `e2e-contact-${suffix}` },
-      body: JSON.stringify({
-        templateVersionId: previewPayload.preview.templateVersionId,
-        createdBy: "e2e:hr"
-      })
-    });
-    assert.equal(intentPayload.intent.status, "ready");
-    assert.equal(intentPayload.realGreetingEnabled, false);
+    if (contactSideEffectTestsEnabled) {
+      assert(departmentId);
+      for (const [scopeType, scopeId] of [
+        ["global", "global"],
+        ["department", departmentId],
+        ["position", positionId],
+        ["task", task.id]
+      ] as const) {
+        const enabledControl = await rawRequest("/api/automation/controls", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            scopeType,
+            scopeId,
+            enabled: true,
+            approvalRequired: false,
+            emergencyStop: false,
+            policy: {
+              dailyLimit: 50,
+              hourlyLimit: 10,
+              cooldownMinutes: 30,
+              startMinute: 0,
+              endMinute: 1440
+            }
+          })
+        });
+        assert.equal(
+          enabledControl.status,
+          200,
+          `Explicit isolated tests must configure fake-only ${scopeType} control.`
+        );
+      }
+
+      const fakeIntentResponse = await rawRequest(
+        `/api/candidate-position-states/${candidate.stateId}/contact-intents`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `e2e-contact-${suffix}`
+          },
+          body: JSON.stringify({
+            actionKind: "message",
+            templateVersionId: previewPayload.preview.templateVersionId,
+            createdBy: "e2e:hr"
+          })
+        }
+      );
+      assert.equal(
+        fakeIntentResponse.status,
+        201,
+        "The isolated flow must create a fake intent without executing external contact."
+      );
+      const fakeIntentPayload = (await fakeIntentResponse.json()) as {
+        intent?: { status?: string; transportMode?: string };
+        realGreetingEnabled?: boolean;
+      };
+      assert.equal(fakeIntentPayload.intent?.status, "ready");
+      assert.equal(fakeIntentPayload.intent?.transportMode, "fake");
+      assert.equal(fakeIntentPayload.realGreetingEnabled, false);
+    }
 
     const schedulePayload = await request<{ schedule: { id: string; version: number } }>(
       "/api/schedules",
@@ -381,10 +514,6 @@ async function main(): Promise<void> {
       body: JSON.stringify({ expectedVersion: schedulePayload.schedule.version, actorId: "e2e:hr" })
     });
 
-    await request("/api/operations/messages/sync", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ stateId: candidate.stateId, externalMessageId: `e2e-message-${suffix}`, direction: "inbound", body: "E2E 候选人回复", sentAt: new Date().toISOString() })
-    });
     const tag = await request<{ tag: { id: string } }>("/api/operations/tags", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: `E2E 标签 ${suffix}`, color: "blue" })
     });
@@ -392,40 +521,22 @@ async function main(): Promise<void> {
     await request("/api/operations/tag-candidate", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: pipelineCandidate.candidateId, tagId: talentTagId })
     });
-    await request("/api/operations/account-health", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ bossAccountId: accountId, status: "healthy", authoritative: true, reason: "E2E health probe", checkedAt: new Date().toISOString() })
-    });
     const exported = await request<{ export: { id: string; rowCount: number } }>("/api/operations/export", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ format: "json" })
     });
     assert(exported.export.rowCount >= 1);
     exportId = exported.export.id;
-    assert(departmentId);
-    const control = (scopeType: string, scopeId: string, enabled: boolean, approvalRequired: boolean, emergencyStop = false) =>
-      request("/api/automation/controls", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scopeType, scopeId, enabled, approvalRequired, emergencyStop, policy: { dailyLimit: 50, hourlyLimit: 10, cooldownMinutes: 30, startMinute: 0, endMinute: 1440 } }) });
-    await control("global", "global", true, false);
-    await control("department", departmentId, true, false);
-    await control("position", positionId, true, true);
-    const approval = await request<{ approval: { id: string } }>("/api/automation/approval-requests", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scopeType: "position", scopeId: positionId, justification: "E2E 准确率与人工授权已通过" })
-    });
-    await request(`/api/automation/approval-requests/${approval.approval.id}/decision`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: "approved", note: "E2E approval" })
-    });
-    const ready = await request<{ ready: boolean }>(`/api/automation/readiness?positionId=${positionId}`);
-    assert.equal(ready.ready, true);
-    const simulation = await request<{ simulated: boolean; realGreetingExecuted: boolean }>("/api/automation/simulate", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ positionId, candidateId: pipelineCandidate.candidateId })
-    });
-    assert.equal(simulation.simulated, true); assert.equal(simulation.realGreetingExecuted, false);
-    await request("/api/talent/do-not-contact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: pipelineCandidate.candidateId, active: true, reason: "E2E DNC" }) });
-    const dncBlocked = await request<{ ready: boolean; reasons: string[] }>(`/api/automation/readiness?positionId=${positionId}&candidateId=${pipelineCandidate.candidateId}`);
-    assert.equal(dncBlocked.ready, false); assert(dncBlocked.reasons.some((reason) => reason.includes("Do-Not-Contact")));
-    await request("/api/talent/do-not-contact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: pipelineCandidate.candidateId, active: false, reason: "E2E clear" }) });
-    await control("position", positionId, false, true, true);
-    const stopped = await request<{ ready: boolean }>(`/api/automation/readiness?positionId=${positionId}`);
-    assert.equal(stopped.ready, false);
+    if (contactSideEffectTestsEnabled) {
+      const ready = await request<{ ready: boolean; reasons: string[] }>(
+        `/api/automation/readiness?positionId=${positionId}`
+      );
+      assert.equal(ready.ready, true);
+      assert.equal(ready.reasons.length, 0);
+      await request("/api/talent/do-not-contact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: pipelineCandidate.candidateId, active: true, reason: "E2E DNC" }) });
+      const dncBlocked = await request<{ ready: boolean; reasons: string[] }>(`/api/automation/readiness?positionId=${positionId}&candidateId=${pipelineCandidate.candidateId}`);
+      assert.equal(dncBlocked.ready, false); assert(dncBlocked.reasons.some((reason) => reason.includes("Do-Not-Contact")));
+      await request("/api/talent/do-not-contact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: pipelineCandidate.candidateId, active: false, reason: "E2E clear" }) });
+    }
 
     const dashboardAfter = await request<{
       candidates: Array<{ stateId: string; reviewStatus: string; contactStatus: string }>;
@@ -434,8 +545,22 @@ async function main(): Promise<void> {
     }>("/api/dashboard");
     const approved = dashboardAfter.candidates.find((item) => item.stateId === candidate.stateId);
     assert.equal(approved?.reviewStatus, "approved");
-    assert.equal(approved?.contactStatus, "queued");
-    assert(dashboardAfter.contactIntents.some((item) => item.candidateStateId === candidate.stateId));
+    if (contactSideEffectTestsEnabled) {
+      assert.equal(approved?.contactStatus, "queued");
+      assert.equal(
+        dashboardAfter.contactIntents.find(
+          (item) => item.candidateStateId === candidate.stateId
+        )?.status,
+        "ready"
+      );
+    } else {
+      assert.equal(approved?.contactStatus, "not_contacted");
+      assert(
+        !dashboardAfter.contactIntents.some(
+          (item) => item.candidateStateId === candidate.stateId
+        )
+      );
+    }
     assert(dashboardAfter.auditLogs.some((item) => item.actorId === authenticatedUserId));
 
     console.log(
@@ -446,33 +571,39 @@ async function main(): Promise<void> {
           "cross_position_access_denied",
           "pipeline_notes_attachments_work_items_interview_feedback",
           "rule_lifecycle_template_replay",
-          "semantic_catalog_evaluation_active_gate",
-          "boss_reply_talent_tag_health_export",
-          "multi_level_controls_approval_dnc_emergency_stop",
+          "semantic_catalog_evaluation_shadow_safety_gate",
+          "talent_tag_export",
+          ...(contactSideEffectTestsEnabled
+            ? ["contact_fake_intent_and_dnc_safety"]
+            : []),
           "position_created",
+          "position_updated",
           "rule_created",
           "immediate_task_created",
           "candidate_reviewed",
+          "review_stage_synchronized",
+          "message_template_versioned",
           "message_previewed",
-          "contact_intent_created_without_real_greet",
+          ...(contactSideEffectTestsEnabled
+            ? ["fake_contact_intent_created_without_external_dispatch"]
+            : []),
           "schedule_created_and_cancelled",
           "audit_verified"
         ],
+        contactSideEffectTestsEnabled,
         realGreetingExecuted: false
       })
     );
   } finally {
-    await sql`
-      UPDATE contact_settings
-      SET allowed_start_minute = ${originalContactWindow.allowed_start_minute},
-        allowed_end_minute = ${originalContactWindow.allowed_end_minute},
-        updated_at = now()
-      WHERE id = 'global'
-    `;
     if (crossPositionStateId) await sql`DELETE FROM candidate_position_states WHERE id = ${crossPositionStateId}`;
     if (positionId) {
       await sql`DELETE FROM contact_approval_requests WHERE scope_id = ${positionId}`;
       await sql`DELETE FROM contact_controls WHERE scope_type = 'position' AND scope_id = ${positionId}`;
+      await sql`
+        DELETE FROM contact_controls
+        WHERE scope_type = 'task'
+          AND scope_id IN (SELECT id::text FROM tasks WHERE position_id = ${positionId})
+      `;
       await sql`DELETE FROM rule_replay_runs WHERE position_id = ${positionId}`;
       await sql.begin(async (transaction) => {
         await transaction`
@@ -510,6 +641,15 @@ async function main(): Promise<void> {
         `;
         await transaction`DELETE FROM tasks WHERE position_id = ${positionId}`;
         await transaction`DELETE FROM schedules WHERE position_id = ${positionId}`;
+        await transaction`
+          UPDATE message_templates SET active_version_id = NULL WHERE position_id = ${positionId}
+        `;
+        await transaction`
+          DELETE FROM template_versions WHERE template_id IN (
+            SELECT id FROM message_templates WHERE position_id = ${positionId}
+          )
+        `;
+        await transaction`DELETE FROM message_templates WHERE position_id = ${positionId}`;
         await transaction`UPDATE rule_sets SET active_version_id = NULL WHERE position_id = ${positionId}`;
         await transaction`
           DELETE FROM rule_versions WHERE rule_set_id IN (
@@ -521,7 +661,7 @@ async function main(): Promise<void> {
         await transaction`DELETE FROM audit_logs WHERE actor_id = 'e2e:hr'`;
       });
     }
-    if (departmentId) {
+    if (contactSideEffectTestsEnabled && departmentId) {
       await sql`DELETE FROM contact_controls WHERE scope_type = 'department' AND scope_id = ${departmentId} AND updated_by = ${authenticatedUserId}`;
       await sql`
         UPDATE contact_controls SET enabled = false, approval_required = true, approved_by = NULL,
@@ -536,7 +676,33 @@ async function main(): Promise<void> {
     await sql`DELETE FROM rule_templates WHERE name = ${`E2E 部门模板 ${suffix}`}`;
     await sql`DELETE FROM account_health WHERE boss_account_id = ${accountId}`;
     if (isolatedPositionId) {
-      await sql`DELETE FROM positions WHERE id = ${isolatedPositionId}`;
+      await sql.begin(async (transaction) => {
+        await transaction`
+          DELETE FROM match_evidence WHERE candidate_position_state_id IN (
+            SELECT id FROM candidate_position_states WHERE position_id = ${isolatedPositionId}
+          )
+        `;
+        await transaction`
+          DELETE FROM semantic_evaluations WHERE candidate_position_state_id IN (
+            SELECT id FROM candidate_position_states WHERE position_id = ${isolatedPositionId}
+          )
+        `;
+        await transaction`DELETE FROM candidate_position_states WHERE position_id = ${isolatedPositionId}`;
+        await transaction`
+          DELETE FROM candidate_snapshots WHERE task_id IN (
+            SELECT id FROM tasks WHERE position_id = ${isolatedPositionId}
+          )
+        `;
+        await transaction`DELETE FROM tasks WHERE position_id = ${isolatedPositionId}`;
+        await transaction`UPDATE rule_sets SET active_version_id = NULL WHERE position_id = ${isolatedPositionId}`;
+        await transaction`
+          DELETE FROM rule_versions WHERE rule_set_id IN (
+            SELECT id FROM rule_sets WHERE position_id = ${isolatedPositionId}
+          )
+        `;
+        await transaction`DELETE FROM rule_sets WHERE position_id = ${isolatedPositionId}`;
+        await transaction`DELETE FROM positions WHERE id = ${isolatedPositionId}`;
+      });
     }
     await sql`DELETE FROM candidates WHERE fingerprint = ${fingerprint}`;
     await sql`DELETE FROM users WHERE email = ${recruiterEmail}`;

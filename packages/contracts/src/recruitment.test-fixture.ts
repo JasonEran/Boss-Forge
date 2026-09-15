@@ -1,0 +1,1 @@
+export const briefFixture = { background: "跨境电商团队，负责海外内容增长", purpose: "补齐英文内容和社媒运营能力", goals: "三个月建立内容计划，并复盘转化结果", salaryCeilingYuan: 12000, salaryComparison: "upper" as const, aiEnabled: true, recommendationThreshold: 70 };

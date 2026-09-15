@@ -1,4 +1,5 @@
 import type {
+  CandidateSourceLocator,
   ParsedBossResult,
   ParsedCandidate,
   ParsedPosition,
@@ -26,6 +27,23 @@ function parseFields(raw: string): Record<string, string> {
     if (key && value) fields[key] = value;
   }
   return fields;
+}
+
+const BOSS_GEEK_ID_FIELD = "BOSS候选人ID";
+
+function takeBossGeekId(
+  fields: Record<string, string>
+): CandidateSourceLocator | undefined {
+  const value = fields[BOSS_GEEK_ID_FIELD]?.trim() ?? "";
+  delete fields[BOSS_GEEK_ID_FIELD];
+  // Current encrypted geek IDs are URL-safe opaque tokens. Keep this narrow so
+  // arbitrary CLI output can never become a selector or command argument.
+  if (!/^[A-Za-z0-9_~-]{8,160}$/u.test(value)) return undefined;
+  return { kind: "boss_geek_id", value };
+}
+
+function withoutBossGeekId(raw: string): string {
+  return raw.replace(/｜BOSS候选人ID:[^｜\r\n]+/u, "");
 }
 
 const BOSS_PLATFORM_TAG_FIELD_KEYS = new Set([
@@ -75,6 +93,8 @@ function deduplicateCandidates(candidates: ParsedCandidate[]): ParsedCandidate[]
   return candidates.filter((candidate) => {
     const fingerprint = JSON.stringify([
       candidate.source,
+      candidate.sourceLocator?.kind ?? "",
+      candidate.sourceLocator?.value ?? "",
       candidate.name,
       Object.entries(candidate.fields).sort(([left], [right]) => left.localeCompare(right)),
       candidate.evidence
@@ -107,13 +127,16 @@ function parseRecommend(raw: string): ParsedCandidate[] {
     const match = line.match(/^\s*-\s*(\d+)\.\s*(.+?)｜(.+)$/);
     if (match) {
       const name = match[2]!.replace(/\s*\|\s*看过$/, "").trim();
+      const fields = parseFields(match[3]!);
+      const sourceLocator = takeBossGeekId(fields);
       current = {
         index: Number(match[1]),
         name,
         source: "recommend",
-        fields: withBossPlatformTags(parseFields(match[3]!)),
+        ...(sourceLocator ? { sourceLocator } : {}),
+        fields: withBossPlatformTags(fields),
         evidence: [],
-        raw: line.trim()
+        raw: withoutBossGeekId(line.trim())
       };
       candidates.push(current);
       continue;

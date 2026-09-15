@@ -13,6 +13,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import {
+  ScreeningCountField,
+  validScreeningCount,
+} from './screening-count-field';
+import { DEFAULT_SCREENING_LIMIT } from '../../../packages/contracts/src/screening-limit';
 import { apiFetch } from './api-client';
 import {
   Select,
@@ -30,6 +35,18 @@ type Props = {
   onCreated: () => Promise<void> | void;
 };
 
+const frequencyLabels: Record<string, string> = {
+  once: '一次',
+  daily: '每日',
+  weekdays: '工作日',
+  weekly: '每周',
+};
+
+const sourceLabels: Record<string, string> = {
+  recommend: 'BOSS 推荐',
+  search: '关键词搜索',
+};
+
 const initialScheduleDate = (() => {
   const date = new Date(Date.now() + 60 * 60 * 1000);
   date.setSeconds(0, 0);
@@ -40,7 +57,8 @@ const initialScheduleDate = (() => {
 
 async function readResponse(response: Response) {
   const payload = (await response.json()) as { message?: string };
-  if (!response.ok) throw new Error(payload.message ?? `HTTP ${response.status}`);
+  if (!response.ok)
+    throw new Error(payload.message ?? `HTTP ${response.status}`);
 }
 
 export function ScheduleDialog({
@@ -51,6 +69,9 @@ export function ScheduleDialog({
   onCreated,
 }: Props) {
   const [frequency, setFrequency] = useState('once');
+  const [screeningCount, setScreeningCount] = useState(
+    String(DEFAULT_SCREENING_LIMIT),
+  );
   const [source, setSource] = useState('recommend');
   const [nextRunAt, setNextRunAt] = useState(initialScheduleDate);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -59,7 +80,8 @@ export function ScheduleDialog({
 
   async function submit(event: { preventDefault: () => void }) {
     event.preventDefault();
-    if (!positionId || submitting) return;
+    if (!positionId || submitting || !validScreeningCount(screeningCount))
+      return;
     setSubmitting(true);
     setError(null);
     try {
@@ -71,6 +93,7 @@ export function ScheduleDialog({
         },
         body: JSON.stringify({
           positionId,
+          candidateLimit: Number(screeningCount),
           source,
           searchKeyword: source === 'search' ? searchKeyword : null,
           frequency,
@@ -82,7 +105,11 @@ export function ScheduleDialog({
       await onCreated();
       onOpenChange(false);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : String(submitError),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -101,45 +128,107 @@ export function ScheduleDialog({
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+          <ScreeningCountField
+            id="schedule-screening-count"
+            value={screeningCount}
+            onChange={setScreeningCount}
+            disabled={submitting}
+            scheduled
+          />
           <div className="grid gap-4 sm:grid-cols-2">
-            <label htmlFor="schedule-frequency" className="space-y-1.5 text-sm font-medium">
+            <label
+              htmlFor="schedule-frequency"
+              className="space-y-1.5 text-sm font-medium"
+            >
               <span>执行频率</span>
-              <Select value={frequency} onValueChange={(value) => setFrequency(value ?? 'once')}>
-                <SelectTrigger id="schedule-frequency"><SelectValue /></SelectTrigger>
+              <Select
+                value={frequency}
+                onValueChange={(value) => setFrequency(value ?? 'once')}
+              >
+                <SelectTrigger id="schedule-frequency">
+                  <SelectValue>{frequencyLabels[frequency]}</SelectValue>
+                </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="once">仅执行一次</SelectItem>
-                  <SelectItem value="daily">每天</SelectItem>
+                  <SelectItem value="once">一次</SelectItem>
+                  <SelectItem value="daily">每日</SelectItem>
                   <SelectItem value="weekdays">工作日</SelectItem>
                   <SelectItem value="weekly">每周</SelectItem>
                 </SelectContent>
               </Select>
             </label>
-            <label htmlFor="schedule-next-run" className="space-y-1.5 text-sm font-medium">
+            <label
+              htmlFor="schedule-next-run"
+              className="space-y-1.5 text-sm font-medium"
+            >
               <span>首次执行时间</span>
-              <Input id="schedule-next-run" required type="datetime-local" value={nextRunAt} onChange={(event) => setNextRunAt(event.target.value)} />
+              <Input
+                id="schedule-next-run"
+                required
+                type="datetime-local"
+                value={nextRunAt}
+                onChange={(event) => setNextRunAt(event.target.value)}
+              />
             </label>
-            <label htmlFor="schedule-source" className="space-y-1.5 text-sm font-medium">
+            <label
+              htmlFor="schedule-source"
+              className="space-y-1.5 text-sm font-medium"
+            >
               <span>候选人来源</span>
-              <Select value={source} onValueChange={(value) => setSource(value ?? 'recommend')}>
-                <SelectTrigger id="schedule-source"><SelectValue /></SelectTrigger>
+              <Select
+                value={source}
+                onValueChange={(value) => setSource(value ?? 'recommend')}
+              >
+                <SelectTrigger id="schedule-source">
+                  <SelectValue>{sourceLabels[source]}</SelectValue>
+                </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="recommend">推荐候选人</SelectItem>
-                  <SelectItem value="search">搜索候选人</SelectItem>
+                  <SelectItem value="recommend">BOSS 推荐</SelectItem>
+                  <SelectItem value="search">关键词搜索</SelectItem>
                 </SelectContent>
               </Select>
             </label>
             {source === 'search' ? (
-              <label htmlFor="schedule-search-keyword" className="space-y-1.5 text-sm font-medium">
+              <label
+                htmlFor="schedule-search-keyword"
+                className="space-y-1.5 text-sm font-medium"
+              >
                 <span>搜索关键词</span>
-                <Input id="schedule-search-keyword" required value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} />
+                <Input
+                  id="schedule-search-keyword"
+                  required
+                  value={searchKeyword}
+                  onChange={(event) => setSearchKeyword(event.target.value)}
+                />
               </label>
             ) : null}
           </div>
-          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+          <p className="rounded-lg border bg-muted/35 p-3 text-xs leading-5 text-muted-foreground">
+            如果首次执行时间落在允许工作时段外，任务会保留，并在下一个可运行时段自动继续；无需重复创建。
+          </p>
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button type="submit" disabled={!positionId || submitting}>
-              {submitting ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                !positionId ||
+                submitting ||
+                !validScreeningCount(screeningCount)
+              }
+            >
+              {submitting ? (
+                <LoaderCircle className="animate-spin" aria-hidden="true" />
+              ) : null}
               {submitting ? '正在保存' : '保存定时任务'}
             </Button>
           </DialogFooter>

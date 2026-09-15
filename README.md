@@ -6,11 +6,14 @@ Boss-Forge 是面向内网 HR 团队的自研招聘控制面，通过 `boss-cli`
 
 ## 当前状态
 
-- 已实现 R1–R6 内网控制面：部门账号/岗位权限、服务端分页检索、招聘管道、时间线/备注/附件元数据、待办/面试反馈、跨岗位档案、Do-Not-Contact、可视化嵌套规则、规则生命周期/模板/回放/回滚、语义目录/评估集/生效门禁、BOSS 回复、人才库/健康/告警/导出、分析报表和自动联系多级开关/审批/紧急停止。
-- OpenAI 兼容语义提取器仍默认影子模式；确定性同义词和固定评估集可直接运行，真实内网模型端点需要由管理员配置并另行做岗位效果验收。
-- 自动联系目前是 Fake-only：产品可以配置和演练 R6 就绪条件，但不能执行真实打招呼。
-- 真实打招呼未测试；内网 Compose 没有 Real Worker，固定 `BOSS_FORGE_REAL_GREET_ENABLED=0`。
-- 当前验证基线：17 个测试文件、164 个测试通过；数据集成和 Fake-only 用户 E2E 通过。
+总体结论：**基本够用**，适合有人值守的小团队内网使用；BOSS 登录、风控和写后不确定状态仍需要管理员处理。
+
+- 已实现面向内网小团队的岗位、版本化规则、任务、逐任务候选人、简历/OCR、证据解释、人工审核、消息模板/预览、运行状态与审计控制面。低频的流程、分析、团队和自动化能力通过模块内 Tab 保留，不要求普通 HR 先理解全部治理概念。
+- 语义提取器默认关闭，当前只允许 `off` 或 `shadow`；影子结果可查看但不会改变通过/淘汰。旧 active 准入不能代表真实 criterion/rubric，已由编译期总闸和 migration 024 禁用。生产语义连接现为关闭且凭据为空，轮换提供方凭据后也只能先恢复 shadow。
+- 当前工作树已交付两个独立的真实动作：岗位专属招呼语预览后“一键打招呼”，以及正文预览后“发送消息”。两个动作各自生成候选人级短效签名许可，逐字绑定候选人、BOSS 发件账号、岗位、任务、稳定定位和精确正文；每次许可只允许对应动作的一次外部写。缺少可核验回执时进入“待人工核验”且不自动重试。
+- release `audit-events-20260904-1614cst` 已部署，真实 greet/message runtime 已开启；全局和部门联系控制仍保持 safe-off，因此不会领取或执行联系动作。BOSS 会话沿用原持久化 volumes 且为 `authenticated`；联系队列、intent、attempt 和 authorization 均为 0，没有发生真实写入。
+- 当前没有同时满足联系条件和人工审核通过的候选人，所以尚未执行首次真实 canary。首次动作前仍必须展示具体动作、候选人、BOSS 发件账号、岗位/任务和完整正文，并取得用户对该组合与正文的精确许可。
+- 当前工作树最新全量回归为 523 项单元测试通过；migration 001–026、隔离数据集成和隔离用户/联系 E2E 均通过。隔离 E2E 明确断言没有真实 BOSS 写入；类型检查、Web lint 和生产构建也通过。
 
 完整状态见 [当前实现状态](docs/CURRENT_STATUS.md)。
 
@@ -33,29 +36,27 @@ pnpm api
 pnpm web:dev
 ```
 
-打开 `http://localhost:3000`。需要读取 BOSS 时，再在独立终端启动：
+打开 `http://localhost:3000`。仅在本地开发且没有 `boss-login` 或其他进程占用同一浏览器 profile 时，才可在独立终端启动：
 
 ```bash
 pnpm m1:worker
 ```
 
-简历预览默认关闭；开启前请先阅读 [本地开发与验证](docs/LOCAL_DEVELOPMENT.md)。
+简历预览默认关闭；开启前请先阅读 [本地开发与验证](docs/LOCAL_DEVELOPMENT.md)。登录、验证、风控或运行状态不一致时立即停止 Worker，不得靠反复刷新二维码或重建 profile 恢复。
 
 ## 页面
 
-- `/`：工作台总览
-- `/positions`：岗位和结构化规则
-- `/tasks`：立即任务与定时计划
-- `/candidates`：筛选结果、证据和人工审核
-- `/contacts`：消息预览、Fake 联系意图和结果
-- `/audit`：审计与安全状态
-- `/team`：部门成员、岗位协作者与阶段配置
-- `/pipeline`：招聘管道、协作时间线和跟进
-- `/rules`：嵌套规则、审批、模板、回放和回滚
-- `/semantic`：语义目录、HR 评估集和生效门禁
-- `/operations`：回复、人才库、账号健康、告警和导出
-- `/automation`：多级开关、审批、紧急停止和 Fake 演练
-- `/analytics`：招聘漏斗与来源分析
+界面按角色展示 7 个一级模块；现有 14 个页面 URL 保留为模块子页和深链接，不再平铺在主导航：
+
+- 工作台：`/`
+- 岗位设置：岗位信息、当前生效规则、待发布版本和规则编辑统一在 `/positions`；旧 `/rules`、`/semantic` 自动回到岗位页
+- 任务与计划：`/tasks`
+- 候选人：候选人审核 `/candidates`、招聘流程 `/pipeline`
+- 联系：联系与模板 `/contacts`、自动联系 `/automation`
+- 招聘运营：运营工作台 `/operations`、数据分析 `/analytics`
+- 系统设置：团队与权限 `/team`、BOSS 扫码/会话状态 `/boss-login`、审计与安全 `/audit`
+
+面试官只显示工作台和候选人；HR 不显示系统设置；招聘负责人和管理员显示全部模块。服务端岗位权限仍独立校验，隐藏导航不作为授权边界。
 
 ## 常用验证
 
@@ -68,13 +69,15 @@ pnpm test:e2e:user
 pnpm web:build
 ```
 
-`test:e2e:user` 必须输出 `realGreetingExecuted: false`。
+隔离 E2E 必须输出 `realGreetingExecuted: false`；这证明测试没有真实写入，不替代首次真实 canary 验收。
 
 ## 文档
 
 - [文档索引](docs/README.md)
 - [产品需求](docs/PRODUCT_REQUIREMENTS.md)
 - [当前实现状态](docs/CURRENT_STATUS.md)
+- [2026-09-04 修复与复验报告](docs/REMEDIATION_REPORT_2026-09-04.md)
+- [2026-09-04 产品审计快照与修复后复验](docs/PRODUCT_AUDIT_2026-09-04.md)
 - [系统架构](docs/SYSTEM_ARCHITECTURE.md)
 - [本地开发与验证](docs/LOCAL_DEVELOPMENT.md)
 - [Ubuntu 内网部署](docs/INTRANET_DEPLOYMENT.md)
@@ -85,6 +88,8 @@ pnpm web:build
 ## 安全边界
 
 - `preview` 会访问真实简历并可能消耗平台预览额度；默认关闭。
-- Dashboard 创建的联系意图固定为 Fake，不会发送真实招呼。
-- M0 诊断命令包含显式批准的真实 `greet` 通道，只供人工技术验证；未经单独授权不得运行。
+- 常规浏览器验收停在消息预览/取消；只有显式隔离测试才允许创建 mock 联系 fixture。
+- 真实联系必须同时满足已验收编译能力、`BOSS_FORGE_CONTACT_DISPATCH_MODE=real`、独立运行开关、至少 32 字节的预览签名密钥、Worker 启动确认以及候选人级短效许可；默认配置不能发送。任何无权威回执的写后结果都禁止自动重试。
+- 语义结果只以 shadow 方式保存，不得作为正式筛选结论。
+- BOSS 登录目录和 boss-cli 数据必须使用已有 external volume；不得清空、复制、重建或用新卷试错，也不得用反复刷新二维码代替恢复。
 - 不实现绕过验证码、平台风控或产品额度的能力。

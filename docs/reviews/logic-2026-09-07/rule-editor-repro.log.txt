@@ -1,0 +1,3 @@
+BEFORE nested OR: {"operator":"AND","children":[{"type":"range","field":"age","minimum":20,"maximum":35,"unknownPolicy":"fail"},{"operator":"OR","children":[{"type":"keyword","field":"skills","values":["Java"],"mode":"any","unknownPolicy":"ignore"},{"type":"keyword","field":"skills","values":["Python"],"mode":"any","unknownPolicy":"ignore"}]}]}
+AFTER opening and saving: {"operator":"AND","children":[{"type":"range","field":"age","minimum":20,"maximum":35,"unknownPolicy":"fail"},{"type":"keyword","field":"skills","values":["Java"],"mode":"any","unknownPolicy":"fail"}]}
+CREDENTIAL mode before: all after: any

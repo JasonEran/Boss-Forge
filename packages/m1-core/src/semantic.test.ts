@@ -33,7 +33,7 @@ const config: RuleConfig = {
   }
 };
 
-function evaluation(runtimeMode: "shadow" | "active"): SemanticEvaluation {
+function evaluation(runtimeMode: "off" | "shadow" | "active"): SemanticEvaluation {
   return {
     criterionId: "semantic.management",
     factType: "team_management",
@@ -65,10 +65,17 @@ describe("semantic composite evaluation", () => {
     expect(result.evidence[0]?.canonicalLabel).toBe("具有团队管理经验");
   });
 
-  it("keeps model output in manual review while shadowing", () => {
+  it("records but does not apply semantic output while shadowing", () => {
     const result = evaluateCandidate(candidate, config, null, [evaluation("shadow")]);
     expect(result.decision).toBe("insufficient");
-    expect(result.reasonCodes).toContain("semantic_shadow_mode");
+    expect(result.reasonCodes).toContain("semantic_result_not_applied");
+    expect(result.evidence[0]?.confidence).toBe(0.96);
+  });
+
+  it("does not apply semantic output while the position setting is off", () => {
+    const result = evaluateCandidate(candidate, config, null, [evaluation("off")]);
+    expect(result.decision).toBe("insufficient");
+    expect(result.reasonCodes).toContain("semantic_off_mode");
   });
 
   it("fails closed when no semantic evaluation is available", () => {

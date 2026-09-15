@@ -8,6 +8,8 @@ deploy/.env.intranet
 **/.boss-forge
 node_modules
 **/node_modules
+.pnpm-store
+artifacts
 dist
 **/dist
 coverage
@@ -15,5 +17,6 @@ coverage
 apps/web/.vinext
 .DS_Store
 **/.DS_Store
+**/._*
 *.log
 **/*.log

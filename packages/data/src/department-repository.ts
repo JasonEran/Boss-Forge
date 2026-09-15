@@ -1,5 +1,18 @@
+import { parseRuleConfig } from "./rule-config.js";
+import { contactWindowFromPolicy } from "./contact-window.js";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import {
+  bossJobCatalogSchema,
+  bossJobAvailability,
+  type BossJobCatalog,
+  REAL_CONTACT_TRANSPORT_AVAILABLE,
+  contactDispatchModeFromEnvironment,
+  contactSideEffectsModeFromEnvironment,
+  SEMANTIC_ACTIVE_DECISIONS_AVAILABLE
+} from "@boss-forge/contracts";
 import type { Database } from "./client.js";
+import { assertIsolatedTestDatabase } from "./test-safety.js";
+import type { Position } from "./types.js";
 
 type JsonValue = Parameters<Database["json"]>[0];
 
@@ -12,12 +25,26 @@ export type SessionPrincipal = {
   role: DepartmentRole;
 };
 
+export class AuthenticationError extends Error {}
 export class AuthorizationError extends Error {}
 
 const tokenHash = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const passwordHash = (value: string, salt: string): string =>
   scryptSync(value, salt, 64).toString("hex");
+
+function contactAuthorizationMutationAllowed(): boolean {
+  if (REAL_CONTACT_TRANSPORT_AVAILABLE) return true;
+  if (
+    process.env.BOSS_FORGE_TEST_CONTACTS !== "1" ||
+    process.env.BOSS_FORGE_ALLOW_CONTACT_TEST_DATA !==
+      "I_UNDERSTAND_ISOLATED_ONLY"
+  ) {
+    return false;
+  }
+  assertIsolatedTestDatabase(process.env, { contactSideEffects: true });
+  return true;
+}
 const canManage = (role: DepartmentRole): boolean =>
   role === "admin" || role === "recruiting_lead";
 
@@ -83,16 +110,19 @@ export class DepartmentAtsRepository {
       role: DepartmentRole; password_salt: string | null; password_hash: string | null;
     }>>`
       SELECT id, department_id, email, display_name, role, password_salt, password_hash
-      FROM users WHERE lower(email) = lower(${email}) AND status = 'active' LIMIT 1
+      FROM users WHERE lower(email) = lower(${email}) AND status = 'active'
     `;
+    if (users.length !== 1) {
+      throw new AuthenticationError("Invalid email or password.");
+    }
     const user = users[0];
     if (!user?.password_salt || !user.password_hash) {
-      throw new AuthorizationError("Invalid email or password.");
+      throw new AuthenticationError("Invalid email or password.");
     }
     const supplied = Buffer.from(passwordHash(password, user.password_salt), "hex");
     const expected = Buffer.from(user.password_hash, "hex");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-      throw new AuthorizationError("Invalid email or password.");
+      throw new AuthenticationError("Invalid email or password.");
     }
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1_000).toISOString();
@@ -124,7 +154,7 @@ export class DepartmentAtsRepository {
         AND s.expires_at > now() AND u.status = 'active'
     `;
     const row = rows[0];
-    if (!row) throw new AuthorizationError("Invalid or expired session.");
+    if (!row) throw new AuthenticationError("Invalid or expired session.");
     await this.sql`UPDATE user_sessions SET last_seen_at = now() WHERE id = ${row.session_id}`;
     return {
       userId: row.user_id,
@@ -156,13 +186,22 @@ export class DepartmentAtsRepository {
     validPassword(input.password);
     const id = randomUUID();
     const salt = randomBytes(24).toString("hex");
-    const rows = await this.sql`
-      INSERT INTO users (id, department_id, email, display_name, role, password_salt, password_hash)
-      VALUES (${id}, ${principal.departmentId}, ${input.email.toLowerCase()}, ${input.displayName},
-        ${input.role}, ${salt}, ${passwordHash(input.password, salt)})
-      RETURNING id, email, display_name AS "displayName", role, status
-    `;
-    return rows[0];
+    const normalizedEmail = input.email.trim().toLowerCase();
+    return this.sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtextextended(${normalizedEmail}::text, 0))
+      `;
+      if ((await tx`SELECT id FROM users WHERE lower(email) = ${normalizedEmail} LIMIT 1`)[0]) {
+        throw new Error("This email is already used by another account.");
+      }
+      const rows = await tx`
+        INSERT INTO users (id, department_id, email, display_name, role, password_salt, password_hash)
+        VALUES (${id}, ${principal.departmentId}, ${normalizedEmail}, ${input.displayName},
+          ${input.role}, ${salt}, ${passwordHash(input.password, salt)})
+        RETURNING id, email, display_name AS "displayName", role, status
+      `;
+      return rows[0];
+    });
   }
 
   async positionIds(principal: SessionPrincipal): Promise<string[]> {
@@ -186,16 +225,265 @@ export class DepartmentAtsRepository {
   async adoptPosition(principal: SessionPrincipal, positionId: string): Promise<void> {
     if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
     await this.sql.begin(async (tx) => {
-      await tx`
+      const adopted = await tx<Array<{ id: string }>>`
         UPDATE positions SET department_id = ${principal.departmentId}, owner_user_id = ${principal.userId}
         WHERE id = ${positionId} AND (department_id IS NULL OR department_id = ${principal.departmentId})
+        RETURNING id
       `;
+      if (!adopted[0]) throw new AuthorizationError("Position adoption was denied.");
       await tx`
         INSERT INTO position_members (position_id, user_id, member_role)
         VALUES (${positionId}, ${principal.userId}, 'owner')
         ON CONFLICT (position_id, user_id) DO UPDATE SET member_role = 'owner'
       `;
     });
+  }
+
+  /**
+   * Create (or update the same-department match) and assign a position as one
+   * transaction.  This is the safe write path for the HTTP create endpoint: a
+   * membership failure can no longer leave a globally visible orphan position.
+   */
+  async createAssignedPosition(principal: SessionPrincipal, input: {
+    bossAccountId: string;
+    name: string;
+    bossJobKeyword?: string | null;
+    ownerName?: string;
+  }): Promise<Position> {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
+    const bossAccountId = input.bossAccountId.trim();
+    const name = input.name.trim();
+    const bossJobKeyword = input.bossJobKeyword?.trim() || null;
+    const ownerName = input.ownerName?.trim() || principal.displayName;
+    if (!bossAccountId || bossAccountId.length > 200) {
+      throw new Error("BOSS account id must contain 1 to 200 characters.");
+    }
+    if (!name || name.length > 100) {
+      throw new Error("Position name must contain 1 to 100 characters.");
+    }
+    if (bossJobKeyword && bossJobKeyword.length > 120) {
+      throw new Error("BOSS job keyword must contain at most 120 characters.");
+    }
+    if (!ownerName || ownerName.length > 100) {
+      throw new Error("Owner name must contain 1 to 100 characters.");
+    }
+    return this.sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`${bossAccountId}\u001f${name.toLocaleLowerCase("zh-CN")}`}::text, 0)
+        )
+      `;
+      const existing = await tx<Array<{ id: string; department_id: string | null }>>`
+        SELECT id, department_id
+        FROM positions
+        WHERE boss_account_id = ${bossAccountId} AND lower(name) = lower(${name}) AND boss_job_id IS NULL
+        FOR UPDATE
+      `;
+      if (existing[0]?.department_id && existing[0].department_id !== principal.departmentId) {
+        throw new AuthorizationError("A position with this name belongs to another department.");
+      }
+      const positionId = existing[0]?.id ?? randomUUID();
+      const rows = await tx<
+        Array<{
+          id: string;
+          boss_account_id: string;
+          name: string;
+          boss_job_keyword: string | null;
+          status: Position["status"];
+          owner_name: string;
+          semantic_mode: Position["semanticMode"];
+          version: number;
+          created_at: Date;
+          updated_at: Date;
+        }>
+      >`
+        INSERT INTO positions (
+          id, boss_account_id, name, boss_job_keyword, owner_name,
+          department_id, owner_user_id
+        ) VALUES (
+          ${positionId}, ${bossAccountId}, ${name}, ${bossJobKeyword}, ${ownerName},
+          ${principal.departmentId}, ${principal.userId}
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          boss_job_keyword = EXCLUDED.boss_job_keyword,
+          owner_name = EXCLUDED.owner_name,
+          department_id = EXCLUDED.department_id,
+          owner_user_id = EXCLUDED.owner_user_id,
+          version = positions.version + 1,
+          updated_at = now()
+        RETURNING id, boss_account_id, name, boss_job_keyword, status,
+          owner_name, semantic_mode, version, created_at, updated_at
+      `;
+      await tx`
+        INSERT INTO position_members (position_id, user_id, member_role)
+        VALUES (${positionId}, ${principal.userId}, 'owner')
+        ON CONFLICT (position_id, user_id) DO UPDATE SET member_role = 'owner'
+      `;
+      await tx`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, ${principal.userId},
+          ${existing[0] ? "position.updated_and_assigned" : "position.created_and_assigned"},
+          'position', ${positionId},
+          ${tx.json({ departmentId: principal.departmentId, bossAccountId })}
+        )
+      `;
+      const row = rows[0]!;
+      return {
+        id: row.id,
+        bossAccountId: row.boss_account_id,
+        name: row.name,
+        bossJobKeyword: row.boss_job_keyword,
+        status: row.status,
+        ownerName: row.owner_name,
+        semanticMode: row.semantic_mode,
+        version: row.version,
+        createdAt: row.created_at.toISOString(),
+        updatedAt: row.updated_at.toISOString()
+      };
+    });
+  }
+
+  async syncBossPositions(principal: SessionPrincipal, bossAccountId: string, input: BossJobCatalog) {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
+    const catalog = bossJobCatalogSchema.parse(input);
+    // A partial page must never mark jobs as closed or replace the user's list.
+    if (!catalog.complete) throw new Error("BOSS 岗位列表尚未完整读取，原有岗位未更改，请稍后重新同步。");
+    return this.sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`boss-jobs:${bossAccountId}`}::text, 0))`;
+      const existing = await tx<Array<{ id: string; name: string; boss_job_id: string | null; department_id: string | null }>>`
+        SELECT id, name, boss_job_id, department_id FROM positions
+        WHERE boss_account_id = ${bossAccountId} FOR UPDATE
+      `;
+      let created = 0;
+      let linked = 0;
+      let synced = 0;
+      const norm = (name: string) => name.replace(/\s+/gu, "").toLocaleLowerCase("zh-CN");
+      for (const job of catalog.jobs) {
+        let current = existing.find((position) => position.boss_job_id === job.id);
+        // Import open jobs only. Retain and update already-bound jobs when BOSS
+        // closes them so their rules, assignments and screening history survive.
+        if (!current && bossJobAvailability(job.status) !== "active") continue;
+        if (current?.department_id && current.department_id !== principal.departmentId) {
+          throw new AuthorizationError("该 BOSS 岗位已归属于其他部门，请由原部门管理员同步。");
+        }
+        if (!current) {
+          const legacy = existing.filter((position) => !position.boss_job_id &&
+            position.department_id === principal.departmentId && norm(position.name) === norm(job.name));
+          if (legacy.length === 1 && catalog.jobs.filter((other) => norm(other.name) === norm(job.name)).length === 1) {
+            current = legacy[0];
+            linked++;
+          }
+        }
+        const nameUnique = catalog.jobs.filter((other) => norm(other.name) === norm(job.name)).length === 1;
+        const id = current?.id ?? randomUUID();
+        synced++;
+        if (!current) created++;
+        if (current) {
+          await tx`UPDATE positions SET name = ${job.name}, boss_job_keyword = ${job.name},
+            boss_job_id = ${job.id}, boss_job_name_unique = ${nameUnique}, boss_job_status = ${job.status},
+            status = ${bossJobAvailability(job.status)}, boss_synced_at = now(),
+            version = version + 1, updated_at = now()
+            WHERE id = ${id}`;
+          current.boss_job_id = job.id;
+        } else {
+          await tx`INSERT INTO positions (id, boss_account_id, name, boss_job_keyword,
+            boss_job_id, boss_job_name_unique, boss_job_status, boss_synced_at, status, owner_name, department_id, owner_user_id)
+            VALUES (${id}, ${bossAccountId}, ${job.name}, ${job.name}, ${job.id}, ${nameUnique}, ${job.status}, now(),
+              ${bossJobAvailability(job.status)}, ${principal.displayName}, ${principal.departmentId}, ${principal.userId})`;
+          await tx`INSERT INTO position_members (position_id, user_id, member_role)
+            VALUES (${id}, ${principal.userId}, 'owner')`;
+        }
+      }
+      const ids = catalog.jobs.map((job) => job.id);
+      await tx`UPDATE positions SET status = 'paused', boss_job_status = '本次同步未找到',
+        boss_synced_at = now(), version = version + 1, updated_at = now()
+        WHERE boss_account_id = ${bossAccountId} AND department_id = ${principal.departmentId}
+          AND boss_job_id IS NOT NULL AND NOT (boss_job_id = ANY(${ids}::text[]))`;
+      await tx`INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (${randomUUID()}, ${principal.userId}, 'position.boss_synced', 'boss_account', ${bossAccountId},
+          ${tx.json({ count: synced, catalogCount: ids.length, created, linked })})`;
+      return { count: synced, created, linked };
+    });
+  }
+
+  /** Move a fresh imported BOSS binding onto a legacy position, keeping all its history. */
+  async bindLegacyBossPosition(principal: SessionPrincipal, positionId: string, importedPositionId: string) {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
+    await this.assertPosition(principal, positionId);
+    await this.assertPosition(principal, importedPositionId);
+    return this.sql.begin(async (tx) => {
+      const rows = await tx`SELECT * FROM positions WHERE id IN (${positionId}, ${importedPositionId}) ORDER BY id FOR UPDATE`;
+      const legacy = rows.find((row) => row.id === positionId);
+      const imported = rows.find((row) => row.id === importedPositionId);
+      if (!legacy || !imported || legacy.boss_job_id || !imported.boss_job_id || legacy.boss_account_id !== imported.boss_account_id) {
+        throw new Error("请选择同一 BOSS 账号下的已同步岗位；已绑定岗位不能更换来源。");
+      }
+      const used = await tx`SELECT id FROM rule_sets WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM tasks WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM schedules WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM message_templates WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM work_items WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM rule_replay_runs WHERE position_id = ${importedPositionId}
+        UNION ALL SELECT id FROM contact_policy_snapshots WHERE position_id = ${importedPositionId} LIMIT 1`;
+      if (used.length) throw new Error("所选 BOSS 岗位已有规则、任务或其他配置，请直接使用该岗位，避免混合历史数据。");
+      // Keep any HR assignments made immediately after import.
+      await tx`INSERT INTO position_members (position_id, user_id, member_role)
+        SELECT ${positionId}, user_id, member_role FROM position_members WHERE position_id = ${importedPositionId}
+        ON CONFLICT (position_id, user_id) DO NOTHING`;
+      await tx`DELETE FROM position_members WHERE position_id = ${importedPositionId}`;
+      await tx`DELETE FROM positions WHERE id = ${importedPositionId}`;
+      await tx`UPDATE positions SET name = ${imported.name}, boss_job_keyword = ${imported.boss_job_keyword},
+        boss_job_id = ${imported.boss_job_id}, boss_job_name_unique = ${imported.boss_job_name_unique}, boss_job_status = ${imported.boss_job_status},
+        boss_synced_at = ${imported.boss_synced_at}, status = ${imported.status},
+        version = version + 1, updated_at = now() WHERE id = ${positionId}`;
+      await tx`INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (${randomUUID()}, ${principal.userId}, 'position.boss_bound', 'position', ${positionId},
+          ${tx.json({ bossJobId: imported.boss_job_id, importedPositionId })})`;
+      return { positionId };
+    });
+  }
+
+  async updatePosition(principal: SessionPrincipal, positionId: string, input: {
+    name: string;
+    bossJobKeyword?: string | null;
+    ownerName: string;
+  }): Promise<unknown> {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
+    await this.assertPosition(principal, positionId);
+    const name = input.name.trim();
+    const ownerName = input.ownerName.trim();
+    const bossJobKeyword = input.bossJobKeyword?.trim() || null;
+    if (name.length > 100) throw new Error("Position name must contain at most 100 characters.");
+    if (ownerName.length > 100) throw new Error("Owner name must contain at most 100 characters.");
+    if (bossJobKeyword && bossJobKeyword.length > 120) {
+      throw new Error("BOSS job keyword must contain at most 120 characters.");
+    }
+    const duplicate = (await this.sql`
+      SELECT other.id FROM positions current_position
+      JOIN positions other ON other.boss_account_id = current_position.boss_account_id
+        AND lower(other.name) = lower(${name}) AND other.id <> current_position.id
+        AND other.boss_job_id IS NULL AND current_position.boss_job_id IS NULL
+      WHERE current_position.id = ${positionId} LIMIT 1
+    `)[0];
+    if (duplicate) throw new Error("Position name must be unique for this BOSS account.");
+    const rows = await this.sql`
+      UPDATE positions SET
+        name = CASE WHEN boss_job_id IS NULL THEN ${name} ELSE name END,
+        boss_job_keyword = CASE WHEN boss_job_id IS NULL THEN ${bossJobKeyword} ELSE boss_job_keyword END,
+        owner_name = ${ownerName}, version = version + 1, updated_at = now()
+      WHERE id = ${positionId} AND department_id = ${principal.departmentId}
+      RETURNING id, boss_account_id AS "bossAccountId", name,
+        boss_job_keyword AS "bossJobKeyword", status, owner_name AS "ownerName",
+        version, created_at AS "createdAt", updated_at AS "updatedAt"
+    `;
+    if (!rows[0]) throw new Error("Position was not found.");
+    await this.audit(principal, "position.updated", "position", positionId, {
+      name,
+      bossJobKeyword,
+      ownerName
+    });
+    return rows[0];
   }
 
   async assignPosition(
@@ -239,7 +527,8 @@ export class DepartmentAtsRepository {
     const offset = Math.max(input.offset ?? 0, 0);
     const counts = await this.sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count FROM candidate_position_states cps JOIN candidates c ON c.id = cps.candidate_id
-      WHERE cps.position_id = ANY(${ids}::uuid[]) AND (${stage}::text IS NULL OR cps.stage_key = ${stage})
+      WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
+        AND (${stage}::text IS NULL OR cps.stage_key = ${stage})
         AND (${query}::text IS NULL OR c.display_name ILIKE ${query})
     `;
     const items = await this.sql`
@@ -247,11 +536,14 @@ export class DepartmentAtsRepository {
         p.id AS "positionId", p.name AS "positionName", cps.stage_key AS stage,
         cps.review_status AS "reviewStatus", cps.contact_status AS "contactStatus",
         cps.rule_decision AS "ruleDecision", cps.updated_at AS "updatedAt",
+        cps.resume_screening_status AS "resumeScreeningStatus",
+        cps.resume_screening_error_code AS "resumeScreeningErrorCode",
         COALESCE(dnc.active, false) AS "doNotContact"
       FROM candidate_position_states cps JOIN candidates c ON c.id = cps.candidate_id
       JOIN positions p ON p.id = cps.position_id
       LEFT JOIN do_not_contact dnc ON dnc.candidate_id = c.id
-      WHERE cps.position_id = ANY(${ids}::uuid[]) AND (${stage}::text IS NULL OR cps.stage_key = ${stage})
+      WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
+        AND (${stage}::text IS NULL OR cps.stage_key = ${stage})
         AND (${query}::text IS NULL OR c.display_name ILIKE ${query})
       ORDER BY
         CASE WHEN ${sort} = 'name' AND ${direction} = 'asc' THEN c.display_name END ASC,
@@ -273,15 +565,32 @@ export class DepartmentAtsRepository {
     if (principal.role === "interviewer") {
       throw new AuthorizationError("Interviewers cannot change pipeline stages.");
     }
-    const state = (await this.sql<Array<{ position_id: string; stage_key: string }>>`
-      SELECT position_id, stage_key FROM candidate_position_states WHERE id = ${stateId}
+    const state = (await this.sql<Array<{
+      position_id: string;
+      stage_key: string;
+      review_status: string;
+    }>>`
+      SELECT position_id, stage_key, review_status
+      FROM candidate_position_states WHERE id = ${stateId}
     `)[0];
     if (!state) throw new Error("Candidate state was not found.");
     await this.assertPosition(principal, state.position_id);
+    if ((await this.sql`SELECT c.id FROM recruitment_cases c JOIN candidate_position_states s ON s.candidate_id=c.candidate_id AND s.position_id=c.position_id WHERE s.id=${stateId} LIMIT 1`)[0]) {
+      throw new Error("此候选人已有招聘跟进档案，请在招聘跟进中更新面试、Offer 或入职状态。");
+    }
     if (!(await this.sql`
       SELECT id FROM pipeline_stages
       WHERE department_id = ${principal.departmentId} AND stage_key = ${stage}
     `)[0]) throw new Error("Pipeline stage was not found.");
+    if (state.review_status === "rejected" && stage !== "rejected") {
+      throw new Error("A screening-rejected candidate cannot move to another pipeline stage.");
+    }
+    if (
+      state.review_status === "pending" &&
+      !["screening", "review"].includes(stage)
+    ) {
+      throw new Error("Candidate screening review must be approved before moving forward.");
+    }
     await this.sql.begin(async (tx) => {
       await tx`
         UPDATE candidate_position_states SET stage_key = ${stage}, stage_updated_at = now(),
@@ -323,26 +632,130 @@ export class DepartmentAtsRepository {
     active: boolean,
     reason: string
   ): Promise<void> {
+    if (principal.role === "interviewer") {
+      throw new AuthorizationError("Interviewers cannot change contact safety controls.");
+    }
     const allowed = await this.positionIds(principal);
     const state = (await this.sql<Array<{ position_id: string }>>`
       SELECT position_id FROM candidate_position_states
       WHERE candidate_id = ${candidateId} AND position_id = ANY(${allowed}::uuid[]) LIMIT 1
     `)[0];
     if (!state) throw new AuthorizationError("Candidate access denied.");
-    await this.sql`
-      INSERT INTO do_not_contact (candidate_id, reason, source, created_by, active)
-      VALUES (${candidateId}, ${reason}, 'hr', ${principal.userId}, ${active})
-      ON CONFLICT (candidate_id) DO UPDATE SET reason = EXCLUDED.reason,
-        active = EXCLUDED.active, created_by = EXCLUDED.created_by, updated_at = now()
-    `;
+    await this.sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtextextended(${candidateId}::text, 0))
+      `;
+      await tx`
+        INSERT INTO do_not_contact (candidate_id, reason, source, created_by, active)
+        VALUES (${candidateId}, ${reason}, 'hr', ${principal.userId}, ${active})
+        ON CONFLICT (candidate_id) DO UPDATE SET reason = EXCLUDED.reason,
+          active = EXCLUDED.active, created_by = EXCLUDED.created_by, updated_at = now()
+      `;
+    });
   }
 
   async assertCandidateContactable(principal: SessionPrincipal, stateId: string): Promise<void> {
     const state = await this.assertState(principal, stateId);
+    const currentState = (await this.sql`
+      SELECT id FROM candidate_position_states
+      WHERE id = ${stateId} AND is_current = true
+    `)[0];
+    if (!currentState) {
+      throw new Error(
+        "Contact policy blocked: candidate state is historical; select the current record."
+      );
+    }
     if ((await this.sql`
       SELECT candidate_id FROM do_not_contact
       WHERE candidate_id = ${state.candidateId} AND active = true
     `)[0]) throw new Error("Contact policy blocked: candidate is Do-Not-Contact.");
+  }
+
+  async messageTemplateWorkspace(principal: SessionPrincipal): Promise<unknown> {
+    const ids = await this.positionIds(principal);
+    if (ids.length === 0) return { templates: [] };
+    const templates = await this.sql`
+      SELECT p.id AS "positionId", p.name AS "positionName",
+        selected.id AS "templateId", selected.name AS "templateName",
+        (selected.position_id IS NULL) AS inherited,
+        tv.id AS "activeVersionId", tv.version, tv.body,
+        tv.created_by AS "createdBy", tv.created_at AS "createdAt"
+      FROM positions p
+      LEFT JOIN LATERAL (
+        SELECT mt.id, mt.name, mt.position_id, mt.active_version_id
+        FROM message_templates mt
+        WHERE mt.position_id = p.id OR mt.position_id IS NULL
+        ORDER BY (mt.position_id = p.id) DESC NULLS LAST, mt.created_at ASC
+      ) selected ON true
+      LEFT JOIN template_versions tv ON tv.id = selected.active_version_id
+      WHERE p.id = ANY(${ids}::uuid[])
+      ORDER BY p.name
+    `;
+    return { templates };
+  }
+
+  async savePositionMessageTemplate(
+    principal: SessionPrincipal,
+    positionId: string,
+    bodyInput: string,
+    templateName?: string
+  ): Promise<unknown> {
+    if (principal.role === "interviewer") throw new AuthorizationError("Recruiting role required.");
+    await this.assertPosition(principal, positionId);
+    const body = bodyInput.trim().replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, variable: string) => `{{${variable.trim()}}}`);
+    const name = templateName?.trim();
+    if (templateName !== undefined && (!name || name.length > 80)) throw new Error("模板名称必须为 1–80 字。");
+    if (body.length < 1 || body.length > 500) {
+      throw new Error("Message template body must contain 1 to 500 characters.");
+    }
+    const allowedVariables = new Set(["candidate_name", "position_name", "hr_name"]);
+    const variables = [...body.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1]!);
+    const unsupported = variables.find((variable) => !allowedVariables.has(variable));
+    if (unsupported) {
+      throw new Error(`Message template variable must be supported: ${unsupported}.`);
+    }
+    const position = (await this.sql<Array<{ name: string }>>`
+      SELECT name FROM positions WHERE id = ${positionId} AND department_id = ${principal.departmentId}
+    `)[0];
+    if (!position) throw new Error("Position was not found.");
+
+    const saved = await this.sql.begin(async (tx) => {
+      const templateId = randomUUID();
+      const templateRows = await tx<Array<{ id: string }>>`
+        INSERT INTO message_templates (id, position_id, name)
+        VALUES (${templateId}, ${positionId}, ${name ?? `${position.name}联系模板`})
+        ON CONFLICT (position_id, name) WHERE position_id IS NOT NULL
+        DO UPDATE SET name = EXCLUDED.name
+        RETURNING id
+      `;
+      const id = templateRows[0]!.id;
+      await tx`SELECT id FROM message_templates WHERE id = ${id} FOR UPDATE`;
+      const nextRows = await tx<Array<{ version: number }>>`
+        SELECT COALESCE(max(version), 0)::int + 1 AS version
+        FROM template_versions WHERE template_id = ${id}
+      `;
+      const version = nextRows[0]!.version;
+      const versionId = randomUUID();
+      const versions = await tx<Array<{
+        activeVersionId: string;
+        version: number;
+        body: string;
+        createdBy: string;
+        createdAt: string;
+      }>>`
+        INSERT INTO template_versions (id, template_id, version, body, created_by)
+        VALUES (${versionId}, ${id}, ${version}, ${body}, ${principal.userId})
+        RETURNING id AS "activeVersionId", version, body,
+          created_by AS "createdBy", created_at AS "createdAt"
+      `;
+      await tx`UPDATE message_templates SET active_version_id = ${versionId} WHERE id = ${id}`;
+      return { templateId: id, positionId, positionName: position.name, inherited: false, ...versions[0] };
+    });
+    await this.audit(principal, "message_template.version.created", "message_template", saved.templateId, {
+      positionId,
+      version: saved.version
+    });
+    return saved;
   }
 
   private async assertState(principal: SessionPrincipal, stateId: string): Promise<{ positionId: string; candidateId: string }> {
@@ -462,7 +875,8 @@ export class DepartmentAtsRepository {
           jsonb_agg(jsonb_build_object('stateId', cps.id, 'positionId', p.id, 'positionName', p.name,
             'stage', cps.stage_key, 'reviewStatus', cps.review_status) ORDER BY cps.updated_at DESC) AS "applicationViews"
         FROM candidates c JOIN candidate_position_states cps ON cps.candidate_id = c.id
-        JOIN positions p ON p.id = cps.position_id WHERE cps.position_id = ANY(${ids}::uuid[])
+        JOIN positions p ON p.id = cps.position_id
+        WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
         GROUP BY c.id HAVING count(*) >= 1 ORDER BY count(*) DESC, c.display_name LIMIT 200
       `
     ]);
@@ -574,43 +988,91 @@ export class DepartmentAtsRepository {
     return { versions, templates, replays };
   }
 
-  async createRuleDraft(principal: SessionPrincipal, input: { positionId: string; name: string; config: unknown; dictionaryVersion: string; parentVersionId?: string | null }): Promise<unknown> {
+  private async assertSalaryBudgetPermission(principal: SessionPrincipal, positionId: string, config: unknown, database: Database = this.sql): Promise<void> {
+    if (principal.role === "admin") return;
+    const parsed = parseRuleConfig(config);
+    const next = "recruitment" in parsed ? parsed.recruitment?.salaryCeilingYuan ?? null : null;
+    const current = (await database<Array<{ ceiling: string | null }>>`
+      SELECT rv.config #>> '{recruitment,salaryCeilingYuan}' AS ceiling
+      FROM rule_sets rs LEFT JOIN rule_versions rv ON rv.id = rs.active_version_id
+      WHERE rs.position_id = ${positionId}
+    `)[0]?.ceiling;
+    if (next !== (current == null ? null : Number(current))) throw new AuthorizationError("只有管理员可以设置或修改岗位薪资上限。");
+  }
+
+  async createRuleDraft(principal: SessionPrincipal, input: {
+    positionId: string;
+    name: string;
+    config: unknown;
+    dictionaryVersion: string;
+    parentVersionId?: string | null;
+    lifecycleStatus?: "draft" | "pending_approval" | "published";
+  }): Promise<unknown> {
     await this.assertPosition(principal, input.positionId);
     if (principal.role === "interviewer") throw new AuthorizationError("Interviewer role cannot create rules.");
+    const lifecycleStatus = input.lifecycleStatus ?? "draft";
+    if (lifecycleStatus === "published" && !canManage(principal.role)) {
+      throw new AuthorizationError("Manager role required to publish rules.");
+    }
     return this.sql.begin(async (tx) => {
       const ruleSet = (await tx<Array<{ id: string }>>`
         INSERT INTO rule_sets (id, position_id, name) VALUES (${randomUUID()}, ${input.positionId}, ${input.name})
         ON CONFLICT (position_id) DO UPDATE SET name = EXCLUDED.name RETURNING id
       `)[0]!;
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtextextended(${ruleSet.id}::text, 0))
+      `;
+      await this.assertSalaryBudgetPermission(principal, input.positionId, input.config, tx);
       const next = (await tx<Array<{ version: number }>>`
         SELECT (COALESCE(max(version), 0) + 1)::int AS version FROM rule_versions WHERE rule_set_id = ${ruleSet.id}
       `)[0]!.version;
       const id = randomUUID();
+      if (lifecycleStatus === "published") {
+        await tx`
+          UPDATE rule_versions SET lifecycle_status = 'retired', retired_at = now()
+          WHERE rule_set_id = ${ruleSet.id} AND lifecycle_status = 'published'
+        `;
+      }
       const rows = await tx`
         INSERT INTO rule_versions (id, rule_set_id, version, config, dictionary_version, created_by,
-          lifecycle_status, parent_version_id)
+          lifecycle_status, parent_version_id, approved_by, published_at)
         VALUES (${id}, ${ruleSet.id}, ${next}, ${tx.json(input.config as JsonValue)}, ${input.dictionaryVersion},
-          ${principal.userId}, 'draft', ${input.parentVersionId ?? null})
+          ${principal.userId}, ${lifecycleStatus}, ${input.parentVersionId ?? null},
+          ${lifecycleStatus === "published" ? principal.userId : null},
+          ${lifecycleStatus === "published" ? new Date().toISOString() : null})
         RETURNING id, version, lifecycle_status AS status, config
       `;
+      if (lifecycleStatus === "published") {
+        await tx`UPDATE rule_sets SET active_version_id = ${id} WHERE id = ${ruleSet.id}`;
+      }
       await tx`
         INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
-        VALUES (${randomUUID()}, ${principal.userId}, 'rule.draft.created', 'rule_version', ${id}, ${tx.json({ positionId: input.positionId, version: next })})
+        VALUES (${randomUUID()}, ${principal.userId},
+          ${lifecycleStatus === "published" ? "rule.published" : lifecycleStatus === "pending_approval" ? "rule.pending_approval.created" : "rule.draft.created"},
+          'rule_version', ${id},
+          ${tx.json({ positionId: input.positionId, version: next, lifecycleStatus })})
       `;
       return rows[0];
     });
   }
 
   async setRuleLifecycle(principal: SessionPrincipal, versionId: string, status: "draft" | "pending_approval" | "published" | "retired"): Promise<void> {
-    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required to approve or publish rules.");
-    const row = (await this.sql<Array<{ rule_set_id: string; position_id: string; lifecycle_status: string }>>`
-      SELECT rv.rule_set_id, rs.position_id, rv.lifecycle_status FROM rule_versions rv
+    if (status !== "pending_approval" && !canManage(principal.role)) {
+      throw new AuthorizationError("Manager role required to approve, publish or retire rules.");
+    }
+    if (principal.role === "interviewer") {
+      throw new AuthorizationError("Interviewer role cannot change rule lifecycle.");
+    }
+    const row = (await this.sql<Array<{ rule_set_id: string; position_id: string; lifecycle_status: string; config: unknown }>>`
+      SELECT rv.config, rv.rule_set_id, rs.position_id, rv.lifecycle_status FROM rule_versions rv
       JOIN rule_sets rs ON rs.id = rv.rule_set_id WHERE rv.id = ${versionId}
     `)[0];
     if (!row) throw new Error("Rule version was not found.");
     await this.assertPosition(principal, row.position_id);
     await this.sql.begin(async (tx) => {
       if (status === "published") {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${row.rule_set_id}::text, 0))`;
+        await this.assertSalaryBudgetPermission(principal, row.position_id, row.config, tx);
         await tx`
           UPDATE rule_versions SET lifecycle_status = 'retired', retired_at = now()
           WHERE rule_set_id = ${row.rule_set_id} AND lifecycle_status = 'published' AND id <> ${versionId}
@@ -659,10 +1121,12 @@ export class DepartmentAtsRepository {
     if (versions.length !== 2) throw new Error("Both rule versions must belong to this position.");
     const samples = await this.sql`
       SELECT cps.id AS "stateId", c.display_name AS name, cs.source, cs.raw_fields AS fields,
-        cs.source_evidence AS evidence, cs.raw_text AS raw
+        cs.source_evidence AS evidence, cs.raw_text AS raw, t.source_boss_filters AS "sourceBossFilters"
       FROM candidate_position_states cps JOIN candidates c ON c.id = cps.candidate_id
       JOIN candidate_snapshots cs ON cs.id = cps.latest_snapshot_id
-      WHERE cps.position_id = ${positionId} ORDER BY cps.updated_at DESC LIMIT 500
+      JOIN tasks t ON t.id = cs.task_id
+      WHERE cps.position_id = ${positionId} AND cps.is_current
+      ORDER BY cps.updated_at DESC LIMIT 500
     `;
     return { versions, samples };
   }
@@ -698,7 +1162,8 @@ export class DepartmentAtsRepository {
         WHERE s.department_id = ${principal.departmentId} GROUP BY s.id ORDER BY s.name
       `,
       this.sql`
-        SELECT r.id, s.name AS "setName", r.status, r.model_version AS "modelVersion", r.metrics,
+        SELECT r.id, r.catalog_version_id AS "catalogVersionId", s.name AS "setName",
+          r.status, r.model_version AS "modelVersion", r.metrics,
           r.created_at AS "createdAt" FROM semantic_evaluation_runs r
         JOIN semantic_evaluation_sets s ON s.id = r.evaluation_set_id
         WHERE s.department_id = ${principal.departmentId} ORDER BY r.created_at DESC LIMIT 100
@@ -708,7 +1173,13 @@ export class DepartmentAtsRepository {
         FROM positions WHERE id = ANY(${ids}::uuid[]) ORDER BY name
       `
     ]);
-    return { catalogs, sets, runs, positions };
+    return {
+      catalogs,
+      sets,
+      runs,
+      positions,
+      activeCapabilityAvailable: SEMANTIC_ACTIVE_DECISIONS_AVAILABLE
+    };
   }
 
   async createSemanticCatalog(principal: SessionPrincipal, input: { name: string; promptTemplate: string; modelName?: string | null; entries: unknown }): Promise<unknown> {
@@ -745,6 +1216,7 @@ export class DepartmentAtsRepository {
   }
 
   async createEvaluationSet(principal: SessionPrincipal, input: { name: string; description: string }): Promise<unknown> {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
     const id = randomUUID();
     const rows = await this.sql`
       INSERT INTO semantic_evaluation_sets (id, department_id, name, description, created_by)
@@ -755,6 +1227,7 @@ export class DepartmentAtsRepository {
   }
 
   async addEvaluationCase(principal: SessionPrincipal, input: { setId: string; criterionId: string; sourceText: string; expectedResult: string; expectedValue?: unknown }): Promise<unknown> {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
     if (!(await this.sql`SELECT id FROM semantic_evaluation_sets WHERE id = ${input.setId} AND department_id = ${principal.departmentId}`)[0]) throw new Error("Evaluation set was not found.");
     const id = randomUUID();
     const rows = await this.sql`
@@ -766,11 +1239,18 @@ export class DepartmentAtsRepository {
   }
 
   async runSemanticEvaluation(principal: SessionPrincipal, input: { setId: string; catalogVersionId: string }): Promise<unknown> {
+    if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
     const catalog = (await this.sql<Array<{ entries: unknown; department_id: string; model_name: string | null }>>`
       SELECT scv.entries, sc.department_id, scv.model_name FROM semantic_catalog_versions scv
       JOIN semantic_catalogs sc ON sc.id = scv.catalog_id WHERE scv.id = ${input.catalogVersionId}
     `)[0];
     if (!catalog || catalog.department_id !== principal.departmentId) throw new Error("Semantic catalog version was not found.");
+    if (!(await this.sql`
+      SELECT id FROM semantic_evaluation_sets
+      WHERE id = ${input.setId} AND department_id = ${principal.departmentId}
+    `)[0]) {
+      throw new Error("Evaluation set was not found.");
+    }
     const cases = await this.sql<Array<{ expected_result: string; source_text: string }>>`
       SELECT expected_result, source_text FROM semantic_evaluation_cases
       WHERE evaluation_set_id = ${input.setId}
@@ -813,13 +1293,27 @@ export class DepartmentAtsRepository {
   async setSemanticMode(principal: SessionPrincipal, input: { positionId: string; mode: "off" | "shadow" | "active"; catalogVersionId?: string | null }): Promise<void> {
     if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
     await this.assertPosition(principal, input.positionId);
+    if (input.catalogVersionId && !(await this.sql`
+      SELECT scv.id FROM semantic_catalog_versions scv
+      JOIN semantic_catalogs sc ON sc.id = scv.catalog_id
+      WHERE scv.id = ${input.catalogVersionId} AND sc.department_id = ${principal.departmentId}
+    `)[0]) {
+      throw new Error("Semantic catalog version was not found.");
+    }
     if (input.mode === "active") {
+      if (!SEMANTIC_ACTIVE_DECISIONS_AVAILABLE) {
+        throw new Error(
+          "正式语义决策尚未通过产品验收；当前只允许试运行，结果不会改变候选人结论。"
+        );
+      }
       const gate = (await this.sql<Array<{ status: string; accuracy: number }>>`
         SELECT scv.status, COALESCE((r.metrics->>'accuracy')::double precision, 0) AS accuracy
-        FROM semantic_catalog_versions scv LEFT JOIN LATERAL (
+        FROM semantic_catalog_versions scv JOIN semantic_catalogs sc ON sc.id = scv.catalog_id
+        LEFT JOIN LATERAL (
           SELECT metrics FROM semantic_evaluation_runs WHERE catalog_version_id = scv.id AND status = 'completed'
           ORDER BY created_at DESC LIMIT 1
         ) r ON true WHERE scv.id = ${input.catalogVersionId ?? null}
+          AND sc.department_id = ${principal.departmentId}
       `)[0];
       if (!gate || gate.status !== "published" || gate.accuracy < 0.9) throw new Error("Active semantic mode requires a published catalog with evaluation accuracy at least 90%.");
     }
@@ -850,7 +1344,8 @@ export class DepartmentAtsRepository {
         FROM candidates c JOIN candidate_position_states cps ON cps.candidate_id = c.id
         LEFT JOIN candidate_talent_tags ctt ON ctt.candidate_id = c.id LEFT JOIN talent_tags t ON t.id = ctt.tag_id
         LEFT JOIN contact_intents ci ON ci.candidate_position_state_id = cps.id
-        WHERE cps.position_id = ANY(${ids}::uuid[]) GROUP BY c.id ORDER BY c.display_name LIMIT 300
+        WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
+        GROUP BY c.id ORDER BY c.display_name LIMIT 300
       `,
       ids.length === 0 ? [] : this.sql`
         SELECT ah.boss_account_id AS "bossAccountId", ah.status, ah.authoritative, ah.reason,
@@ -880,7 +1375,7 @@ export class DepartmentAtsRepository {
           count(*) FILTER (WHERE r.correction_code IS NOT NULL)::int AS corrections,
           count(*) FILTER (WHERE cps.rule_decision = 'ambiguous' OR cps.rule_decision = 'insufficient')::int AS unknowns
         FROM candidate_position_states cps LEFT JOIN reviews r ON r.candidate_position_state_id = cps.id
-        WHERE cps.position_id = ANY(${ids}::uuid[])
+        WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
       `,
       this.sql`
         SELECT count(*)::int AS count FROM work_items WHERE department_id = ${principal.departmentId}
@@ -935,11 +1430,17 @@ export class DepartmentAtsRepository {
     `)[0]) throw new Error("BOSS account was not found in this department.");
     await this.sql`
       INSERT INTO account_health (boss_account_id, status, authoritative, reason, checked_at)
-      VALUES (${input.bossAccountId}, ${input.status}, ${input.authoritative}, ${input.reason ?? null}, ${input.checkedAt})
+      VALUES (${input.bossAccountId}, ${input.status}, false,
+        ${input.reason ? `人工记录（非权威）：${input.reason}` : "人工记录（非权威）"},
+        ${new Date().toISOString()})
       ON CONFLICT (boss_account_id) DO UPDATE SET status = EXCLUDED.status, authoritative = EXCLUDED.authoritative,
         reason = EXCLUDED.reason, checked_at = EXCLUDED.checked_at, updated_at = now()
     `;
-    await this.audit(principal, "account.health.updated", "boss_account", input.bossAccountId, input);
+    await this.audit(principal, "account.health.manual_observation", "boss_account", input.bossAccountId, {
+      status: input.status,
+      authoritative: false,
+      reason: input.reason ?? null
+    });
   }
 
   async acknowledgeAlert(principal: SessionPrincipal, alertId: string): Promise<void> {
@@ -957,7 +1458,8 @@ export class DepartmentAtsRepository {
       SELECT c.display_name AS "candidateName", p.name AS "positionName", cps.stage_key AS stage,
         cps.review_status AS "reviewStatus", cps.rule_decision AS "ruleDecision", cps.contact_status AS "contactStatus"
       FROM candidate_position_states cps JOIN candidates c ON c.id = cps.candidate_id
-      JOIN positions p ON p.id = cps.position_id WHERE cps.position_id = ANY(${ids}::uuid[])
+      JOIN positions p ON p.id = cps.position_id
+      WHERE cps.is_current AND cps.position_id = ANY(${ids}::uuid[])
       ORDER BY p.name, c.display_name
     `;
     const id = randomUUID();
@@ -1010,12 +1512,25 @@ export class DepartmentAtsRepository {
           (SELECT boss_account_id FROM positions WHERE id = ANY(${ids}::uuid[]))
       `
     ]);
-    return { controls, approvals, accounts, sideEffectsMode: "fake_only" };
+    return {
+      controls,
+      approvals,
+      accounts,
+      realContactTransportAvailable: REAL_CONTACT_TRANSPORT_AVAILABLE,
+      contactDispatchMode: contactDispatchModeFromEnvironment(process.env),
+      sideEffectsMode: contactSideEffectsModeFromEnvironment(process.env)
+    };
   }
 
   async setContactControl(principal: SessionPrincipal, input: { scopeType: "global" | "department" | "position" | "task"; scopeId: string; enabled: boolean; approvalRequired: boolean; policy: unknown; emergencyStop: boolean }): Promise<void> {
     if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
+    if (input.enabled && !contactAuthorizationMutationAllowed()) {
+      throw new Error("当前版本未提供真实联系能力，只能保持关闭并使用模拟联系。");
+    }
     if (input.scopeType === "global" && principal.role !== "admin") throw new AuthorizationError("Administrator role required for global control.");
+    if (input.scopeType === "global" && input.scopeId !== "global") {
+      throw new AuthorizationError("Global control scope must use the global identifier.");
+    }
     if (input.scopeType === "department" && input.scopeId !== principal.departmentId) throw new AuthorizationError("Department access denied.");
     if (input.scopeType === "position") await this.assertPosition(principal, input.scopeId);
     if (input.scopeType === "task") {
@@ -1023,23 +1538,54 @@ export class DepartmentAtsRepository {
       if (!task) throw new Error("Task was not found.");
       await this.assertPosition(principal, task.position_id);
     }
-    await this.sql`
-      INSERT INTO contact_controls (id, scope_type, scope_id, enabled, approval_required, policy,
-        emergency_stop, updated_by, approved_by, approved_at)
-      VALUES (${randomUUID()}, ${input.scopeType}, ${input.scopeId}, ${input.enabled}, ${input.approvalRequired},
-        ${this.sql.json(input.policy as JsonValue)}, ${input.emergencyStop}, ${principal.userId},
-        ${input.approvalRequired ? null : principal.userId}, ${input.approvalRequired ? null : new Date().toISOString()})
-      ON CONFLICT (scope_type, scope_id) DO UPDATE SET enabled = EXCLUDED.enabled,
-        approval_required = EXCLUDED.approval_required, policy = EXCLUDED.policy,
-        emergency_stop = EXCLUDED.emergency_stop, updated_by = EXCLUDED.updated_by,
-        approved_by = CASE WHEN EXCLUDED.approval_required THEN contact_controls.approved_by ELSE EXCLUDED.approved_by END,
-        approved_at = CASE WHEN EXCLUDED.approval_required THEN contact_controls.approved_at ELSE EXCLUDED.approved_at END,
-        version = contact_controls.version + 1, updated_at = now()
-    `;
+    const contactWindow = input.scopeType === 'global' ? contactWindowFromPolicy(input.policy) : null;
+    await this.sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO contact_controls (id, scope_type, scope_id, enabled, approval_required, policy,
+          emergency_stop, updated_by, approved_by, approved_at)
+        VALUES (${randomUUID()}, ${input.scopeType}, ${input.scopeId}, ${input.enabled}, ${input.approvalRequired},
+          ${tx.json(input.policy as JsonValue)}, ${input.emergencyStop}, ${principal.userId},
+          ${input.approvalRequired ? null : principal.userId}, ${input.approvalRequired ? null : new Date().toISOString()})
+        ON CONFLICT (scope_type, scope_id) DO UPDATE SET enabled = EXCLUDED.enabled,
+          approval_required = EXCLUDED.approval_required, policy = EXCLUDED.policy,
+          emergency_stop = EXCLUDED.emergency_stop, updated_by = EXCLUDED.updated_by,
+          approved_by = CASE WHEN EXCLUDED.approval_required THEN NULL ELSE EXCLUDED.approved_by END,
+          approved_at = CASE WHEN EXCLUDED.approval_required THEN NULL ELSE EXCLUDED.approved_at END,
+          version = contact_controls.version + 1, updated_at = now()
+      `;
+      if (input.scopeType === "global") {
+        await tx`
+          UPDATE contact_settings
+          SET emergency_stop = ${input.emergencyStop}, updated_by = ${principal.userId},
+            allowed_start_minute = COALESCE(${contactWindow?.startMinute ?? null}, allowed_start_minute),
+            allowed_end_minute = COALESCE(${contactWindow?.endMinute ?? null}, allowed_end_minute),
+            version = version + 1, updated_at = now()
+          WHERE id = 'global'
+        `;
+      }
+      if (input.scopeType === 'position') {
+        // Only fill missing task settings. An explicit task override remains authoritative.
+        await tx`
+          INSERT INTO contact_controls (id, scope_type, scope_id, enabled, approval_required, policy,
+            emergency_stop, updated_by, approved_by, approved_at)
+          SELECT gen_random_uuid(), 'task', task.id::text, parent.enabled, parent.approval_required, parent.policy,
+            parent.emergency_stop, parent.updated_by, parent.approved_by, parent.approved_at
+          FROM tasks task JOIN contact_controls parent ON parent.scope_type = 'position' AND parent.scope_id = task.position_id::text
+          WHERE task.position_id = ${input.scopeId}::uuid
+          ON CONFLICT (scope_type, scope_id) DO NOTHING
+        `;
+      }
+    });
     await this.audit(principal, input.emergencyStop ? "contact.emergency_stop" : "contact.control.updated", input.scopeType, input.scopeId, input);
   }
 
   async requestContactApproval(principal: SessionPrincipal, input: { scopeType: "department" | "position" | "task"; scopeId: string; justification: string }): Promise<unknown> {
+    if (principal.role === "interviewer") {
+      throw new AuthorizationError("Interviewers cannot request contact authorization.");
+    }
+    if (!contactAuthorizationMutationAllowed()) {
+      throw new Error("当前版本未提供真实联系能力，不能创建开启授权。");
+    }
     if (input.scopeType === "department" && input.scopeId !== principal.departmentId) throw new AuthorizationError("Department access denied.");
     if (input.scopeType === "position") await this.assertPosition(principal, input.scopeId);
     if (input.scopeType === "task") {
@@ -1059,23 +1605,49 @@ export class DepartmentAtsRepository {
 
   async decideContactApproval(principal: SessionPrincipal, input: { requestId: string; decision: "approved" | "rejected"; note: string }): Promise<void> {
     if (!canManage(principal.role)) throw new AuthorizationError("Manager role required.");
-    const row = (await this.sql<Array<{ scope_type: string; scope_id: string; status: string }>>`
-      SELECT scope_type, scope_id, status FROM contact_approval_requests WHERE id = ${input.requestId}
+    if (input.decision === "approved" && !contactAuthorizationMutationAllowed()) {
+      throw new Error("当前版本未提供真实联系能力，不能批准开启授权。");
+    }
+    const row = (await this.sql<Array<{
+      scope_type: string;
+      scope_id: string;
+      status: string;
+      created_at: Date;
+    }>>`
+      SELECT scope_type, scope_id, status, created_at
+      FROM contact_approval_requests WHERE id = ${input.requestId}
     `)[0];
     if (!row || row.status !== "pending") throw new Error("Pending approval request was not found.");
     if (row.scope_type === "department" && row.scope_id !== principal.departmentId) throw new AuthorizationError("Department access denied.");
     if (row.scope_type === "position") await this.assertPosition(principal, row.scope_id);
+    if (row.scope_type === "task") {
+      const task = (await this.sql<Array<{ position_id: string }>>`
+        SELECT position_id FROM tasks WHERE id = ${row.scope_id}
+      `)[0];
+      if (!task) throw new Error("Task was not found.");
+      await this.assertPosition(principal, task.position_id);
+    }
     await this.sql.begin(async (tx) => {
-      await tx`
+      const decided = await tx<Array<{ id: string }>>`
         UPDATE contact_approval_requests SET status = ${input.decision}, decided_by = ${principal.userId},
-          decision_note = ${input.note}, decided_at = now() WHERE id = ${input.requestId}
+          decision_note = ${input.note}, decided_at = now()
+        WHERE id = ${input.requestId} AND status = 'pending'
+        RETURNING id
       `;
+      if (!decided[0]) throw new Error("Pending approval request was already decided.");
       if (input.decision === "approved") {
-        await tx`
+        const approved = await tx<Array<{ id: string }>>`
           UPDATE contact_controls SET approved_by = ${principal.userId}, approved_at = now(),
             updated_by = ${principal.userId}, version = version + 1, updated_at = now()
           WHERE scope_type = ${row.scope_type} AND scope_id = ${row.scope_id}
+            AND updated_at <= ${row.created_at}
+          RETURNING id
         `;
+        if (!approved[0]) {
+          throw new Error(
+            "Contact control changed after this approval request; submit a new request."
+          );
+        }
       }
     });
     await this.audit(principal, `contact.approval.${input.decision}`, row.scope_type, row.scope_id, { requestId: input.requestId });
@@ -1083,9 +1655,49 @@ export class DepartmentAtsRepository {
 
   async contactReadiness(principal: SessionPrincipal, input: { positionId: string; taskId?: string | null; candidateId?: string | null }): Promise<unknown> {
     await this.assertPosition(principal, input.positionId);
+    const realDispatchEnabled =
+      contactSideEffectsModeFromEnvironment(process.env) === "real_greet_enabled";
     const position = (await this.sql<Array<{ boss_account_id: string; department_id: string }>>`
       SELECT boss_account_id, department_id FROM positions WHERE id = ${input.positionId}
     `)[0]!;
+    if (input.taskId) {
+      const task = (await this.sql<Array<{ position_id: string }>>`
+        SELECT position_id FROM tasks WHERE id = ${input.taskId}
+      `)[0];
+      if (!task || task.position_id !== input.positionId) {
+        throw new AuthorizationError("Task does not belong to the requested position.");
+      }
+    }
+    if (input.candidateId) {
+      const candidate = (await this.sql<
+        Array<{ source_locator: unknown }>
+      >`
+        SELECT snapshot.source_locator
+        FROM candidate_position_states cps
+        JOIN candidate_snapshots snapshot ON snapshot.id = cps.latest_snapshot_id
+        WHERE cps.candidate_id = ${input.candidateId}
+          AND cps.position_id = ${input.positionId}
+          AND (
+            ${input.taskId ?? null}::uuid IS NULL
+            OR cps.latest_task_id = ${input.taskId ?? null}::uuid
+          )
+        ORDER BY cps.is_current DESC, cps.updated_at DESC
+        LIMIT 1
+      `)[0];
+      if (!candidate) {
+        throw new AuthorizationError(
+          input.taskId
+            ? "Candidate does not belong to the requested task and position."
+            : "Candidate does not belong to the requested position."
+        );
+      }
+      if (
+        realDispatchEnabled &&
+        !candidate.source_locator
+      ) {
+        throw new Error("Contact policy blocked: stable candidate locator is missing.");
+      }
+    }
     const scopes = [{ type: "global", id: "global" }, { type: "department", id: position.department_id }, { type: "position", id: input.positionId }];
     if (input.taskId) scopes.push({ type: "task", id: input.taskId });
     const controls = await this.sql<Array<{ scope_type: string; scope_id: string; enabled: boolean; approval_required: boolean; approved_at: Date | null; emergency_stop: boolean; policy: unknown }>>`
@@ -1096,13 +1708,18 @@ export class DepartmentAtsRepository {
         OR (scope_type = 'position' AND scope_id = ${input.positionId})
         OR (${input.taskId ?? null}::text IS NOT NULL AND scope_type = 'task' AND scope_id = ${input.taskId ?? null})
     `;
-    const health = (await this.sql<Array<{ status: string; authoritative: boolean }>>`
-      SELECT status, authoritative FROM account_health WHERE boss_account_id = ${position.boss_account_id}
+    const health = (await this.sql<Array<{ status: string; authoritative: boolean; checked_at: Date }>>`
+      SELECT status, authoritative, checked_at
+      FROM account_health WHERE boss_account_id = ${position.boss_account_id}
     `)[0];
     const dnc = input.candidateId ? Boolean((await this.sql`
       SELECT candidate_id FROM do_not_contact WHERE candidate_id = ${input.candidateId} AND active = true
     `)[0]) : false;
     const reasons: string[] = [];
+    const legacyEmergencyStop = Boolean((await this.sql`
+      SELECT id FROM contact_settings WHERE id = 'global' AND emergency_stop = true
+    `)[0]);
+    if (legacyEmergencyStop) reasons.push("global emergency stop");
     for (const scope of scopes) {
       const control = controls.find((item) => item.scope_type === scope.type && item.scope_id === scope.id);
       if (!control) reasons.push(`${scope.type} control missing`);
@@ -1112,15 +1729,38 @@ export class DepartmentAtsRepository {
         if (control.approval_required && !control.approved_at) reasons.push(`${scope.type} approval missing`);
       }
     }
-    if (!health?.authoritative || health.status !== "healthy") reasons.push("authoritative BOSS account health is not healthy");
+    if (
+      realDispatchEnabled &&
+      (!health?.authoritative || health.status !== "healthy")
+    ) {
+      reasons.push("authoritative BOSS account health is not healthy");
+    } else if (realDispatchEnabled && health) {
+      const configuredHealthMaxAgeMs = Number(
+        process.env.BOSS_FORGE_ACCOUNT_HEALTH_MAX_AGE_MS ?? "1800000"
+      );
+      const healthMaxAgeMs =
+        Number.isFinite(configuredHealthMaxAgeMs) && configuredHealthMaxAgeMs >= 60_000
+          ? configuredHealthMaxAgeMs
+          : 1_800_000;
+      if (Date.now() - health.checked_at.getTime() > healthMaxAgeMs) {
+        reasons.push("authoritative BOSS account health is stale");
+      }
+    }
     if (dnc) reasons.push("candidate is Do-Not-Contact");
-    return { ready: reasons.length === 0, reasons, controls, accountHealth: health ?? { status: "unknown", authoritative: false }, sideEffectsMode: "fake_only" };
+    return {
+      ready: reasons.length === 0,
+      reasons,
+      controls,
+      accountHealth: health ?? { status: "unknown", authoritative: false },
+      contactDispatchMode: contactDispatchModeFromEnvironment(process.env),
+      sideEffectsMode: contactSideEffectsModeFromEnvironment(process.env)
+    };
   }
 
   async analytics(principal: SessionPrincipal): Promise<unknown> {
     const ids = await this.positionIds(principal);
-    if (ids.length === 0) return { funnel: [], sources: [], reviews: {}, alerts: [] };
-    const [funnel, sources, reviews, alerts] = await Promise.all([
+    if (ids.length === 0) return { funnel: [], sources: [], reviews: {} };
+    const [funnel, sources, reviews] = await Promise.all([
       this.sql`
         SELECT stage_key AS stage, count(*)::int AS count FROM candidate_position_states
         WHERE position_id = ANY(${ids}::uuid[]) GROUP BY stage_key
@@ -1135,13 +1775,8 @@ export class DepartmentAtsRepository {
           count(*) FILTER (WHERE review_status = 'rejected')::int AS rejected,
           count(*) FILTER (WHERE review_status = 'pending')::int AS pending
         FROM candidate_position_states WHERE position_id = ANY(${ids}::uuid[])
-      `,
-      this.sql`
-        SELECT id, severity, alert_type AS "alertType", message, status, created_at AS "createdAt"
-        FROM operational_alerts WHERE department_id = ${principal.departmentId} OR department_id IS NULL
-        ORDER BY created_at DESC LIMIT 50
       `
     ]);
-    return { funnel, sources, reviews: reviews[0] ?? {}, alerts };
+    return { funnel, sources, reviews: reviews[0] ?? {} };
   }
 }

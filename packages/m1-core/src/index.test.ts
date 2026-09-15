@@ -1,6 +1,6 @@
 import type { ParsedCandidate } from "@boss-forge/contracts";
 import { parseRuleConfig, type RuleConfig } from "@boss-forge/data";
-import { createInstitutionCatalog } from "@boss-forge/rule-engine";
+import { createInstitutionCatalog, TEM8_DICTIONARY_VERSION } from "@boss-forge/rule-engine";
 import { describe, expect, it } from "vitest";
 import {
   candidateFingerprint,
@@ -134,6 +134,24 @@ describe("M1 candidate pipeline", () => {
     expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
   });
 
+  it("uses the stable BOSS candidate locator before mutable profile fields", () => {
+    const first = candidate({
+      sourceLocator: { kind: "boss_geek_id", value: "geek-8848" },
+      fields: { 信息: "23岁 / 1年 / 本科", 期望: "珠海 内容运营" }
+    });
+    const changed = candidate({
+      name: "陈女士",
+      sourceLocator: { kind: "boss_geek_id", value: "geek-8848" },
+      fields: { 信息: "24岁 / 2年 / 硕士", 期望: "深圳 品牌运营" }
+    });
+    const another = candidate({
+      sourceLocator: { kind: "boss_geek_id", value: "geek-8849" },
+      fields: first.fields
+    });
+    expect(candidateFingerprint(first)).toBe(candidateFingerprint(changed));
+    expect(candidateFingerprint(first)).not.toBe(candidateFingerprint(another));
+  });
+
   it("filters directly by exact BOSS academic platform tags without an institution catalog", () => {
     const config = bossAcademicTagRule(["985", "双一流"], "all");
     const result = evaluateCandidate(
@@ -177,7 +195,7 @@ describe("M1 candidate pipeline", () => {
   it("stores a matched TEM8 result with original evidence", () => {
     const result = evaluateCandidate(candidate(), rule);
     expect(result.decision).toBe("matched");
-    expect(result.dictionaryVersion).toBe("2026.08.2");
+    expect(result.dictionaryVersion).toBe(TEM8_DICTIONARY_VERSION);
     expect(result.evidence[0]?.sourceText).toContain("TEM-8");
   });
 
@@ -195,7 +213,7 @@ describe("M1 candidate pipeline", () => {
       rule,
       "语言证书：大学英语六级 560 分"
     );
-    expect(result.decision).toBe("not_matched");
+    expect(result.decision).toBe("insufficient");
     expect(result.currentEnglishLevel).toBe("CET-6（大学英语六级）");
     expect(result.rawText).toContain("完整简历");
   });
@@ -373,8 +391,13 @@ describe("schema 1.0 composite screening", () => {
     expect(result.evidence[0]).toMatchObject({
       normalizedAlias: "北京大学",
       dictionaryVersion: catalog.version,
-      status: "positive"
+      status: "positive",
+      confidence: 0.95
     });
+    expect(result.confidence).toBe(0.95);
+    expect(result.education?.[0]?.categorySnapshot).toEqual(
+      expect.arrayContaining(["project_985", "project_211"])
+    );
   });
 });
 
@@ -684,6 +707,253 @@ describe("R2 generic runtime rules", () => {
       evaluateCandidate(
         candidate({ fields: {}, evidence: [], raw: "候选人自述本科项目经验丰富" }),
         config
+      ).decision
+    ).toBe("insufficient");
+    const bossSummary = evaluateCandidate(
+      candidate({
+        fields: { 信息: "22岁 / 26年应届生 / 本科" },
+        evidence: [],
+        raw: "候选人卡片"
+      }),
+      config
+    );
+    expect(bossSummary.decision).toBe("matched");
+    expect(bossSummary.confidence).toBe(1);
+    expect(bossSummary.evidence[0]).toMatchObject({
+      canonicalLabel: "最低学历：本科",
+      normalizedAlias: "bachelor",
+      status: "positive",
+      confidence: 1
+    });
+    expect(
+      evaluateCandidate(
+        candidate({ fields: { 信息: "本科项目经验丰富" }, evidence: [], raw: "候选人卡片" }),
+        config
+      ).decision
+    ).toBe("insufficient");
+  });
+
+  it("treats CET6 and TEM8 as alternatives inside one English requirement", () => {
+    const englishConfig = genericConfig({
+      operator: "AND",
+      children: [
+        {
+          type: "english_credential",
+          accepted: ["cet6", "tem8"],
+          mode: "any",
+          minimumConfidence: 0.86,
+          unknownPolicy: "manual_review"
+        }
+      ]
+    });
+    const cet6 = evaluateCandidate(
+      candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+      englishConfig,
+      "证书：英语六级 560 分"
+    );
+    expect(cet6.decision).toBe("matched");
+    expect(cet6.currentEnglishLevel).toBe("CET-6（大学英语六级）");
+    expect(cet6.evidence[0]).toMatchObject({
+      capabilityId: "language.english.credentials",
+      normalizedAlias: "cet6",
+      status: "positive"
+    });
+    expect(
+      evaluateCandidate(
+        candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+        englishConfig,
+        "已取得 TEM-8 证书"
+      ).decision
+    ).toBe("matched");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+        englishConfig,
+        "证书：CET-4"
+      ).decision
+    ).toBe("insufficient");
+  });
+
+  it("filters explicit BOSS age and graduate cohort without mistaking one for the other", () => {
+    const profileConfig = genericConfig({
+      operator: "AND",
+      children: [
+        { type: "range", field: "age", minimum: 20, maximum: 30, unknownPolicy: "manual_review" },
+        {
+          type: "range",
+          field: "graduationYear",
+          maximum: 2026,
+          unknownPolicy: "manual_review"
+        }
+      ]
+    });
+    const accepted = evaluateCandidate(
+      candidate({
+        fields: { 信息: "23岁 / 26年应届生 / 本科" },
+        evidence: [],
+        raw: "候选人卡片"
+      }),
+      profileConfig
+    );
+    expect(accepted.decision).toBe("matched");
+    expect(accepted.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capabilityId: "range.age", normalizedAlias: "23" }),
+        expect.objectContaining({ capabilityId: "range.graduationYear", normalizedAlias: "2026" })
+      ])
+    );
+    const futureGraduate = evaluateCandidate(
+      candidate({
+        fields: { 信息: "21岁 / 27年应届生 / 本科" },
+        evidence: [],
+        raw: "候选人卡片"
+      }),
+      profileConfig
+    );
+    expect(futureGraduate.decision).toBe("not_matched");
+    expect(
+      futureGraduate.evidence.find((item) => item.capabilityId === "range.graduationYear")
+    ).toMatchObject({ normalizedAlias: "2027", status: "negative" });
+  });
+
+  it("recognizes 届 cohorts, expands old two-digit years, and reads OCR profile facts", () => {
+    const cohortRule = genericConfig({
+      operator: "AND",
+      children: [
+        { type: "range", field: "age", minimum: 20, maximum: 30, unknownPolicy: "manual_review" },
+        { type: "range", field: "graduationYear", minimum: 2026, maximum: 2026, unknownPolicy: "manual_review" }
+      ]
+    });
+    const fromResume = evaluateCandidate(
+      candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+      cohortRule,
+      "基本信息：年龄 23岁\n教育状态：2026届"
+    );
+    expect(fromResume.decision).toBe("matched");
+    expect(fromResume.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capabilityId: "range.age", normalizedAlias: "23" }),
+        expect.objectContaining({ capabilityId: "range.graduationYear", normalizedAlias: "2026" })
+      ])
+    );
+
+    const historicalRule = genericConfig({
+      operator: "AND",
+      children: [
+        { type: "range", field: "graduationYear", maximum: 2000, unknownPolicy: "manual_review" }
+      ]
+    });
+    expect(
+      evaluateCandidate(
+        candidate({ fields: { 毕业年份: "99年毕业" }, evidence: [], raw: "候选人卡片" }),
+        historicalRule
+      ).evidence[0]
+    ).toMatchObject({ normalizedAlias: "1999", status: "positive" });
+  });
+
+  it("uses a saved education period for graduation screening and preserves explicit cohort priority", () => {
+    const config = genericConfig({ operator: "AND", children: [
+      { type: "english_credential", accepted: ["cet6"], mode: "any", minimumConfidence: 0.86, unknownPolicy: "fail" },
+      { type: "range", field: "graduationYear", maximum: 2026, unknownPolicy: "fail" }
+    ] });
+    const card = candidate({ fields: {}, evidence: [], raw: "候选人卡片" });
+    const resume = "教育经历\n示范学院\n城市管理\n本科\n2022-2026\n在校经历:\n组织活动\n资格证书\nCET-6";
+    const result = evaluateCandidate(card, config, resume);
+    expect(result.decision).toBe("matched");
+    expect(result.evidence.find(e => e.capabilityId === "range.graduationYear"))
+      .toMatchObject({ normalizedAlias: "2026", status: "positive" });
+    expect(evaluateCandidate(card, config, resume.replace("2022-2026", "2023-2027")).decision).toBe("not_matched");
+    expect(evaluateCandidate(card, config, resume + "\n预计2027年毕业").decision).toBe("not_matched");
+    expect(evaluateCandidate(card, config, resume.replace("2022-2026", "2022-至今")).decision).toBe("not_matched");
+  });
+
+  it("uses explicit highest education instead of treating prior degrees as conflicts", () => {
+    const educationRule = genericConfig({
+      operator: "AND",
+      children: [
+        { type: "education_level", minimum: "master", unknownPolicy: "manual_review" }
+      ]
+    });
+    const result = evaluateCandidate(
+      candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+      educationRule,
+      "最高学历：硕士\n教育经历：学历：本科\n教育经历：学历：硕士"
+    );
+    expect(result.decision).toBe("matched");
+    expect(result.evidence[0]).toMatchObject({ normalizedAlias: "master" });
+  });
+
+  it("evaluates an explicit fresh-graduate requirement without guessing from age", () => {
+    const freshGraduateRule = genericConfig({
+      operator: "AND",
+      children: [
+        {
+          type: "graduate_status",
+          values: ["current_or_upcoming_graduate"],
+          mode: "any",
+          unknownPolicy: "manual_review"
+        }
+      ]
+    });
+    expect(
+      evaluateCandidate(
+        candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+        freshGraduateRule,
+        "求职信息：2026届应届毕业生"
+      ).decision
+    ).toBe("matched");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+        freshGraduateRule,
+        "求职信息：往届生，已毕业"
+      ).decision
+    ).toBe("not_matched");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: {}, evidence: [], raw: "候选人卡片" }),
+        freshGraduateRule,
+        "求职信息：非应届，2020届"
+      ).decision
+    ).toBe("not_matched");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: { 年龄: "23" }, evidence: [], raw: "候选人卡片" }),
+        freshGraduateRule
+      ).decision
+    ).toBe("insufficient");
+  });
+
+  it("does not use gender alone to approve or reject a candidate", () => {
+    const genderConfig = genericConfig({
+      operator: "AND",
+      children: [
+        {
+          type: "enum",
+          field: "gender",
+          values: ["女"],
+          mode: "any",
+          match: "exact",
+          unknownPolicy: "manual_review"
+        }
+      ]
+    });
+    expect(
+      evaluateCandidate(
+        candidate({ name: "王女士", fields: {}, evidence: [], raw: "候选人卡片" }),
+        genderConfig
+      ).decision
+    ).toBe("insufficient");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: { 性别: "女" }, evidence: [], raw: "候选人卡片" }),
+        genderConfig
+      ).decision
+    ).toBe("insufficient");
+    expect(
+      evaluateCandidate(
+        candidate({ fields: { 信息: "24岁 / 男 / 2年 / 本科" }, evidence: [], raw: "候选人卡片" }),
+        genderConfig
       ).decision
     ).toBe("insufficient");
   });
