@@ -545,6 +545,7 @@ async function processNextResumeScreening(
     let resumeLoadedAt: number | null = null;
     let dwellSeconds = RESUME_VIEW_POLICY.dwellTargetSeconds;
     let riskDetected = false;
+    const processingStartedAt = Date.now();
     try {
       const provider = resumeOcrProvider();
       const {
@@ -573,7 +574,9 @@ async function processNextResumeScreening(
         resumeLoadedAt = Date.now();
         await repository.saveResumeScreenshot({ stateId: job.stateId, taskId: job.taskId, workerId, screenshotPath: path });
       });
+      const previewElapsedMs = Date.now() - processingStartedAt;
       dwellSeconds = resumeDwellSeconds(RESUME_VIEW_POLICY, resumeText.length);
+      console.log(JSON.stringify({ ok: true, event: "m1.resume_screening.timing", stateId: job.stateId, phase: "preview_ocr", elapsedMs: previewElapsedMs, ocrLineCount, resumeTextLength: resumeText.length }));
       if (!resumeText) {
         await repository.completeResumeScreeningWithoutText({
           stateId: job.stateId,
@@ -615,6 +618,7 @@ async function processNextResumeScreening(
         ocrAverageConfidence,
         ocrRequestId
       });
+      console.log(JSON.stringify({ ok: true, event: "m1.resume_screening.timing", stateId: job.stateId, phase: "total", elapsedMs: Date.now() - processingStartedAt, dwellSeconds }));
       console.log(
         JSON.stringify({
           ok: true,

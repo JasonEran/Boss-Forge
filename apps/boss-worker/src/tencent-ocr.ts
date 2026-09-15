@@ -1,10 +1,30 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { readResumeArtifact, readResumePart } from "@boss-forge/boss-cli-adapter";
 import { ocr } from "tencentcloud-sdk-nodejs-ocr";
 
 const MAX_IMAGE_BASE64_BYTES = 10 * 1024 * 1024;
 const DEFAULT_REGION = "ap-guangzhou";
+const DEFAULT_OCR_CONCURRENCY = 1;
+
+function ocrConcurrency(): number {
+  const value = Number.parseInt(process.env.BOSS_FORGE_OCR_CONCURRENCY ?? `${DEFAULT_OCR_CONCURRENCY}`, 10);
+  return Number.isFinite(value) ? Math.max(1, Math.min(8, value)) : DEFAULT_OCR_CONCURRENCY;
+}
+
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!, index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
 
 export type TencentOcrResult = {
   text: string;
@@ -148,17 +168,31 @@ export async function recognizeResumeWithTencentOcr(
   }
   const results: TencentOcrResult[] = [];
   const client = options.client ?? createTencentOcrClient(options);
-  for (let index = 0; index < artifact.parts.length; index++) {
-    results.push(await recognizeBufferWithTencentOcr(await readResumePart(imagePath, artifact, index), { ...options, client }));
-  }
+  const startedAt = Date.now();
+  const partBuffers = await Promise.all(
+    artifact.parts.map((_, index) => readResumePart(imagePath, artifact, index))
+  );
+  const partResults = await mapWithConcurrency(partBuffers, ocrConcurrency(), async (part) =>
+    recognizeBufferWithTencentOcr(part, { ...options, client })
+  );
+  results.push(...partResults);
   // Keep boundary text rather than guessing whether repeated lines are duplicate facts.
   const lineCount = results.reduce((sum, result) => sum + result.lineCount, 0);
   const confident = results.filter(result => result.averageConfidence !== null && result.lineCount > 0);
   const confidenceLines = confident.reduce((sum, result) => sum + result.lineCount, 0);
-  return {
+  const result = {
     text: results.map(result => result.text).filter(Boolean).join('\n'),
     lineCount,
     averageConfidence: confidenceLines ? confident.reduce((sum, result) => sum + result.averageConfidence! * result.lineCount, 0) / confidenceLines : null,
     requestId: results.map(result => result.requestId).filter(Boolean).join(',') || null
   };
+  if (!options.client) {
+    const manifestHash = createHash("sha256").update(await readFile(imagePath + '.manifest.json'));
+    for (const part of partBuffers) manifestHash.update(part);
+    const cachePath = imagePath + '.ocr.json';
+    const temporaryPath = `${cachePath}.${process.pid}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify({ version: 1, captureHash: manifestHash.digest('hex'), result, elapsedMs: Date.now() - startedAt }) + '\n', { mode: 0o600 });
+    await rename(temporaryPath, cachePath);
+  }
+  return result;
 }
