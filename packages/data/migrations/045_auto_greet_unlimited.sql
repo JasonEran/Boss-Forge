@@ -13,67 +13,85 @@ SET internal_quotas_enabled = false,
     position_daily_limit = 100000,
     task_limit = 100000,
     cross_position_cooldown_hours = 0,
-    updated_by = 'system:migration-045',
     version = version + 1,
     updated_at = now()
 WHERE id = 'global';
 
--- Enable contact controls so chunk auto-greet can enqueue intents.
+-- Prefer an existing admin/recruiting_lead for control audit columns; else leave null.
+WITH actor AS (
+  SELECT id FROM users
+  WHERE status = 'active' AND role IN ('admin', 'recruiting_lead')
+  ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at ASC
+  LIMIT 1
+)
 INSERT INTO contact_controls (
   id, scope_type, scope_id, enabled, approval_required, policy,
   emergency_stop, updated_by, approved_by, approved_at
 )
-VALUES (
-  gen_random_uuid(), 'global', 'global', true, false,
+SELECT gen_random_uuid(), 'global', 'global', true, false,
   '{"dailyLimit":100000,"hourlyLimit":100000,"cooldownMinutes":0,"startMinute":0,"endMinute":1440}'::jsonb,
-  false, 'system:migration-045', 'system:migration-045', now()
-)
+  false, actor.id, actor.id, now()
+FROM actor
 ON CONFLICT (scope_type, scope_id) DO UPDATE SET
   enabled = true,
   approval_required = false,
   emergency_stop = false,
   policy = EXCLUDED.policy,
-  updated_by = EXCLUDED.updated_by,
-  approved_by = EXCLUDED.approved_by,
-  approved_at = EXCLUDED.approved_at,
+  updated_by = COALESCE(EXCLUDED.updated_by, contact_controls.updated_by),
+  approved_by = COALESCE(EXCLUDED.approved_by, contact_controls.approved_by),
+  approved_at = COALESCE(EXCLUDED.approved_at, contact_controls.approved_at, now()),
   version = contact_controls.version + 1,
   updated_at = now();
 
+WITH actor AS (
+  SELECT id FROM users
+  WHERE status = 'active' AND role IN ('admin', 'recruiting_lead')
+  ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at ASC
+  LIMIT 1
+)
 INSERT INTO contact_controls (
   id, scope_type, scope_id, enabled, approval_required, policy,
   emergency_stop, updated_by, approved_by, approved_at
 )
 SELECT gen_random_uuid(), 'department', d.id::text, true, false,
   '{"dailyLimit":100000,"hourlyLimit":100000,"cooldownMinutes":0,"startMinute":0,"endMinute":1440}'::jsonb,
-  false, 'system:migration-045', 'system:migration-045', now()
+  false, actor.id, actor.id, now()
 FROM departments d
+CROSS JOIN actor
 ON CONFLICT (scope_type, scope_id) DO UPDATE SET
   enabled = true,
   approval_required = false,
   emergency_stop = false,
   policy = EXCLUDED.policy,
-  updated_by = EXCLUDED.updated_by,
-  approved_by = EXCLUDED.approved_by,
-  approved_at = EXCLUDED.approved_at,
+  updated_by = COALESCE(EXCLUDED.updated_by, contact_controls.updated_by),
+  approved_by = COALESCE(EXCLUDED.approved_by, contact_controls.approved_by),
+  approved_at = COALESCE(EXCLUDED.approved_at, contact_controls.approved_at, now()),
   version = contact_controls.version + 1,
   updated_at = now();
 
+WITH actor AS (
+  SELECT id FROM users
+  WHERE status = 'active' AND role IN ('admin', 'recruiting_lead')
+  ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at ASC
+  LIMIT 1
+)
 INSERT INTO contact_controls (
   id, scope_type, scope_id, enabled, approval_required, policy,
   emergency_stop, updated_by, approved_by, approved_at
 )
 SELECT gen_random_uuid(), 'position', p.id::text, true, false,
   '{"dailyLimit":100000,"hourlyLimit":100000,"cooldownMinutes":0,"startMinute":0,"endMinute":1440}'::jsonb,
-  false, 'system:migration-045', 'system:migration-045', now()
+  false, actor.id, actor.id, now()
 FROM positions p
+CROSS JOIN actor
 ON CONFLICT (scope_type, scope_id) DO UPDATE SET
   enabled = true,
   approval_required = false,
   emergency_stop = false,
   policy = EXCLUDED.policy,
-  updated_by = EXCLUDED.updated_by,
-  approved_by = EXCLUDED.approved_by,
-  approved_at = EXCLUDED.approved_at,
+  updated_by = COALESCE(EXCLUDED.updated_by, contact_controls.updated_by),
+  approved_by = COALESCE(EXCLUDED.approved_by, contact_controls.approved_by),
+  approved_at = COALESCE(EXCLUDED.approved_at, contact_controls.approved_at, now()),
   version = contact_controls.version + 1,
   updated_at = now();
 
