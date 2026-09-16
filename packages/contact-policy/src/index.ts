@@ -83,13 +83,20 @@ function isInCooldown(now: string, lastContactAt: string | null, cooldownHours: 
 }
 
 function validateInput(input: ContactPolicyInput): void {
-  const minutes = [
+  const dayMinutes = [
     input.schedule.localMinuteOfDay,
-    input.schedule.allowedStartMinute,
-    input.schedule.allowedEndMinute
+    input.schedule.allowedStartMinute
   ];
-  if (minutes.some((value) => !Number.isInteger(value) || value < 0 || value > 1439)) {
+  if (dayMinutes.some((value) => !Number.isInteger(value) || value < 0 || value > 1439)) {
     throw new Error("Schedule minutes must be integers between 0 and 1439.");
+  }
+  // End minute is exclusive and may be 1440 (end of day) for unlimited windows.
+  if (
+    !Number.isInteger(input.schedule.allowedEndMinute) ||
+    input.schedule.allowedEndMinute < 1 ||
+    input.schedule.allowedEndMinute > 1440
+  ) {
+    throw new Error("allowedEndMinute must be an integer between 1 and 1440.");
   }
   if (
     !Number.isFinite(input.minimumAutomaticConfidence) ||
