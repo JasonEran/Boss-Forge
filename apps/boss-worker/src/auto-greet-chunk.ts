@@ -103,6 +103,16 @@ export async function finalizeScreeningChunks(input: {
             passers: prepared.passers.length
           })
         );
+      } else if (!prepared.createdBy) {
+        console.warn(
+          JSON.stringify({
+            ok: false,
+            event: "m1.auto_greet.skipped",
+            taskId,
+            reason: "task_creator_missing",
+            passers: prepared.passers.length
+          })
+        );
       } else {
         const first = prepared.passers[0]!;
         const greeting = first.bossJobId
@@ -131,7 +141,7 @@ export async function finalizeScreeningChunks(input: {
               );
               const context: ContactPreviewApprovalContext = {
                 actionKind: "greet",
-                approvedBy: "system:auto-greet",
+                approvedBy: prepared.createdBy,
                 candidateStateId: target.candidateStateId,
                 candidateId: target.candidateId,
                 candidateName: target.candidateName,
@@ -166,7 +176,7 @@ export async function finalizeScreeningChunks(input: {
                 providerJobId: greeting.jobId,
                 providerGreetingId: greeting.greetingId,
                 renderedMessage: greeting.body,
-                createdBy: "system:auto-greet",
+                createdBy: prepared.createdBy,
                 localMinuteOfDay: shanghaiMinuteOfDay(now),
                 now: now.toISOString(),
                 transportMode,

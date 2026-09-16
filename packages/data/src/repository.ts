@@ -1410,6 +1410,8 @@ export class BossForgeRepository {
    */
   async prepareAutoGreetPassers(taskId: string): Promise<{
     autoGreetEnabled: boolean;
+    /** Task creator UUID — required so contact policy can authorize auto-greet intents. */
+    createdBy: string | null;
     passers: Array<{
       stateId: string;
       stateVersion: number;
@@ -1429,9 +1431,10 @@ export class BossForgeRepository {
           candidate_count: number;
           candidate_limit: number;
           auto_greet: boolean;
+          created_by: string;
         }>
       >`
-        SELECT t.id, t.status, t.candidate_count, t.candidate_limit, t.auto_greet
+        SELECT t.id, t.status, t.candidate_count, t.candidate_limit, t.auto_greet, t.created_by
         FROM tasks t
         WHERE t.id = ${taskId}
         FOR UPDATE OF t
@@ -1440,6 +1443,7 @@ export class BossForgeRepository {
       if (!task) {
         return {
           autoGreetEnabled: false,
+          createdBy: null,
           passers: [],
           candidateCount: 0,
           candidateLimit: 0
@@ -1457,6 +1461,7 @@ export class BossForgeRepository {
       ) {
         return {
           autoGreetEnabled: task.auto_greet,
+          createdBy: task.created_by,
           passers: [],
           candidateCount: task.candidate_count,
           candidateLimit: task.candidate_limit
@@ -1529,6 +1534,7 @@ export class BossForgeRepository {
       }
       return {
         autoGreetEnabled: task.auto_greet,
+        createdBy: task.created_by,
         passers,
         candidateCount: task.candidate_count,
         candidateLimit: task.candidate_limit
