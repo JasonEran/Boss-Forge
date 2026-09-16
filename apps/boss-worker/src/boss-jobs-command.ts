@@ -34,7 +34,13 @@ async function main() {
     }
     if (input.type === "filter-options" && input.job?.id && input.job.name) return JSON.stringify(await readRecommendationFilterOptions(page, input.job));
     if (input.type === "recommend" && input.job?.id && input.job.name) return readRecommendationForJob(page, input.job,
-      input.collection ? { candidateLimit: input.collection.candidateLimit, assertActive } : undefined);
+      input.collection ? {
+        candidateLimit: input.collection.candidateLimit,
+        ...(input.collection.excludeGeekIds?.length
+          ? { excludeGeekIds: input.collection.excludeGeekIds }
+          : {}),
+        assertActive
+      } : undefined);
     throw new Error("无效的 BOSS 岗位读取请求。");
   }); } finally { await sql?.end(); }
   process.stdout.write(output, () => process.exit(0));

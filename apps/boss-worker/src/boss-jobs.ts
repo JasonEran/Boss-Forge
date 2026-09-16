@@ -5,7 +5,12 @@ import { bossJobCatalogSchema, bossFilterOptionsSnapshotSchema, type BossJob, ty
 import { workerBossEnvironment } from "./runtime.js";
 
 export type BoundBossJob = { id: string; name: string; allowNameFallback: boolean; filters?: BossRecommendationFilterPlan | null };
-export type RecommendationCollectionOptions = { candidateLimit: number; task?: { id: string; claimToken: string | null } };
+export type RecommendationCollectionOptions = {
+  candidateLimit: number;
+  /** Boss geek IDs already admitted on this task — collect only net-new people. */
+  excludeGeekIds?: string[];
+  task?: { id: string; claimToken: string | null };
+};
 export type JobOption = { id: string; name: string; label: string; disabled: boolean; index: number; current?: boolean };
 const normalize = (value: string) => value.replace(/\s+/gu, "").toLocaleLowerCase("zh-CN");
 

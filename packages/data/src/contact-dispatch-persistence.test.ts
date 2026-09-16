@@ -460,7 +460,7 @@ describe("contact dispatch persistence invariants", () => {
     expect(queries.some((query) => query.text.startsWith("UPDATE contact_intents"))).toBe(false);
   });
 
-  it("does not project a greeting result onto the message contact status", async () => {
+  it("projects a greeting result onto candidate contact status", async () => {
     const { repository, queries } = completionRepository({ reservationStatus: null });
     const job = {
       ...dispatchJob("fake"),
@@ -476,7 +476,7 @@ describe("contact dispatch persistence invariants", () => {
       queries.some((query) =>
         query.text.startsWith("UPDATE candidate_position_states SET contact_status")
       )
-    ).toBe(false);
+    ).toBe(true);
     expect(
       queries.find((query) => query.text.startsWith("UPDATE contact_intents"))?.values
     ).toContain("greet");

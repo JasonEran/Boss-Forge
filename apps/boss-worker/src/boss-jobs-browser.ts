@@ -133,17 +133,32 @@ export async function retryRecommendationContext<T>(operation: () => Promise<T>)
   }
 }
 
-export async function readRecommendationForJob(page: Page, job: BoundBossJob, collection?: { candidateLimit: number; assertActive?: () => Promise<void> }): Promise<string> {
+export async function readRecommendationForJob(page: Page, job: BoundBossJob, collection?: {
+  candidateLimit: number;
+  excludeGeekIds?: Iterable<string>;
+  assertActive?: () => Promise<void>;
+}): Promise<string> {
   return retryRecommendationContext(() => readRecommendationForJobAttempt(page, job, collection));
 }
 
-async function readRecommendationForJobAttempt(page: Page, job: BoundBossJob, collection?: { candidateLimit: number; assertActive?: () => Promise<void> }): Promise<string> {
+async function readRecommendationForJobAttempt(page: Page, job: BoundBossJob, collection?: {
+  candidateLimit: number;
+  excludeGeekIds?: Iterable<string>;
+  assertActive?: () => Promise<void>;
+}): Promise<string> {
   await collection?.assertActive?.();
   const { reader, frame, selected } = await selectRecommendationJob(page, job);
   if (job.filters) await applyBossRecommendationFilters(page, frame, job.filters, job.id);
   if (collection) {
     const result = await collectRecommendationCards(page, frame, job.id, () => reader.readRecommendList(frame), collection);
-    console.error(JSON.stringify({ event: 'boss.recommend.collection', candidateCount: result.cards.length, candidateLimit: collection.candidateLimit, stopReason: result.stopReason, loadedPages: result.loadedPages }));
+    console.error(JSON.stringify({
+      event: 'boss.recommend.collection',
+      candidateCount: result.cards.length,
+      candidateLimit: collection.candidateLimit,
+      excludedGeekIds: collection.excludeGeekIds ? [...collection.excludeGeekIds].length : 0,
+      stopReason: result.stopReason,
+      loadedPages: result.loadedPages
+    }));
     return `当前岗位：${selected.label}\n${reader.renderRecommendList(result.cards)}`;
   }
   const cards = await readMatchingRecommendationCards(frame, () => reader.readRecommendList(frame));

@@ -52,11 +52,45 @@ describe('continuous recommendation collection', () => {
     expect(advance).toHaveBeenCalledOnce();
     expect(f.read).toHaveBeenCalledOnce();
   });
-  it('supports 200 people and rejects invalid limits before reading the browser', async () => {
-    const f = fixture(Array.from({ length: 14 }, (_, i) => ({ cards: cards(i * 15, (i + 1) * 15), ended: false, pageNumber: i + 1 })));
-    expect((await collectRecommendationBatches({ ...f, limit: 200 })).cards).toHaveLength(200);
-    const invalid = fixture([]);
-    await expect(collectRecommendationBatches({ ...invalid, limit: 201 })).rejects.toThrow('1–200');
-    expect(invalid.read).not.toHaveBeenCalled();
+  it('skips already-admitted geek IDs and keeps paging until the net-new limit', async () => {
+    const excluded = cards(0, 20).map((c) => c.geekId);
+    const f = fixture([
+      { cards: cards(0, 15), ended: false, pageNumber: 1 },
+      { cards: cards(10, 25), ended: false, pageNumber: 2 },
+      { cards: cards(20, 35), ended: false, pageNumber: 3 },
+    ]);
+    const result = await collectRecommendationBatches({ ...f, limit: 10, excludeGeekIds: excluded });
+    expect(result.cards.map((c) => c.geekId)).toEqual(cards(20, 30).map((c) => c.geekId));
+    expect(result.stopReason).toBe('limit');
+    expect(f.advance).toHaveBeenCalledTimes(2);
+  });
+  it('exhausts cleanly when later pages only repeat already-admitted people', async () => {
+    const excluded = cards(0, 20).map((c) => c.geekId);
+    const f = fixture([
+      { cards: cards(0, 15), ended: false, pageNumber: 1 },
+      { cards: cards(0, 15), ended: false, pageNumber: 2 },
+      { cards: cards(5, 20), ended: false, pageNumber: 3 },
+      { cards: cards(0, 20), ended: false, pageNumber: 4 },
+    ]);
+    const result = await collectRecommendationBatches({ ...f, limit: 10, excludeGeekIds: excluded });
+    expect(result.cards).toEqual([]);
+    expect(result.stopReason).toBe('exhausted');
+  });
+  it('still fills 30 as successive 20+10 waves when the pool has enough uniques', async () => {
+    const wave1 = await collectRecommendationBatches({
+      ...fixture([{ cards: cards(0, 30), ended: false, pageNumber: 1 }]),
+      limit: 20,
+    });
+    expect(wave1.cards).toHaveLength(20);
+    const wave2 = await collectRecommendationBatches({
+      ...fixture([
+        { cards: cards(0, 20), ended: false, pageNumber: 1 },
+        { cards: cards(15, 35), ended: false, pageNumber: 2 },
+      ]),
+      limit: 10,
+      excludeGeekIds: wave1.cards.map((c) => c.geekId),
+    });
+    expect(wave2.cards.map((c) => c.geekId)).toEqual(cards(20, 30).map((c) => c.geekId));
+    expect(wave2.stopReason).toBe('limit');
   });
 });

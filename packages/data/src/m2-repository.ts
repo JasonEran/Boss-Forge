@@ -20,7 +20,7 @@ import {
   type IssuedContactPreviewApproval
 } from "@boss-forge/contracts";
 import type { Database } from "./client.js";
-import { evaluateExactContactReadiness } from "./contact-readiness.js";
+import { evaluateExactContactReadiness, type ExactContactReadinessFacts } from "./contact-readiness.js";
 import { enqueueIntegrationEvent } from "./integration-events.js";
 import { OptimisticLockError } from "./repository.js";
 import type {
@@ -911,14 +911,26 @@ export class M2Repository {
     );
     const realContact =
       contactSideEffectsModeFromEnvironment(process.env) === "real_greet_enabled";
+    // CPS may reflect either greet or message outcomes for UI. Readiness for a
+    // specific action uses action-kind intent history, not the shared CPS field.
+    const actionContactStatus: ExactContactReadinessFacts["contactStatus"] =
+      context.same_position_sent
+        ? "sent"
+        : context.active_intent_status === "ready" ||
+            context.active_intent_status === "processing"
+          ? "queued"
+          : context.active_intent_status === "uncertain"
+            ? "uncertain"
+            : context.active_intent_status === "simulated"
+              ? "simulated"
+              : "not_contacted";
     const evaluated = evaluateExactContactReadiness({
       realContact,
       internalQuotasEnabled: context.internal_quotas_enabled,
       isCurrent: context.is_current,
       resumeScreeningStatus: context.resume_screening_status,
       reviewStatus: context.review_status,
-      contactStatus:
-        input.actionKind === "message" ? context.contact_status : "not_contacted",
+      contactStatus: actionContactStatus,
       doNotContact: context.do_not_contact,
       samePositionAlreadyContacted: context.same_position_sent,
       activeIntentStatus: context.active_intent_status,
@@ -957,8 +969,7 @@ export class M2Repository {
         name: context.candidate_name,
         reviewStatus: context.review_status,
         resumeScreeningStatus: context.resume_screening_status,
-        contactStatus:
-          input.actionKind === "message" ? context.contact_status : "not_contacted",
+        contactStatus: context.contact_status,
         doNotContact: context.do_not_contact,
         samePositionAlreadyContacted: context.same_position_sent,
         activeIntentStatus: context.active_intent_status,
@@ -1368,10 +1379,8 @@ export class M2Repository {
           reviewStatus: context.review_status,
           ruleDecision: context.rule_decision,
           ruleConfidence: context.rule_confidence,
-          samePositionAlreadyContacted:
-            contactHistory.same_position_action_sent ||
-            (input.actionKind === "message" &&
-              (context.contact_status === "queued" || context.contact_status === "sent")),
+          // Action-kind exclusivity comes from intent history, not shared CPS.
+          samePositionAlreadyContacted: contactHistory.same_position_action_sent,
           lastCrossPositionContactAt: context.last_cross_position_contact_at?.toISOString() ?? null,
           previousSendState: context.contact_status === "uncertain" ? "uncertain" : "none"
         },
@@ -1445,12 +1454,12 @@ export class M2Repository {
           ${transaction.json({ contactIntentId: intentId, actionKind: input.actionKind })}
         )
       `;
-      if (input.actionKind === "message") {
-        await transaction`
-          UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
-          WHERE id = ${input.stateId}
-        `;
-      }
+      // Greets and messages both project onto CPS so the workbench matches
+      // successful BOSS actions. Action-kind exclusivity is enforced by intents.
+      await transaction`
+        UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
+        WHERE id = ${input.stateId}
+      `;
       await transaction`
         INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
         VALUES (${randomUUID()}, ${input.createdBy}, 'contact.intent.created',
@@ -1516,7 +1525,7 @@ export class M2Repository {
       if (reservation[0]) throw new Error('任务正在执行检查，请稍后刷新。');
       await tx`UPDATE contact_intents SET status = 'cancelled', finished_at = now(), last_error = '用户取消待发送任务', version = version + 1 WHERE id = ${intentId}`;
       await tx`UPDATE outbox_events SET status = 'completed', finished_at = now(), last_error = '用户取消待发送任务' WHERE id = ${row.outbox_id}`;
-      if (row.action_kind === 'message') await tx`UPDATE candidate_position_states SET contact_status = 'not_contacted', updated_at = now() WHERE id = ${row.state_id} AND contact_status = 'queued'`;
+      await tx`UPDATE candidate_position_states SET contact_status = 'not_contacted', updated_at = now() WHERE id = ${row.state_id} AND contact_status = 'queued'`;
       await tx`INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload) VALUES (${randomUUID()}, ${actorId}, 'contact.cancelled', 'contact_intent', ${intentId}, '{}'::jsonb)`;
     });
   }
@@ -1755,12 +1764,10 @@ export class M2Repository {
       if (resolvedVersion === undefined) {
         throw new OptimisticLockError(input.expectedVersion, row.version);
       }
-      if (row.action_kind === "message") {
-        await transaction`
-          UPDATE candidate_position_states SET contact_status = 'failed', updated_at = now()
-          WHERE id = ${row.candidate_position_state_id}
-        `;
-      }
+      await transaction`
+        UPDATE candidate_position_states SET contact_status = 'failed', updated_at = now()
+        WHERE id = ${row.candidate_position_state_id}
+      `;
       await transaction`
         INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
         VALUES (
@@ -2651,12 +2658,10 @@ export class M2Repository {
           locked_by = NULL, last_error = ${input.reason}, finished_at = NULL
         WHERE id = ${input.job.outboxEventId}
       `;
-      if (input.job.actionKind === "message") {
-        await transaction`
-          UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
-          WHERE id = ${input.job.candidateStateId}
-        `;
-      }
+      await transaction`
+        UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
+        WHERE id = ${input.job.candidateStateId}
+      `;
       await transaction`
         INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
         VALUES (${randomUUID()}, ${input.job.createdBy}, 'contact.deferred',
@@ -2804,12 +2809,10 @@ export class M2Repository {
       if (intentVersion === undefined) {
         throw new Error("Contact intent changed before completion; terminal state was preserved.");
       }
-      if (input.job.actionKind === "message") {
-        await transaction`
-          UPDATE candidate_position_states SET contact_status = ${input.result}, updated_at = now()
-          WHERE id = ${input.job.candidateStateId}
-        `;
-      }
+      await transaction`
+        UPDATE candidate_position_states SET contact_status = ${input.result}, updated_at = now()
+        WHERE id = ${input.job.candidateStateId}
+      `;
       await transaction`
         UPDATE outbox_events SET status = ${input.result === "failed" ? "failed" : "completed"},
           last_error = ${input.errorMessage ?? null}, finished_at = now()
@@ -3020,12 +3023,10 @@ export class M2Repository {
               finished_at = NULL
             WHERE aggregate_id = ${row.id} AND status = 'processing'
           `;
-          if (row.action_kind === "message") {
-            await transaction`
-              UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
-              WHERE id = ${row.candidate_position_state_id}
-            `;
-          }
+          await transaction`
+            UPDATE candidate_position_states SET contact_status = 'queued', updated_at = now()
+            WHERE id = ${row.candidate_position_state_id}
+          `;
           await transaction`
             INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
             VALUES (${randomUUID()}, ${row.created_by}, 'contact.fake_stale_requeued',
@@ -3061,12 +3062,10 @@ export class M2Repository {
             locked_by = NULL, finished_at = now()
           WHERE aggregate_id = ${row.id} AND status = 'processing'
         `;
-        if (row.action_kind === "message") {
-          await transaction`
-            UPDATE candidate_position_states SET contact_status = 'uncertain', updated_at = now()
-            WHERE id = ${row.candidate_position_state_id}
-          `;
-        }
+        await transaction`
+          UPDATE candidate_position_states SET contact_status = 'uncertain', updated_at = now()
+          WHERE id = ${row.candidate_position_state_id}
+        `;
         await transaction`
           INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
           VALUES (${randomUUID()}, ${row.created_by}, 'contact.real_stale_uncertain',

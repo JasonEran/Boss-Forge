@@ -474,12 +474,20 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
         await repository.markTaskWaitingReviewIfIdle(task.id, task.claimToken);
         return true;
       }
+      const excludeGeekIds =
+        alreadyCollected > 0
+          ? await repository.listTaskAdmittedGeekIds(task.id)
+          : [];
       const command = collectionCommand(task);
       const officialFilters = task.source === "recommend" && task.bossJobId ? planBossRecommendationFilters(task.ruleConfig) : null;
       if (officialFilters) console.log(JSON.stringify({ event: "m1.task.official_filters", taskId: task.id, stage: "applying", summary: describeBossFilters(officialFilters) }));
       const result = task.source === "recommend" && task.bossJobId
         ? await readBoundBossRecommendation({ id: task.bossJobId, name: task.bossJobKeyword ?? "", allowNameFallback: task.bossJobNameUnique === true, filters: officialFilters },
-          { candidateLimit: chunkLimit, task: { id: task.id, claimToken: task.claimToken } })
+          {
+            candidateLimit: chunkLimit,
+            ...(excludeGeekIds.length > 0 ? { excludeGeekIds } : {}),
+            task: { id: task.id, claimToken: task.claimToken }
+          })
         : await runBossCommand(command, {
         timeoutMs: 60_000,
         env: workerBossEnvironment()
@@ -501,9 +509,14 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
         task.source === "recommend" ? collectedRecommendJobLabel(parsed.raw) : null,
         officialFilters
       );
+      // Fewer net-new cards than the chunk asked for ⇒ collector hit pool end
+      // (or known-only pages). Full chunk ⇒ treat as soft-empty if admit is 0.
+      const collectionStopReason =
+        records.length < chunkLimit ? "exhausted" : "limit";
       const sealed = await repository.sealIfChunkAdmittedNothing(
         task.id,
-        alreadyCollected
+        alreadyCollected,
+        { collectionStopReason }
       );
       console.log(
         JSON.stringify({
@@ -516,6 +529,8 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
           candidateLimit: totalLimit,
           chunkLimit,
           alreadyCollected,
+          excludedGeekIds: excludeGeekIds.length,
+          collectionStopReason,
           chunkExhausted: sealed,
           decisions: records.reduce<Record<string, number>>((summary, record) => {
             summary[record.decision] = (summary[record.decision] ?? 0) + 1;

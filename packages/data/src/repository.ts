@@ -1322,7 +1322,8 @@ export class BossForgeRepository {
   /** Stop requesting more chunks when BOSS no longer yields net-new people. */
   async sealIfChunkAdmittedNothing(
     taskId: string,
-    previousCandidateCount: number
+    previousCandidateCount: number,
+    options?: { collectionStopReason?: "limit" | "exhausted" | null }
   ): Promise<boolean> {
     return this.sql.begin(async (transaction) => {
       const rows = await transaction<
@@ -1332,8 +1333,64 @@ export class BossForgeRepository {
       `;
       const task = rows[0];
       if (!task) return false;
-      if (task.candidate_count > previousCandidateCount) return false;
+      if (task.candidate_count > previousCandidateCount) {
+        await transaction`
+          INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+          VALUES (
+            ${randomUUID()}, 'system:screening-chunk', 'task.chunk.progress',
+            'task', ${taskId},
+            ${transaction.json({
+              candidateCount: task.candidate_count,
+              previousCandidateCount,
+              admitted: task.candidate_count - previousCandidateCount
+            })}
+          )
+        `;
+        return false;
+      }
       if (task.candidate_count >= task.candidate_limit) return false;
+
+      const emptyStreak = await transaction<Array<{ count: number }>>`
+        SELECT count(*)::int AS count
+        FROM audit_logs
+        WHERE resource_type = 'task'
+          AND resource_id = ${taskId}
+          AND action = 'task.chunk.empty_wave'
+          AND created_at > COALESCE(
+            (
+              SELECT MAX(created_at) FROM audit_logs
+              WHERE resource_type = 'task'
+                AND resource_id = ${taskId}
+                AND action IN ('task.chunk.progress', 'task.chunk.exhausted')
+            ),
+            '-infinity'::timestamptz
+          )
+      `;
+      // Soft empty while the collector still believed more pages existed: retry
+      // instead of silently rewriting the user-requested headcount.
+      const stopReason = options?.collectionStopReason ?? null;
+      const priorEmpty = emptyStreak[0]?.count ?? 0;
+      const genuineExhaustion =
+        stopReason === "exhausted" || priorEmpty >= 2;
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, 'system:screening-chunk',
+          ${genuineExhaustion ? "task.chunk.exhausted" : "task.chunk.empty_wave"},
+          'task', ${taskId},
+          ${transaction.json({
+            candidateCount: task.candidate_count,
+            previousCandidateLimit: task.candidate_limit,
+            previousCandidateCount,
+            collectionStopReason: stopReason,
+            emptyWaveBeforeSeal: priorEmpty,
+            sealed: genuineExhaustion
+          })}
+        )
+      `;
+      if (!genuineExhaustion) {
+        return false;
+      }
       const pending = await transaction`
         SELECT id FROM candidate_position_states
         WHERE latest_task_id = ${taskId}
@@ -1349,24 +1406,31 @@ export class BossForgeRepository {
           status = ${pending[0] ? "screening" : "waiting_review"},
           finished_at = ${pending[0] ? null : new Date()},
           claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
-          wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+          wait_reason_code = ${pending[0] ? null : "screening_pool_exhausted"},
+          wait_reason = ${
+            pending[0]
+              ? null
+              : "推荐列表在重试后仍无新增候选人，已按实际筛选人数结束（未达到设定人数）。"
+          },
+          next_run_at = NULL,
           last_progress_at = now(), version = version + 1
         WHERE id = ${taskId}
       `;
-      await transaction`
-        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
-        VALUES (
-          ${randomUUID()}, 'system:screening-chunk', 'task.chunk.exhausted',
-          'task', ${taskId},
-          ${transaction.json({
-            candidateCount: task.candidate_count,
-            previousCandidateLimit: task.candidate_limit,
-            previousCandidateCount
-          })}
-        )
-      `;
       return true;
     });
+  }
+
+  /** Boss geek IDs already admitted on this task (for multi-wave net-new collect). */
+  async listTaskAdmittedGeekIds(taskId: string): Promise<string[]> {
+    const rows = await this.sql<Array<{ geek_id: string }>>`
+      SELECT BTRIM(snapshot.source_locator ->> 'value') AS geek_id
+      FROM candidate_position_states state
+      JOIN candidate_snapshots snapshot ON snapshot.id = state.latest_snapshot_id
+      WHERE state.latest_task_id = ${taskId}
+        AND snapshot.source_locator ->> 'kind' = 'boss_geek_id'
+        AND BTRIM(snapshot.source_locator ->> 'value') <> ''
+    `;
+    return rows.map((row) => row.geek_id);
   }
 
   /** When a claimed collection finds no remaining headcount, park the task for review. */

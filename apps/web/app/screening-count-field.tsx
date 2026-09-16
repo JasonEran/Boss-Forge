@@ -65,7 +65,7 @@ export function ScreeningCountField({
       </div>
       <p id={`${id}-hint`} className="text-xs leading-5 text-muted-foreground">
         可填 1–{MAX_SCREENING_LIMIT}{' '}
-        人。最多处理所选人数，候选人不足时按实际数量；未通过和读取异常也计入人数，不会自动追加。
+        人。按设定人数精确筛选（分块最多 20 人/批）；候选人不足时会在确认列表耗尽后停止，并写明原因。未通过和读取异常也计入人数。
       </p>
       {!valid ? (
         <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
