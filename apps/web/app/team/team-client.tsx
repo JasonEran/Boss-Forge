@@ -56,9 +56,10 @@ function TeamContent() {
   const stages = rows(data?.stages);
   const policy = (policyData?.policy ?? {}) as Row;
   const usage = (policyData?.usage ?? {}) as Row;
+  const quotasEnabled = policy.quotasEnabled === true;
   const policyState = stringValue(policyData?.state);
   const policyStateLabel: Record<string, string> = {
-    ready: '时段与额度允许',
+    ready: quotasEnabled ? '时段与额度允许' : '无限制（额度已关闭）',
     outside_working_hours: '工作时段外暂停',
     daily_quota_reached: '今日额度已用完',
     daily_limit_reached: '今日额度已用完',
@@ -98,7 +99,11 @@ function TeamContent() {
         <>
           <Panel
             title="简历查看策略"
-            description="这里展示系统当前实际生效的限制；查看简历与发送联系消息分别计数。"
+            description={
+              quotasEnabled
+                ? '这里展示系统当前实际生效的限制；查看简历与发送联系消息分别计数。'
+                : '当前已关闭查看额度与节奏限制（无限制）。下方仅展示实际查看统计与停留时长，不会按日/小时上限停筛。'
+            }
           >
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4">
               <div>
@@ -109,8 +114,9 @@ function TeamContent() {
                     : '未配置'}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  统计时区：上海；额度在每日 00:00
-                  重新计算。任务页会另行显示批次休息或 Worker 暂停。
+                  {quotasEnabled
+                    ? '统计时区：上海；额度在每日 00:00 重新计算。任务页会另行显示批次休息或 Worker 暂停。'
+                    : '统计时区：上海。额度与批次暂停均已关闭；风控/验证码仍会立即停筛。'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
@@ -125,27 +131,29 @@ function TeamContent() {
                 >
                   {policyStateLabel[policyState] ?? '状态未知，已暂停继续查看'}
                 </Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={actionBusy}
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        '这只会重置本轮软额度，不会清除今日实际查看数，也不会突破安全上限。是否继续？',
+                {quotasEnabled ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={actionBusy}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          '这只会重置本轮软额度，不会清除今日实际查看数，也不会突破安全上限。是否继续？',
+                        )
                       )
-                    )
-                      return;
-                    void action(
-                      () =>
-                        postJson('/api/system/resume-view-policy/reset', {}),
-                      '本轮简历查看软额度已重置',
-                    );
-                  }}
-                >
-                  <RotateCcw aria-hidden="true" />
-                  重置本轮软额度
-                </Button>
+                        return;
+                      void action(
+                        () =>
+                          postJson('/api/system/resume-view-policy/reset', {}),
+                        '本轮简历查看软额度已重置',
+                      );
+                    }}
+                  >
+                    <RotateCcw aria-hidden="true" />
+                    重置本轮软额度
+                  </Button>
+                ) : null}
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -165,44 +173,81 @@ function TeamContent() {
                   className="size-5 text-primary"
                 />
                 <p className="mt-3 text-sm text-muted-foreground">今日已查看</p>
-                <p className="mt-1 text-xl font-semibold">
-                  {numberOrDash(usage.viewsToday)} /{' '}
-                  {numberOrDash(policy.dailyLimit)} 份
-                </p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  本轮软额度可重置；今日实际共查看{' '}
-                  {numberOrDash(usage.absoluteViewsToday)} 份，仍受{' '}
-                  {numberOrDash(policy.dailyHardLimit)} 份系统硬上限保护。
-                </p>
+                {quotasEnabled ? (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">
+                      {numberOrDash(usage.viewsToday)} /{' '}
+                      {numberOrDash(policy.dailyLimit)} 份
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      本轮软额度可重置；今日实际共查看{' '}
+                      {numberOrDash(usage.absoluteViewsToday)} 份，仍受{' '}
+                      {numberOrDash(policy.dailyHardLimit)} 份系统硬上限保护。
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">无限制</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      今日已实际查看{' '}
+                      {numberOrDash(usage.absoluteViewsToday)}{' '}
+                      份（仅统计，不设上限、不停筛）。
+                    </p>
+                  </>
+                )}
               </div>
               <div className="rounded-xl border bg-card p-4">
                 <Clock3 aria-hidden="true" className="size-5 text-primary" />
                 <p className="mt-3 text-sm text-muted-foreground">最近一小时</p>
-                <p className="mt-1 text-xl font-semibold">
-                  {numberOrDash(usage.viewsLastHour)} /{' '}
-                  {numberOrDash(policy.hourlyLimit)} 份
-                </p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  达到小时额度后自动等待，不再打开新简历。
-                </p>
+                {quotasEnabled ? (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">
+                      {numberOrDash(usage.viewsLastHour)} /{' '}
+                      {numberOrDash(policy.hourlyLimit)} 份
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      达到小时额度后自动等待，不再打开新简历。
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">无限制</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      近一小时已查看{' '}
+                      {numberOrDash(usage.viewsLastHour)}{' '}
+                      份（仅统计，不设小时上限）。
+                    </p>
+                  </>
+                )}
               </div>
               <div className="rounded-xl border bg-card p-4">
                 <Clock3 aria-hidden="true" className="size-5 text-primary" />
                 <p className="mt-3 text-sm text-muted-foreground">运行节奏</p>
-                <p className="mt-1 text-xl font-semibold">
-                  {numberOrDash(policy.workdayStartHour)}:00–
-                  {numberOrDash(policy.workdayEndHour)}:00
-                </p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  连续 {numberOrDash(policy.continuousBatchSize)} 份后暂停{' '}
-                  {numberOrDash(policy.breakMinutes)} 分钟。
-                </p>
+                {quotasEnabled ? (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">
+                      {numberOrDash(policy.workdayStartHour)}:00–
+                      {numberOrDash(policy.workdayEndHour)}:00
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      连续 {numberOrDash(policy.continuousBatchSize)} 份后暂停{' '}
+                      {numberOrDash(policy.breakMinutes)} 分钟。
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 text-xl font-semibold">无限制</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      全天可跑，不分批暂停；筛选人数按任务设定精确执行。
+                    </p>
+                  </>
+                )}
               </div>
             </div>
             <p className="rounded-lg border bg-muted/30 p-3 text-sm leading-6 text-muted-foreground">
-              每次打开都先计入查看额度；可恢复异常会在 5、10 分钟退避后最多再试
-              2
-              次，不会在同一次处理中连续重开。检测到验证码、访问受限或平台风控时，系统会立即停止查看，并在登录页显示风控状态。
+              {quotasEnabled
+                ? '每次打开都先计入查看额度；可恢复异常会在 5、10 分钟退避后最多再试 2 次，不会在同一次处理中连续重开。检测到验证码、访问受限或平台风控时，系统会立即停止查看，并在登录页显示风控状态。'
+                : '额度关闭后不再按日/小时/批次限制停筛。可恢复异常仍会在 5、10 分钟退避后最多再试 2 次。检测到验证码、访问受限或平台风控时，系统会立即停止查看，并在登录页显示风控状态。'}
             </p>
           </Panel>
           <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
