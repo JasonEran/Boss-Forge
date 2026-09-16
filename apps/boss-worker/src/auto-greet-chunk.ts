@@ -40,33 +40,46 @@ async function readJobGreeting(input: {
   bossAccountId: string;
   bossJobId: string;
 }): Promise<{ jobId: string; greetingId: string; body: string } | null> {
-  try {
-    const preview = await requestBossGreetingPreviewViaIpc({
-      socketPath: bossBrowserControlSocketPath(runtimeDirectory()),
-      accountId: input.bossAccountId,
-      jobKeyword: input.bossJobId,
-      timeoutMs: 40_000
-    });
-    if (!preview.jobId || !preview.greetingId || !preview.body?.trim()) return null;
-    return {
-      jobId: preview.jobId,
-      greetingId: preview.greetingId,
-      body: preview.body
-    };
-  } catch (error: unknown) {
-    if (error instanceof BossBrowserControlError) {
-      console.warn(
-        JSON.stringify({
-          ok: false,
-          event: "m1.auto_greet.greeting_unavailable",
-          code: error.code,
-          message: safeWorkerErrorMessage(error)
-        })
-      );
-      return null;
+  const attempts = 6;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const preview = await requestBossGreetingPreviewViaIpc({
+        socketPath: bossBrowserControlSocketPath(runtimeDirectory()),
+        accountId: input.bossAccountId,
+        jobKeyword: input.bossJobId,
+        timeoutMs: 40_000
+      });
+      if (!preview.jobId || !preview.greetingId || !preview.body?.trim()) {
+        return null;
+      }
+      return {
+        jobId: preview.jobId,
+        greetingId: preview.greetingId,
+        body: preview.body
+      };
+    } catch (error: unknown) {
+      if (error instanceof BossBrowserControlError) {
+        const busy = error.code === "busy";
+        console.warn(
+          JSON.stringify({
+            ok: false,
+            event: "m1.auto_greet.greeting_unavailable",
+            code: error.code,
+            attempt,
+            attempts,
+            message: safeWorkerErrorMessage(error)
+          })
+        );
+        if (busy && attempt < attempts) {
+          await new Promise((resolve) => setTimeout(resolve, 3_000 * attempt));
+          continue;
+        }
+        return null;
+      }
+      throw error;
     }
-    throw error;
   }
+  return null;
 }
 
 /** Approve chunk passers, enqueue greets when possible, then continue the next chunk. */
