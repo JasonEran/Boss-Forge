@@ -15,6 +15,8 @@ export type ResumeViewPolicy = {
   workdayEndHour: number;
   stopOnRiskControl: true;
   contactQuotaSeparated: true;
+  /** When false, filtering ignores daily/hourly/workday/rhythm caps. */
+  quotasEnabled: boolean;
 };
 
 export type ResumeViewPolicyState =
@@ -42,9 +44,18 @@ function integerSetting(
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function quotasEnabledFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>>
+): boolean {
+  const raw = environment.BOSS_FORGE_RESUME_QUOTAS_ENABLED?.trim().toLowerCase();
+  if (!raw) return false;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export function resumeViewPolicyFromEnvironment(
   environment: Readonly<Record<string, string | undefined>>
 ): ResumeViewPolicy {
+  const quotasEnabled = quotasEnabledFromEnvironment(environment);
   const dwellMinSeconds = integerSetting(
     environment,
     "BOSS_FORGE_RESUME_DWELL_MIN_SECONDS",
@@ -69,14 +80,14 @@ export function resumeViewPolicyFromEnvironment(
   const workdayStartHour = integerSetting(
     environment,
     "BOSS_FORGE_RESUME_WORKDAY_START_HOUR",
-    9,
+    quotasEnabled ? 9 : 0,
     0,
     22
   );
   const workdayEndHour = integerSetting(
     environment,
     "BOSS_FORGE_RESUME_WORKDAY_END_HOUR",
-    18,
+    quotasEnabled ? 18 : 24,
     workdayStartHour + 1,
     24
   );
@@ -89,7 +100,7 @@ export function resumeViewPolicyFromEnvironment(
     dailyLimit: integerSetting(
       environment,
       "BOSS_FORGE_RESUME_DAILY_LIMIT",
-      120,
+      quotasEnabled ? 120 : DAILY_HARD_LIMIT,
       1,
       DAILY_HARD_LIMIT
     ),
@@ -97,28 +108,29 @@ export function resumeViewPolicyFromEnvironment(
     hourlyLimit: integerSetting(
       environment,
       "BOSS_FORGE_RESUME_HOURLY_LIMIT",
-      50,
+      quotasEnabled ? 50 : 50,
       1,
       50
     ),
     continuousBatchSize: integerSetting(
       environment,
       "BOSS_FORGE_RESUME_BATCH_SIZE",
-      20,
+      quotasEnabled ? 20 : 10_000,
       15,
-      25
+      quotasEnabled ? 25 : 10_000
     ),
     breakMinutes: integerSetting(
       environment,
       "BOSS_FORGE_RESUME_BREAK_MINUTES",
-      10,
-      1,
+      quotasEnabled ? 10 : 0,
+      0,
       60
     ),
     workdayStartHour,
     workdayEndHour,
     stopOnRiskControl: true,
-    contactQuotaSeparated: true
+    contactQuotaSeparated: true,
+    quotasEnabled
   };
 }
 
@@ -142,6 +154,7 @@ export function shanghaiHour(now: Date): number {
 }
 
 export function resumeViewingAllowedAt(now: Date, policy: ResumeViewPolicy): boolean {
+  if (!policy.quotasEnabled) return true;
   const hour = shanghaiHour(now);
   return hour >= policy.workdayStartHour && hour < policy.workdayEndHour;
 }
@@ -152,6 +165,7 @@ export function resumeViewPolicyState(
   policy: ResumeViewPolicy,
   usage: ResumeViewUsage
 ): ResumeViewPolicyState {
+  if (!policy.quotasEnabled) return "ready";
   if (usage.absoluteViewsToday >= policy.dailyHardLimit) {
     return "daily_hard_limit_reached";
   }

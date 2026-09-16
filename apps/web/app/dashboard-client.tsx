@@ -21,7 +21,6 @@ import {
   MessageSquareText,
   Pencil,
   Play,
-  Plus,
   RefreshCw,
   SearchCheck,
   Send,
@@ -1258,32 +1257,10 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
       actions={
         <>
           {data && page === 'overview' ? (
-            <div className="flex flex-wrap gap-2">
-              {positionSelect()}
-              <Button
-                size="lg"
-                disabled={
-                  !position?.bossJobId || authUser.role === 'interviewer'
-                }
-                onClick={() => setPositionRuleEditDialogOpen(true)}
-              >
-                <Plus aria-hidden="true" />
-                {recruitmentBrief?.purpose
-                  ? '编辑招聘目标与规则'
-                  : '添加岗位招聘目标'}
-              </Button>
-              <Button
-                nativeButton={false}
-                variant="outline"
-                render={<Link href="/positions" />}
-              >
-                同步 / 选择 BOSS 岗位
-              </Button>
-            </div>
+            <div className="flex flex-wrap gap-2">{positionSelect()}</div>
           ) : null}
           {data && page === 'positions' ? (
             <div className="flex flex-wrap gap-2">
-              {positionSelect()}
               {canManageSettings ? (
                 <Button
                   size="lg"
@@ -1402,7 +1379,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
             ) : (
               <p className="mt-3 text-sm text-muted-foreground">
                 选择已在 BOSS
-                招聘的岗位，点击右上方添加招聘目标，再设置预算与筛选规则。
+                招聘的岗位，再到“岗位设置”添加招聘目标与规则。
               </p>
             )}
           </section>
@@ -1429,7 +1406,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
               );
             })}
           </section>
-          <section className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+          <section className="mt-4">
             <Card>
               <CardHeader>
                 <CardTitle>当前招聘进度</CardTitle>
@@ -1476,41 +1453,6 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                     </p>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>快捷操作</CardTitle>
-                <CardDescription>从最常用的工作开始</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Link
-                  href="/positions"
-                  className="flex min-h-11 items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
-                >
-                  <Settings2
-                    className="size-4 text-primary"
-                    aria-hidden="true"
-                  />
-                  添加或编辑岗位规则
-                  <ArrowRight className="ml-auto size-4 text-muted-foreground" />
-                </Link>
-                <Link
-                  href="/candidates"
-                  className="flex min-h-11 items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
-                >
-                  <UsersRound className="size-4 text-primary" />
-                  处理 {data?.metrics.pendingReview ?? 0} 位待审核
-                  <ArrowRight className="ml-auto size-4 text-muted-foreground" />
-                </Link>
-                <Link
-                  href="/contacts"
-                  className="flex min-h-11 items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium hover:bg-muted"
-                >
-                  <MessageSquareText className="size-4 text-primary" />
-                  查看联系执行
-                  <ArrowRight className="ml-auto size-4 text-muted-foreground" />
-                </Link>
               </CardContent>
             </Card>
           </section>

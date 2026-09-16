@@ -1067,7 +1067,29 @@ export class BossForgeRepository {
       const integration = await loadTaskIntegrationContext(transaction, task.id);
       const uniqueStateIds = new Set<string>();
       const repeatStateIds = new Set<string>();
-      const admittedRecords = limitScreeningRecords(records, currentTask.candidate_limit);
+      // Prior chunks already admitted people on this task. Re-reads must not
+      // reset them; only net-new candidates consume the remaining headcount.
+      const priorKeys = await transaction<Array<{ key: string }>>`
+        SELECT CASE
+          WHEN snapshot.source_locator ->> 'kind' = 'boss_geek_id'
+            THEN 'boss:' || BTRIM(snapshot.source_locator ->> 'value')
+          ELSE 'fingerprint:' || candidate.fingerprint
+        END AS key
+        FROM candidate_position_states state
+        JOIN candidates candidate ON candidate.id = state.candidate_id
+        JOIN candidate_snapshots snapshot ON snapshot.id = state.latest_snapshot_id
+        WHERE state.latest_task_id = ${task.id}
+      `;
+      const priorKeySet = new Set(priorKeys.map((row) => row.key));
+      const remainingSlots = Math.max(0, currentTask.candidate_limit - priorKeySet.size);
+      const freshRecords = records.filter((record) => {
+        const key =
+          record.sourceLocator?.kind === "boss_geek_id"
+            ? `boss:${record.sourceLocator.value.trim()}`
+            : `fingerprint:${record.fingerprint}`;
+        return !priorKeySet.has(key);
+      });
+      const admittedRecords = limitScreeningRecords(freshRecords, remainingSlots);
       for (const record of admittedRecords) {
         let candidateRows: Array<{ id: string }> = [];
         if (record.sourceLocator?.kind === "boss_geek_id") {
@@ -1238,9 +1260,14 @@ export class BossForgeRepository {
           });
         }
       }
-      const uniqueCandidateCount = uniqueStateIds.size;
+      const uniqueCandidateCountRows = await transaction<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS count
+        FROM candidate_position_states
+        WHERE latest_task_id = ${task.id}
+      `;
+      const uniqueCandidateCount = Number(uniqueCandidateCountRows[0]?.count ?? uniqueStateIds.size);
       const repeatCandidateCount = repeatStateIds.size;
-      const newCandidateCount = uniqueCandidateCount - repeatCandidateCount;
+      const newCandidateCount = Math.max(0, uniqueCandidateCount - repeatCandidateCount);
       const pending = await transaction`SELECT id FROM candidate_position_states WHERE latest_task_id = ${task.id} AND resume_screening_status IN ('queued', 'processing') LIMIT 1`;
       const status = pending[0] ? "screening" : "completed";
       await transaction`
@@ -1269,14 +1296,341 @@ export class BossForgeRepository {
             candidateLimit: currentTask.candidate_limit,
             admittedRecordCount: admittedRecords.length,
             notAdmittedCount: records.length - admittedRecords.length,
+            priorAdmittedCount: priorKeySet.size,
+            chunkRemainingSlots: remainingSlots,
             sourceJobLabel,
             sourceBossFilters,
-            duplicatesCollapsed: admittedRecords.length - uniqueCandidateCount,
+            duplicatesCollapsed: admittedRecords.length - uniqueStateIds.size,
           })}
         )
       `;
       await enqueueTaskCompletionIfReady(transaction, task.id);
     });
+  }
+
+  /** Stop requesting more chunks when BOSS no longer yields net-new people. */
+  async sealIfChunkAdmittedNothing(
+    taskId: string,
+    previousCandidateCount: number
+  ): Promise<boolean> {
+    return this.sql.begin(async (transaction) => {
+      const rows = await transaction<
+        Array<{ candidate_count: number; candidate_limit: number; status: string }>
+      >`
+        SELECT candidate_count, candidate_limit, status FROM tasks WHERE id = ${taskId} FOR UPDATE
+      `;
+      const task = rows[0];
+      if (!task) return false;
+      if (task.candidate_count > previousCandidateCount) return false;
+      if (task.candidate_count >= task.candidate_limit) return false;
+      const pending = await transaction`
+        SELECT id FROM candidate_position_states
+        WHERE latest_task_id = ${taskId}
+          AND resume_screening_status IN ('queued', 'processing')
+        LIMIT 1
+      `;
+      await transaction`
+        UPDATE tasks
+        SET candidate_limit = CASE
+            WHEN candidate_count > 0 THEN candidate_count
+            ELSE candidate_limit
+          END,
+          status = ${pending[0] ? "screening" : "waiting_review"},
+          finished_at = ${pending[0] ? null : new Date()},
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
+          wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+          last_progress_at = now(), version = version + 1
+        WHERE id = ${taskId}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, 'system:screening-chunk', 'task.chunk.exhausted',
+          'task', ${taskId},
+          ${transaction.json({
+            candidateCount: task.candidate_count,
+            previousCandidateLimit: task.candidate_limit,
+            previousCandidateCount
+          })}
+        )
+      `;
+      return true;
+    });
+  }
+
+  /** When a claimed collection finds no remaining headcount, park the task for review. */
+  async markTaskWaitingReviewIfIdle(
+    taskId: string,
+    claimToken: string | null
+  ): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      const current = await transaction<
+        Array<{ status: Task["status"]; claim_token: string | null }>
+      >`
+        SELECT status, claim_token FROM tasks WHERE id = ${taskId} FOR UPDATE
+      `;
+      const task = current[0];
+      if (!task) return;
+      if (task.status !== "running") return;
+      if (claimToken && task.claim_token !== claimToken) return;
+      const pending = await transaction`
+        SELECT id FROM candidate_position_states
+        WHERE latest_task_id = ${taskId}
+          AND resume_screening_status IN ('queued', 'processing')
+        LIMIT 1
+      `;
+      await transaction`
+        UPDATE tasks
+        SET status = ${pending[0] ? "screening" : "waiting_review"},
+          finished_at = ${pending[0] ? null : new Date()},
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
+          wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+          last_progress_at = now(), version = version + 1
+        WHERE id = ${taskId}
+      `;
+      await enqueueTaskCompletionIfReady(transaction, taskId);
+    });
+  }
+
+  /**
+   * After a screening chunk reaches waiting_review: auto-approve passers when
+   * auto-greet is on. Does not start the next chunk until greets are queued/
+   * finished — call continueScreeningChunk afterward.
+   */
+  async prepareAutoGreetPassers(taskId: string): Promise<{
+    autoGreetEnabled: boolean;
+    passers: Array<{
+      stateId: string;
+      stateVersion: number;
+      candidateName: string;
+      positionId: string;
+      bossAccountId: string;
+      bossJobId: string | null;
+    }>;
+    candidateCount: number;
+    candidateLimit: number;
+  }> {
+    return this.sql.begin(async (transaction) => {
+      const tasks = await transaction<
+        Array<{
+          id: string;
+          status: Task["status"];
+          candidate_count: number;
+          candidate_limit: number;
+          auto_contact_after_review: boolean;
+        }>
+      >`
+        SELECT t.id, t.status, t.candidate_count, t.candidate_limit,
+          p.auto_contact_after_review
+        FROM tasks t
+        JOIN positions p ON p.id = t.position_id
+        WHERE t.id = ${taskId}
+        FOR UPDATE OF t
+      `;
+      const task = tasks[0];
+      if (!task) {
+        return {
+          autoGreetEnabled: false,
+          passers: [],
+          candidateCount: 0,
+          candidateLimit: 0
+        };
+      }
+      const pendingResume = await transaction`
+        SELECT id FROM candidate_position_states
+        WHERE latest_task_id = ${taskId}
+          AND resume_screening_status IN ('queued', 'processing')
+        LIMIT 1
+      `;
+      if (
+        pendingResume[0] ||
+        !["waiting_review", "completed", "screening"].includes(task.status)
+      ) {
+        return {
+          autoGreetEnabled: task.auto_contact_after_review,
+          passers: [],
+          candidateCount: task.candidate_count,
+          candidateLimit: task.candidate_limit
+        };
+      }
+      if (task.status === "screening") {
+        await transaction`
+          UPDATE tasks
+          SET status = 'waiting_review', finished_at = now(),
+            wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+            last_progress_at = now(), version = version + 1
+          WHERE id = ${taskId}
+        `;
+      }
+      const passers = task.auto_contact_after_review
+        ? await transaction<
+            Array<{
+              stateId: string;
+              stateVersion: number;
+              candidateName: string;
+              positionId: string;
+              bossAccountId: string;
+              bossJobId: string | null;
+            }>
+          >`
+            SELECT cps.id AS "stateId", cps.version AS "stateVersion",
+              c.display_name AS "candidateName", p.id AS "positionId",
+              p.boss_account_id AS "bossAccountId", p.boss_job_id AS "bossJobId"
+            FROM candidate_position_states cps
+            JOIN candidates c ON c.id = cps.candidate_id
+            JOIN positions p ON p.id = cps.position_id
+            WHERE cps.latest_task_id = ${taskId}
+              AND cps.rule_decision = 'matched'
+              AND cps.resume_screening_status = 'screened'
+              AND cps.review_status IN ('pending', 'approved')
+              AND cps.contact_status NOT IN ('sent', 'queued', 'uncertain')
+              AND NOT EXISTS (
+                SELECT 1 FROM contact_intents ci
+                WHERE ci.candidate_position_state_id = cps.id
+                  AND ci.action_kind = 'greet'
+                  AND ci.status IN ('ready', 'processing', 'sent', 'uncertain', 'simulated')
+              )
+            ORDER BY cps.updated_at ASC, cps.id
+          `
+        : [];
+      for (const passer of passers) {
+        const current = await transaction<Array<{ review_status: string; version: number }>>`
+          SELECT review_status, version FROM candidate_position_states WHERE id = ${passer.stateId}
+          FOR UPDATE
+        `;
+        if (current[0]?.review_status === "pending") {
+          await transaction`
+            UPDATE candidate_position_states
+            SET review_status = 'approved', version = version + 1, updated_at = now()
+            WHERE id = ${passer.stateId} AND review_status = 'pending'
+          `;
+          await transaction`
+            INSERT INTO reviews (
+              id, candidate_position_state_id, idempotency_key, decision, note,
+              correction_code, reviewer_id, previous_status, resulting_version
+            ) VALUES (
+              ${randomUUID()}, ${passer.stateId}, ${`auto-greet:${passer.stateId}`},
+              'approved', '筛选分块完成后自动通过，准备自动打招呼。',
+              NULL, 'system:auto-greet', 'pending', ${current[0].version + 1}
+            )
+            ON CONFLICT (idempotency_key) DO NOTHING
+          `;
+          passer.stateVersion = current[0].version + 1;
+        }
+      }
+      return {
+        autoGreetEnabled: task.auto_contact_after_review,
+        passers,
+        candidateCount: task.candidate_count,
+        candidateLimit: task.candidate_limit
+      };
+    });
+  }
+
+  /**
+   * Re-queue a task for the next screening chunk once greets for the current
+   * chunk are no longer blocking and headcount remains.
+   */
+  async continueScreeningChunk(taskId: string): Promise<boolean> {
+    return this.sql.begin(async (transaction) => {
+      const tasks = await transaction<
+        Array<{
+          status: Task["status"];
+          candidate_count: number;
+          candidate_limit: number;
+        }>
+      >`
+        SELECT status, candidate_count, candidate_limit
+        FROM tasks WHERE id = ${taskId} FOR UPDATE
+      `;
+      const task = tasks[0];
+      if (!task) return false;
+      if (!["waiting_review", "completed"].includes(task.status)) return false;
+      if (task.candidate_count <= 0) return false;
+      if (task.candidate_count >= task.candidate_limit) return false;
+      const pendingResume = await transaction`
+        SELECT id FROM candidate_position_states
+        WHERE latest_task_id = ${taskId}
+          AND resume_screening_status IN ('queued', 'processing')
+        LIMIT 1
+      `;
+      if (pendingResume[0]) return false;
+      const pendingGreets = await transaction`
+        SELECT id FROM contact_intents
+        WHERE task_id = ${taskId}
+          AND action_kind = 'greet'
+          AND status IN ('ready', 'processing')
+        LIMIT 1
+      `;
+      if (pendingGreets[0]) return false;
+      await transaction`
+        UPDATE tasks
+        SET status = 'queued', finished_at = NULL, error_message = NULL,
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
+          wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+          last_progress_at = now(), version = version + 1
+        WHERE id = ${taskId}
+      `;
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, 'system:screening-chunk', 'task.chunk.continue',
+          'task', ${taskId},
+          ${transaction.json({
+            candidateCount: task.candidate_count,
+            candidateLimit: task.candidate_limit
+          })}
+        )
+      `;
+      return true;
+    });
+  }
+
+  /** Tasks that finished a resume chunk and may need auto-greet / continuation. */
+  async listTasksReadyForChunkFinalize(bossAccountId: string): Promise<string[]> {
+    const rows = await this.sql<Array<{ id: string }>>`
+      SELECT t.id
+      FROM tasks t
+      JOIN positions p ON p.id = t.position_id
+      WHERE p.boss_account_id = ${bossAccountId}
+        AND t.status IN ('waiting_review', 'completed')
+        AND NOT EXISTS (
+          SELECT 1 FROM candidate_position_states cps
+          WHERE cps.latest_task_id = t.id
+            AND cps.resume_screening_status IN ('queued', 'processing')
+        )
+        AND (
+          (
+            p.auto_contact_after_review = true
+            AND EXISTS (
+              SELECT 1 FROM candidate_position_states cps
+              WHERE cps.latest_task_id = t.id
+                AND cps.rule_decision = 'matched'
+                AND cps.resume_screening_status = 'screened'
+                AND cps.review_status IN ('pending', 'approved')
+                AND cps.contact_status NOT IN ('sent', 'queued', 'uncertain')
+                AND NOT EXISTS (
+                  SELECT 1 FROM contact_intents ci
+                  WHERE ci.candidate_position_state_id = cps.id
+                    AND ci.action_kind = 'greet'
+                    AND ci.status IN ('ready', 'processing', 'sent', 'uncertain', 'simulated')
+                )
+            )
+          )
+          OR (
+            t.candidate_count < t.candidate_limit
+            AND NOT EXISTS (
+              SELECT 1 FROM contact_intents ci
+              WHERE ci.task_id = t.id
+                AND ci.action_kind = 'greet'
+                AND ci.status IN ('ready', 'processing')
+            )
+          )
+        )
+      ORDER BY t.finished_at ASC NULLS LAST, t.created_at ASC
+      LIMIT 5
+    `;
+    return rows.map((row) => row.id);
   }
 
   async claimNextResumeScreening(

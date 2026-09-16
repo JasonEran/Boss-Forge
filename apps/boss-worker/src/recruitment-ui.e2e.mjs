@@ -25,7 +25,8 @@ try {
   await page.goto(origin + '/' + query, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => document.body.innerText.includes('招聘目的与目标'));
   await page.screenshot({ path: output + 'overview-desktop.png', fullPage: true });
-  await clickText('编辑招聘目标与规则');
+  await page.goto(origin + '/positions' + query, { waitUntil: 'networkidle0' });
+  await clickText('编辑岗位规则');
   await page.waitForSelector('[role="dialog"]');
   await page.waitForFunction(() => document.querySelector('[role="dialog"] textarea')?.value.includes('跨境电商'));
   await page.screenshot({ path: output + 'position-goals-desktop.png' });
@@ -62,8 +63,8 @@ try {
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   await page.screenshot({ path: output + 'batch-contacts-mobile.png', fullPage: true });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile must not overflow horizontally');
-  await page.goto(origin + '/' + query, { waitUntil: 'networkidle0' });
-  await clickText('编辑招聘目标与规则');
+  await page.goto(origin + '/positions' + query, { waitUntil: 'networkidle0' });
+  await clickText('编辑岗位规则');
   await page.screenshot({ path: output + 'position-goals-mobile.png' });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);

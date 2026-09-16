@@ -39,6 +39,7 @@ import {
   nextResumeViewingAt,
   resumeViewPolicyState,
   resumeViewPolicyFromEnvironment,
+  screeningChunkLimit,
   shanghaiDayStart,
   type ParsedCandidate
 } from "@boss-forge/contracts";
@@ -67,6 +68,7 @@ import {
   resumeOcrLooksUsable,
   tencentOcrConfigured
 } from "./tencent-ocr.js";
+import { finalizeScreeningChunks } from "./auto-greet-chunk.js";
 
 const POLL_INTERVAL_MS = 2_000;
 const RESUME_SCREENING_MAX_CLAIM_ATTEMPTS = 3;
@@ -465,12 +467,19 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
     }
     await setWorkerHeartbeat({ state: "busy", activeAccountId: accountId });
     try {
+      const alreadyCollected = task.candidateCount ?? 0;
+      const totalLimit = task.candidateLimit ?? 20;
+      const chunkLimit = screeningChunkLimit(totalLimit, alreadyCollected);
+      if (chunkLimit < 1) {
+        await repository.markTaskWaitingReviewIfIdle(task.id, task.claimToken);
+        return true;
+      }
       const command = collectionCommand(task);
       const officialFilters = task.source === "recommend" && task.bossJobId ? planBossRecommendationFilters(task.ruleConfig) : null;
       if (officialFilters) console.log(JSON.stringify({ event: "m1.task.official_filters", taskId: task.id, stage: "applying", summary: describeBossFilters(officialFilters) }));
       const result = task.source === "recommend" && task.bossJobId
         ? await readBoundBossRecommendation({ id: task.bossJobId, name: task.bossJobKeyword ?? "", allowNameFallback: task.bossJobNameUnique === true, filters: officialFilters },
-          { candidateLimit: task.candidateLimit ?? 20, task: { id: task.id, claimToken: task.claimToken } })
+          { candidateLimit: chunkLimit, task: { id: task.id, claimToken: task.claimToken } })
         : await runBossCommand(command, {
         timeoutMs: 60_000,
         env: workerBossEnvironment()
@@ -492,6 +501,10 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
         task.source === "recommend" ? collectedRecommendJobLabel(parsed.raw) : null,
         officialFilters
       );
+      const sealed = await repository.sealIfChunkAdmittedNothing(
+        task.id,
+        alreadyCollected
+      );
       console.log(
         JSON.stringify({
           ok: true,
@@ -499,8 +512,11 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
           taskId: task.id,
           source: task.source,
           candidateCount: records.length,
-          admittedCandidateCount: limitScreeningRecords(records, task.candidateLimit ?? 20).length,
-          candidateLimit: task.candidateLimit ?? 20,
+          admittedCandidateCount: limitScreeningRecords(records, chunkLimit).length,
+          candidateLimit: totalLimit,
+          chunkLimit,
+          alreadyCollected,
+          chunkExhausted: sealed,
           decisions: records.reduce<Record<string, number>>((summary, record) => {
             summary[record.decision] = (summary[record.decision] ?? 0) + 1;
             return summary;
@@ -749,6 +765,8 @@ async function processNextResumeScreening(
       await setWorkerHeartbeat({ state: "ready" });
       if (
         !riskDetected &&
+        RESUME_VIEW_POLICY.quotasEnabled &&
+        RESUME_VIEW_POLICY.breakMinutes > 0 &&
         continuousResumeViews >= RESUME_VIEW_POLICY.continuousBatchSize
       ) {
         console.log(
@@ -899,13 +917,30 @@ async function main(options: M1ExecutionOptions): Promise<void> {
                 contactPriorityTransportMode
               )
           : false;
-        const taskProcessed = !resumeProcessed && capabilities.processCollections
+        const chunkFinalized = !resumeProcessed
+          ? await finalizeScreeningChunks({
+              repository,
+              m2Repository,
+              bossAccountId: process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01"
+            }).catch((error: unknown) => {
+              console.error(
+                JSON.stringify({
+                  ok: false,
+                  event: "m1.auto_greet.failed",
+                  message: safeWorkerErrorMessage(error)
+                })
+              );
+              return false;
+            })
+          : false;
+        const taskProcessed =
+          !resumeProcessed && !chunkFinalized && capabilities.processCollections
           ? await processNextTask(repository, activity)
           : false;
         if (!mayClaimAnotherResume(recordedResumeAttempts, options.maxResumeAttempts)) {
           break;
         }
-        if (!taskProcessed && !resumeProcessed) await waitForNextPoll();
+        if (!taskProcessed && !resumeProcessed && !chunkFinalized) await waitForNextPoll();
       } catch (error: unknown) {
         if (isBossRiskSignal(error)) {
           await writeBossRiskStatus();

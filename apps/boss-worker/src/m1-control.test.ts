@@ -230,6 +230,7 @@ describe("M1 canary execution gates", () => {
 
     expect(lockStart).toBeGreaterThan(processStart);
     expect(postLockMarker).toBeGreaterThan(lockStart);
+    expect(lockBlock).toContain("RESUME_VIEW_POLICY.quotasEnabled");
     expect(lockBlock).toContain(
       "postLockBatchBreakMs = RESUME_VIEW_POLICY.breakMinutes * 60 * 1_000"
     );
