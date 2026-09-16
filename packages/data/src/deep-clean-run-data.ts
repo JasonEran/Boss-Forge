@@ -80,165 +80,79 @@ async function main(): Promise<void> {
     };
 
     const deleted = await sql.begin(async (tx) => {
+      const wipe = async (label: string, run: () => Promise<{ count: number }>) => {
+        const result = await run();
+        return [label, Number(result.count ?? 0)] as const;
+      };
+
       // Detach optional policy snapshot FKs before wiping run-state tables.
       await tx`UPDATE positions SET contact_policy_snapshot_id = NULL WHERE contact_policy_snapshot_id IS NOT NULL`;
       await tx`UPDATE tasks SET contact_policy_snapshot_id = NULL WHERE contact_policy_snapshot_id IS NOT NULL`;
 
-      // Recruitment lifecycle (leaf → root)
-      const recruitmentInterviewFeedback =
-        await tx`DELETE FROM recruitment_interview_feedback RETURNING id`;
-      const recruitmentInterviews =
-        await tx`DELETE FROM recruitment_interviews RETURNING id`;
-      const recruitmentOffers =
-        await tx`DELETE FROM recruitment_offers RETURNING id`;
-      const recruitmentOnboardingItems =
-        await tx`DELETE FROM recruitment_onboarding_items RETURNING id`;
-      const recruitmentOnboarding =
-        await tx`DELETE FROM recruitment_onboarding RETURNING id`;
-      const recruitmentDeliveries =
-        await tx`DELETE FROM recruitment_deliveries RETURNING id`;
-      const recruitmentCaseEvents =
-        await tx`DELETE FROM recruitment_case_events RETURNING id`;
-      const recruitmentCases =
-        await tx`DELETE FROM recruitment_cases RETURNING id`;
+      const pairs = [
+        await wipe("recruitmentInterviewFeedback", () => tx`DELETE FROM recruitment_interview_feedback`),
+        await wipe("recruitmentInterviews", () => tx`DELETE FROM recruitment_interviews`),
+        await wipe("recruitmentOffers", () => tx`DELETE FROM recruitment_offers`),
+        await wipe("recruitmentOnboardingItems", () => tx`DELETE FROM recruitment_onboarding_items`),
+        await wipe("recruitmentOnboarding", () => tx`DELETE FROM recruitment_onboarding`),
+        await wipe("recruitmentDeliveries", () => tx`DELETE FROM recruitment_deliveries`),
+        await wipe("recruitmentCaseEvents", () => tx`DELETE FROM recruitment_case_events`),
+        await wipe("recruitmentCases", () => tx`DELETE FROM recruitment_cases`),
+        await wipe("communicationWechat", () => tx`DELETE FROM communication_wechat_actions`),
+        await wipe("communicationReads", () => tx`DELETE FROM communication_reads`),
+        await wipe("communicationMessages", () => tx`DELETE FROM communication_messages`),
+        await wipe("communicationOnlineResumes", () => tx`DELETE FROM communication_online_resumes`),
+        await wipe("communicationThreads", () => tx`DELETE FROM communication_threads`),
+        await wipe("communicationBrowserLeases", () => tx`DELETE FROM communication_browser_leases`),
+        await wipe("interviewFeedback", () => tx`DELETE FROM interview_feedback`),
+        await wipe("interviewParticipants", () => tx`DELETE FROM interview_participants`),
+        await wipe("interviews", () => tx`DELETE FROM interviews`),
+        await wipe("workItems", () => tx`DELETE FROM work_items`),
+        await wipe("candidateAttachments", () => tx`DELETE FROM candidate_attachments`),
+        await wipe("candidateNotes", () => tx`DELETE FROM candidate_notes`),
+        await wipe("candidateActivities", () => tx`DELETE FROM candidate_activities`),
+        await wipe("candidateTalentTags", () => tx`DELETE FROM candidate_talent_tags`),
+        await wipe("inboundMessages", () => tx`DELETE FROM inbound_messages`),
+        await wipe("doNotContact", () => tx`DELETE FROM do_not_contact`),
+        await wipe("contactQuotaReservations", () => tx`DELETE FROM contact_quota_reservations`),
+        await wipe("contactAttempts", () => tx`DELETE FROM contact_attempts`),
+        await wipe("outbox", () => tx`DELETE FROM outbox_events`),
+        await wipe("contactIntents", () => tx`DELETE FROM contact_intents`),
+        await wipe("contactAuthorizations", () => tx`DELETE FROM contact_authorizations`),
+        await wipe("contactPolicySnapshots", () => tx`DELETE FROM contact_policy_snapshots`),
+        await wipe("contactApprovalRequests", () => tx`DELETE FROM contact_approval_requests`),
+        await wipe("taskContactControls", () => tx`DELETE FROM contact_controls WHERE scope_type = 'task'`),
+        await wipe("quotaCounters", () => tx`DELETE FROM quota_counters`),
+        await wipe("recruitmentAssessments", () => tx`DELETE FROM recruitment_assessments`),
+        await wipe("semanticEvaluations", () => tx`DELETE FROM semantic_evaluations`),
+        await wipe("reviews", () => tx`DELETE FROM reviews`),
+        await wipe("matchEvidence", () => tx`DELETE FROM match_evidence`),
+        await wipe("ruleReplayRuns", () => tx`DELETE FROM rule_replay_runs`),
+        await wipe("operationalAlerts", () => tx`DELETE FROM operational_alerts`),
+        await wipe("candidatePositionStates", () => tx`DELETE FROM candidate_position_states`),
+        await wipe("candidateSnapshots", () => tx`DELETE FROM candidate_snapshots`),
+        await wipe("taskCommands", () => tx`DELETE FROM task_commands`),
+        await wipe("tasks", () => tx`DELETE FROM tasks`),
+        await wipe("schedules", () => tx`DELETE FROM schedules`),
+        await wipe("candidates", () => tx`DELETE FROM candidates`),
+        await wipe(
+          "auditLogs",
+          () => tx`
+            DELETE FROM audit_logs
+            WHERE resource_type IN (
+              'task', 'schedule', 'candidate', 'candidate_position_state',
+              'contact_intent', 'review', 'resume'
+            )
+            OR action LIKE 'task.%'
+            OR action LIKE 'schedule.%'
+            OR action LIKE 'candidate.%'
+            OR action LIKE 'contact.%'
+            OR actor_id IN ('system:auto-greet', 'system:screening-chunk')
+          `,
+        ),
+      ];
 
-      // Communication inbox / resume side-channels
-      const communicationWechat =
-        await tx`DELETE FROM communication_wechat_actions RETURNING id`;
-      const communicationReads =
-        await tx`DELETE FROM communication_reads RETURNING candidate_id`;
-      const communicationMessages =
-        await tx`DELETE FROM communication_messages RETURNING id`;
-      const communicationOnlineResumes =
-        await tx`DELETE FROM communication_online_resumes RETURNING conversation_id`;
-      const communicationThreads =
-        await tx`DELETE FROM communication_threads RETURNING candidate_id`;
-      const communicationBrowserLeases =
-        await tx`DELETE FROM communication_browser_leases RETURNING id`;
-
-      // ATS interview / notes / attachments under candidate states
-      const interviewFeedback =
-        await tx`DELETE FROM interview_feedback RETURNING id`;
-      const interviewParticipants =
-        await tx`DELETE FROM interview_participants RETURNING interview_id`;
-      const interviews = await tx`DELETE FROM interviews RETURNING id`;
-      const workItems = await tx`DELETE FROM work_items RETURNING id`;
-      const candidateAttachments =
-        await tx`DELETE FROM candidate_attachments RETURNING id`;
-      const candidateNotes = await tx`DELETE FROM candidate_notes RETURNING id`;
-      const candidateActivities =
-        await tx`DELETE FROM candidate_activities RETURNING id`;
-      const candidateTalentTags =
-        await tx`DELETE FROM candidate_talent_tags RETURNING candidate_id`;
-      const inboundMessages =
-        await tx`DELETE FROM inbound_messages RETURNING id`;
-      const doNotContact =
-        await tx`DELETE FROM do_not_contact RETURNING candidate_id`;
-
-      // Contact execution
-      const contactQuotaReservations =
-        await tx`DELETE FROM contact_quota_reservations RETURNING contact_intent_id`;
-      const contactAttempts =
-        await tx`DELETE FROM contact_attempts RETURNING id`;
-      const outbox = await tx`DELETE FROM outbox_events RETURNING id`;
-      const contactIntents = await tx`DELETE FROM contact_intents RETURNING id`;
-      const contactAuthorizations =
-        await tx`DELETE FROM contact_authorizations RETURNING id`;
-      const contactPolicySnapshots =
-        await tx`DELETE FROM contact_policy_snapshots RETURNING id`;
-      const contactApprovalRequests =
-        await tx`DELETE FROM contact_approval_requests RETURNING id`;
-      const taskContactControls = await tx`
-        DELETE FROM contact_controls WHERE scope_type = 'task' RETURNING scope_id
-      `;
-      const quotaCounters =
-        await tx`DELETE FROM quota_counters RETURNING id`;
-
-      // Screening / review / AI
-      const recruitmentAssessments = await tx`
-        DELETE FROM recruitment_assessments RETURNING candidate_position_state_id
-      `;
-      const semanticEvaluations =
-        await tx`DELETE FROM semantic_evaluations RETURNING id`;
-      const reviews = await tx`DELETE FROM reviews RETURNING id`;
-      const matchEvidence = await tx`DELETE FROM match_evidence RETURNING id`;
-      const ruleReplayRuns = await tx`DELETE FROM rule_replay_runs RETURNING id`;
-      const operationalAlerts =
-        await tx`DELETE FROM operational_alerts RETURNING id`;
-
-      // Core candidate / task / plan graph
-      const candidatePositionStates =
-        await tx`DELETE FROM candidate_position_states RETURNING id`;
-      const candidateSnapshots =
-        await tx`DELETE FROM candidate_snapshots RETURNING id`;
-      const taskCommands = await tx`DELETE FROM task_commands RETURNING id`;
-      const tasks = await tx`DELETE FROM tasks RETURNING id`;
-      const schedules = await tx`DELETE FROM schedules RETURNING id`;
-      const candidates = await tx`DELETE FROM candidates RETURNING id`;
-
-      // Workbench noise in audit trail
-      const auditLogs = await tx`
-        DELETE FROM audit_logs
-        WHERE resource_type IN (
-          'task', 'schedule', 'candidate', 'candidate_position_state',
-          'contact_intent', 'review', 'resume'
-        )
-        OR action LIKE 'task.%'
-        OR action LIKE 'schedule.%'
-        OR action LIKE 'candidate.%'
-        OR action LIKE 'contact.%'
-        OR actor_id IN ('system:auto-greet', 'system:screening-chunk')
-        RETURNING id
-      `;
-
-      return {
-        recruitmentInterviewFeedback: recruitmentInterviewFeedback.length,
-        recruitmentInterviews: recruitmentInterviews.length,
-        recruitmentOffers: recruitmentOffers.length,
-        recruitmentOnboardingItems: recruitmentOnboardingItems.length,
-        recruitmentOnboarding: recruitmentOnboarding.length,
-        recruitmentDeliveries: recruitmentDeliveries.length,
-        recruitmentCaseEvents: recruitmentCaseEvents.length,
-        recruitmentCases: recruitmentCases.length,
-        communicationWechat: communicationWechat.length,
-        communicationReads: communicationReads.length,
-        communicationMessages: communicationMessages.length,
-        communicationOnlineResumes: communicationOnlineResumes.length,
-        communicationThreads: communicationThreads.length,
-        communicationBrowserLeases: communicationBrowserLeases.length,
-        interviewFeedback: interviewFeedback.length,
-        interviewParticipants: interviewParticipants.length,
-        interviews: interviews.length,
-        workItems: workItems.length,
-        candidateAttachments: candidateAttachments.length,
-        candidateNotes: candidateNotes.length,
-        candidateActivities: candidateActivities.length,
-        candidateTalentTags: candidateTalentTags.length,
-        inboundMessages: inboundMessages.length,
-        doNotContact: doNotContact.length,
-        outbox: outbox.length,
-        contactAttempts: contactAttempts.length,
-        contactQuotaReservations: contactQuotaReservations.length,
-        contactAuthorizations: contactAuthorizations.length,
-        contactPolicySnapshots: contactPolicySnapshots.length,
-        contactIntents: contactIntents.length,
-        contactApprovalRequests: contactApprovalRequests.length,
-        taskContactControls: taskContactControls.length,
-        quotaCounters: quotaCounters.length,
-        recruitmentAssessments: recruitmentAssessments.length,
-        semanticEvaluations: semanticEvaluations.length,
-        reviews: reviews.length,
-        matchEvidence: matchEvidence.length,
-        ruleReplayRuns: ruleReplayRuns.length,
-        operationalAlerts: operationalAlerts.length,
-        candidatePositionStates: candidatePositionStates.length,
-        candidateSnapshots: candidateSnapshots.length,
-        taskCommands: taskCommands.length,
-        tasks: tasks.length,
-        schedules: schedules.length,
-        candidates: candidates.length,
-        auditLogs: auditLogs.length,
-      };
+      return Object.fromEntries(pairs);
     });
 
     // Keep: positions, rule_sets, rule_versions, users, sessions, departments,
