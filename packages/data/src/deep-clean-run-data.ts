@@ -110,7 +110,7 @@ async function main(): Promise<void> {
       const communicationMessages =
         await tx`DELETE FROM communication_messages RETURNING id`;
       const communicationOnlineResumes =
-        await tx`DELETE FROM communication_online_resumes RETURNING candidate_id`;
+        await tx`DELETE FROM communication_online_resumes RETURNING conversation_id`;
       const communicationThreads =
         await tx`DELETE FROM communication_threads RETURNING candidate_id`;
       const communicationBrowserLeases =
