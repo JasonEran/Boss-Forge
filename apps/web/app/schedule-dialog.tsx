@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import {
   ScreeningCountField,
   validScreeningCount,
@@ -75,6 +76,7 @@ export function ScheduleDialog({
   const [source, setSource] = useState('recommend');
   const [nextRunAt, setNextRunAt] = useState(initialScheduleDate);
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [autoGreet, setAutoGreet] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,6 +96,7 @@ export function ScheduleDialog({
         body: JSON.stringify({
           positionId,
           candidateLimit: Number(screeningCount),
+          autoGreet,
           source,
           searchKeyword: source === 'search' ? searchKeyword : null,
           frequency,
@@ -124,7 +127,7 @@ export function ScheduleDialog({
             新建定时筛选
           </DialogTitle>
           <DialogDescription>
-            按上海时区生成筛选任务；启用精筛开关后会读取完整简历，但不会打招呼。
+            按上海时区生成筛选任务；打开自动打招呼后，本批次通过精筛的候选人会在分块筛选后自动打招呼。
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void submit(event)}>
@@ -135,6 +138,27 @@ export function ScheduleDialog({
             disabled={submitting}
             scheduled
           />
+          <div className="flex items-center justify-between gap-4 rounded-lg border px-3 py-3">
+            <div className="min-w-0">
+              <label
+                id="schedule-auto-greet-label"
+                htmlFor="schedule-auto-greet"
+                className="text-sm font-medium"
+              >
+                自动打招呼
+              </label>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                仅对本定时计划生成的任务生效；关闭则只筛选、不打招呼。
+              </p>
+            </div>
+            <Switch
+              id="schedule-auto-greet"
+              aria-labelledby="schedule-auto-greet-label"
+              checked={autoGreet}
+              disabled={submitting}
+              onCheckedChange={setAutoGreet}
+            />
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <label
               htmlFor="schedule-frequency"

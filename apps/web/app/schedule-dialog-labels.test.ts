@@ -18,4 +18,11 @@ describe('schedule dialog HR labels', () => {
     expect(source).toContain('在下一个可运行时段自动继续');
     expect(source).toContain('无需重复创建');
   });
+
+  it('exposes a per-batch auto-greet switch for timed filters', () => {
+    expect(source).toContain('自动打招呼');
+    expect(source).toContain('autoGreet');
+    expect(source).toContain('id="schedule-auto-greet"');
+    expect(source).not.toContain('不会打招呼');
+  });
 });

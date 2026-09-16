@@ -1338,6 +1338,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     }
     const task = await repository.createImmediateTask({
       candidateLimit: screeningCandidateLimit(body.candidateLimit),
+      autoGreet: body.autoGreet === undefined ? false : boolean(body.autoGreet, "autoGreet"),
       idempotencyKey: idempotencyKey.trim(),
       positionId: text(body.positionId, "positionId"),
       source,
@@ -1403,6 +1404,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (Date.parse(nextRunAt) <= Date.now()) throw new Error("nextRunAt must be in the future.");
     const schedule = await m2Repository.createSchedule({
       candidateLimit: screeningCandidateLimit(body.candidateLimit),
+      autoGreet: body.autoGreet === undefined ? false : boolean(body.autoGreet, "autoGreet"),
       idempotencyKey: idempotencyKey.trim(),
       positionId: text(body.positionId, "positionId"),
       source,

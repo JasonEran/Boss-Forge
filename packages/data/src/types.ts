@@ -201,6 +201,8 @@ export type Task = {
   createdBy: string;
   candidateCount: number;
   candidateLimit?: number;
+  /** When true, auto-greet matched passers after each screening chunk. */
+  autoGreet?: boolean;
   newCandidateCount: number;
   repeatCandidateCount: number;
   errorMessage: string | null;
@@ -392,6 +394,8 @@ export type ScheduleFrequency = "once" | "daily" | "weekdays" | "weekly";
 
 export type Schedule = {
   candidateLimit?: number;
+  /** When true, materialized tasks auto-greet matched passers after each chunk. */
+  autoGreet?: boolean;
   id: string;
   positionId: string;
   positionName: string;

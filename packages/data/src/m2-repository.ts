@@ -221,6 +221,7 @@ type ScheduleRow = {
   position_name: string;
   source: Schedule["source"];
   candidate_limit: number;
+  auto_greet: boolean;
   search_keyword: string | null;
   frequency: ScheduleFrequency;
   timezone: string;
@@ -238,6 +239,7 @@ function mapSchedule(row: ScheduleRow): Schedule {
     positionName: row.position_name,
     source: row.source,
     candidateLimit: row.candidate_limit,
+    autoGreet: row.auto_greet,
     searchKeyword: row.search_keyword,
     frequency: row.frequency,
     timezone: row.timezone,
@@ -262,14 +264,16 @@ export class M2Repository {
     nextRunAt: string;
     createdBy: string;
     candidateLimit?: number;
+    autoGreet?: boolean;
   }): Promise<Schedule> {
     const candidateLimit = screeningCandidateLimit(input.candidateLimit);
+    const autoGreet = input.autoGreet === true;
     const nextRunAt = new Date(input.nextRunAt);
     if (!Number.isFinite(nextRunAt.getTime())) throw new Error("nextRunAt must be a valid date.");
     return this.sql.begin(async (transaction) => {
       const replayRows = await transaction<ScheduleRow[]>`
         SELECT s.id, s.position_id, p.name AS position_name, s.source,
-          s.search_keyword, s.candidate_limit, s.frequency, s.timezone, s.next_run_at, s.enabled,
+          s.search_keyword, s.candidate_limit, s.auto_greet, s.frequency, s.timezone, s.next_run_at, s.enabled,
           s.created_by, s.version, s.created_at
         FROM schedules s JOIN positions p ON p.id = s.position_id
         WHERE s.idempotency_key = ${input.idempotencyKey}
@@ -279,6 +283,7 @@ export class M2Repository {
           row.position_id !== input.positionId ||
           row.source !== input.source ||
           row.candidate_limit !== candidateLimit ||
+          row.auto_greet !== autoGreet ||
           row.search_keyword !== (input.searchKeyword ?? null) ||
           row.frequency !== input.frequency ||
           row.timezone !== input.timezone ||
@@ -307,17 +312,17 @@ export class M2Repository {
       const inserted = await transaction<Array<{ id: string }>>`
         INSERT INTO schedules (
           id, idempotency_key, position_id, rule_version_id, source,
-          search_keyword, candidate_limit, frequency, timezone, next_run_at, created_by
+          search_keyword, candidate_limit, auto_greet, frequency, timezone, next_run_at, created_by
         ) VALUES (
           ${scheduleId}, ${input.idempotencyKey}, ${input.positionId}, ${ruleVersionId},
-          ${input.source}, ${input.searchKeyword ?? null}, ${candidateLimit}, ${input.frequency},
+          ${input.source}, ${input.searchKeyword ?? null}, ${candidateLimit}, ${autoGreet}, ${input.frequency},
           ${input.timezone}, ${nextRunAt}, ${input.createdBy}
         ) ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
       `;
       const rows = await transaction<ScheduleRow[]>`
         SELECT s.id, s.position_id, p.name AS position_name, s.source,
-          s.search_keyword, s.candidate_limit, s.frequency, s.timezone, s.next_run_at, s.enabled,
+          s.search_keyword, s.candidate_limit, s.auto_greet, s.frequency, s.timezone, s.next_run_at, s.enabled,
           s.created_by, s.version, s.created_at
         FROM schedules s JOIN positions p ON p.id = s.position_id
         WHERE s.idempotency_key = ${input.idempotencyKey}
@@ -330,7 +335,12 @@ export class M2Repository {
           INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
           VALUES (
             ${randomUUID()}, ${input.createdBy}, 'schedule.created', 'schedule',
-            ${schedule.id}, ${transaction.json({ frequency: input.frequency, nextRunAt: input.nextRunAt, candidateLimit })}
+            ${schedule.id}, ${transaction.json({
+              frequency: input.frequency,
+              nextRunAt: input.nextRunAt,
+              candidateLimit,
+              autoGreet
+            })}
           )
         `;
       }
@@ -342,7 +352,7 @@ export class M2Repository {
     const positionScope = options?.positionIds === undefined ? null : options.positionIds;
     const rows = await this.sql<ScheduleRow[]>`
       SELECT s.id, s.position_id, p.name AS position_name, s.source,
-        s.search_keyword, s.candidate_limit, s.frequency, s.timezone, s.next_run_at, s.enabled,
+        s.search_keyword, s.candidate_limit, s.auto_greet, s.frequency, s.timezone, s.next_run_at, s.enabled,
         s.created_by, s.version, s.created_at
       FROM schedules s JOIN positions p ON p.id = s.position_id
       WHERE (${positionScope}::uuid[] IS NULL OR s.position_id = ANY(${positionScope}::uuid[]))
@@ -361,7 +371,7 @@ export class M2Repository {
       WHERE id = ${input.scheduleId} AND version = ${input.expectedVersion}
       RETURNING id, position_id,
         (SELECT name FROM positions WHERE id = position_id) AS position_name,
-        source, search_keyword, candidate_limit, frequency, timezone, next_run_at, enabled,
+        source, search_keyword, candidate_limit, auto_greet, frequency, timezone, next_run_at, enabled,
         created_by, version, created_at
     `;
     if (!rows[0]) throw new Error("Schedule version conflict or schedule not found.");
@@ -383,13 +393,14 @@ export class M2Repository {
           source: "recommend" | "search";
           search_keyword: string | null;
           candidate_limit: number;
+          auto_greet: boolean;
           frequency: ScheduleFrequency;
           next_run_at: Date;
           created_by: string;
         }>
       >`
         SELECT id, position_id, rule_version_id, source, search_keyword, candidate_limit,
-          frequency, next_run_at, created_by
+          auto_greet, frequency, next_run_at, created_by
         FROM schedules
         WHERE enabled = true AND next_run_at <= ${now}
           AND EXISTS (SELECT 1 FROM positions p WHERE p.id = schedules.position_id AND p.status = 'active'
@@ -404,12 +415,14 @@ export class M2Repository {
         await transaction`
           INSERT INTO tasks (
             id, idempotency_key, position_id, rule_version_id, execution_mode,
-            source, search_keyword, status, created_by, schedule_id, scheduled_for, candidate_limit
+            source, search_keyword, status, created_by, schedule_id, scheduled_for,
+            candidate_limit, auto_greet
           ) VALUES (
             ${randomUUID()}, ${idempotencyKey}, ${schedule.position_id},
             ${schedule.rule_version_id}, 'scheduled', ${schedule.source},
             ${schedule.search_keyword}, 'queued', ${schedule.created_by},
-            ${schedule.id}, ${schedule.next_run_at}, ${schedule.candidate_limit}
+            ${schedule.id}, ${schedule.next_run_at}, ${schedule.candidate_limit},
+            ${schedule.auto_greet}
           ) ON CONFLICT (idempotency_key) DO NOTHING
         `;
         const next = nextScheduleAt(schedule.next_run_at, schedule.frequency);

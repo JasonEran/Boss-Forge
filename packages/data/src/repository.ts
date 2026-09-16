@@ -91,6 +91,7 @@ type TaskRow = {
   created_by: string;
   candidate_count: number;
   candidate_limit: number;
+  auto_greet: boolean;
   new_candidate_count: number;
   repeat_candidate_count: number;
   error_message: string | null;
@@ -203,6 +204,7 @@ function mapTask(row: TaskRow): Task {
     createdBy: row.created_by,
     candidateCount: row.candidate_count,
     candidateLimit: row.candidate_limit,
+    autoGreet: row.auto_greet,
     newCandidateCount: row.new_candidate_count,
     repeatCandidateCount: row.repeat_candidate_count,
     errorMessage: row.error_message,
@@ -279,7 +281,7 @@ const TASK_SELECT = `
     t.source_job_id AS boss_job_id, CASE WHEN t.source_job_id = p.boss_job_id THEN p.boss_job_name_unique ELSE false END AS boss_job_name_unique, t.rule_version_id,
     rv.version AS rule_version, rv.dictionary_version, rv.config AS rule_config, t.source_boss_filters,
     t.execution_mode, t.source, t.search_keyword, t.status, t.created_by,
-    t.candidate_count, t.candidate_limit, t.new_candidate_count, t.repeat_candidate_count,
+    t.candidate_count, t.candidate_limit, t.auto_greet, t.new_candidate_count, t.repeat_candidate_count,
     t.error_message, t.wait_reason_code, t.wait_reason, t.next_run_at,
     t.claim_token, t.version, t.created_at
   FROM tasks t
@@ -655,8 +657,10 @@ export class BossForgeRepository {
     searchKeyword?: string | null;
     createdBy: string;
     candidateLimit?: number;
+    autoGreet?: boolean;
   }): Promise<Task> {
     const candidateLimit = screeningCandidateLimit(input.candidateLimit);
+    const autoGreet = input.autoGreet === true;
     return this.sql.begin(async (transaction) => {
       const assertReplayMatches = (task: Task): Task => {
         if (
@@ -665,7 +669,8 @@ export class BossForgeRepository {
           task.searchKeyword !== (input.searchKeyword ?? null) ||
           task.createdBy !== input.createdBy ||
           task.executionMode !== "immediate" ||
-          task.candidateLimit !== candidateLimit
+          task.candidateLimit !== candidateLimit ||
+          Boolean(task.autoGreet) !== autoGreet
         ) {
           throw new Error("Idempotency-Key is already used for a different task request.");
         }
@@ -702,10 +707,11 @@ export class BossForgeRepository {
       const insertedRows = await transaction<Array<{ id: string }>>`
         INSERT INTO tasks (
           id, idempotency_key, position_id, rule_version_id, execution_mode,
-          source, search_keyword, status, created_by, candidate_limit
+          source, search_keyword, status, created_by, candidate_limit, auto_greet
         ) VALUES (
           ${taskId}, ${input.idempotencyKey}, ${input.positionId}, ${ruleVersionId},
-          'immediate', ${input.source}, ${input.searchKeyword ?? null}, 'queued', ${input.createdBy}, ${candidateLimit}
+          'immediate', ${input.source}, ${input.searchKeyword ?? null}, 'queued', ${input.createdBy},
+          ${candidateLimit}, ${autoGreet}
         ) ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
       `;
@@ -720,7 +726,12 @@ export class BossForgeRepository {
           id, actor_id, action, resource_type, resource_id, payload
         ) VALUES (
           ${randomUUID()}, ${input.createdBy}, 'task.immediate.requested',
-          'task', ${task.id}, ${transaction.json({ positionId: input.positionId, source: input.source, candidateLimit })}
+          'task', ${task.id}, ${transaction.json({
+            positionId: input.positionId,
+            source: input.source,
+            candidateLimit,
+            autoGreet
+          })}
         )
       `;
       return task;
@@ -1417,13 +1428,11 @@ export class BossForgeRepository {
           status: Task["status"];
           candidate_count: number;
           candidate_limit: number;
-          auto_contact_after_review: boolean;
+          auto_greet: boolean;
         }>
       >`
-        SELECT t.id, t.status, t.candidate_count, t.candidate_limit,
-          p.auto_contact_after_review
+        SELECT t.id, t.status, t.candidate_count, t.candidate_limit, t.auto_greet
         FROM tasks t
-        JOIN positions p ON p.id = t.position_id
         WHERE t.id = ${taskId}
         FOR UPDATE OF t
       `;
@@ -1447,7 +1456,7 @@ export class BossForgeRepository {
         !["waiting_review", "completed", "screening"].includes(task.status)
       ) {
         return {
-          autoGreetEnabled: task.auto_contact_after_review,
+          autoGreetEnabled: task.auto_greet,
           passers: [],
           candidateCount: task.candidate_count,
           candidateLimit: task.candidate_limit
@@ -1462,7 +1471,7 @@ export class BossForgeRepository {
           WHERE id = ${taskId}
         `;
       }
-      const passers = task.auto_contact_after_review
+      const passers = task.auto_greet
         ? await transaction<
             Array<{
               stateId: string;
@@ -1519,7 +1528,7 @@ export class BossForgeRepository {
         }
       }
       return {
-        autoGreetEnabled: task.auto_contact_after_review,
+        autoGreetEnabled: task.auto_greet,
         passers,
         candidateCount: task.candidate_count,
         candidateLimit: task.candidate_limit
@@ -1601,7 +1610,7 @@ export class BossForgeRepository {
         )
         AND (
           (
-            p.auto_contact_after_review = true
+            t.auto_greet = true
             AND EXISTS (
               SELECT 1 FROM candidate_position_states cps
               WHERE cps.latest_task_id = t.id

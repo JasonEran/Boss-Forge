@@ -19,6 +19,7 @@
     "db:up": "docker compose up -d postgres",
     "db:migrate": "tsx --env-file-if-exists=.env packages/data/src/migrate.ts",
     "db:clean-resumes": "tsx --env-file-if-exists=.env packages/data/src/clean-resume-data.ts",
+    "db:deep-clean": "tsx --env-file-if-exists=.env packages/data/src/deep-clean-run-data.ts",
     "m1:seed": "tsx --env-file-if-exists=.env apps/control-api/src/seed.ts",
     "api": "tsx --env-file-if-exists=.env apps/control-api/src/server.ts",
     "m1:run-once": "tsx --env-file-if-exists=.env apps/boss-worker/src/m1.ts",

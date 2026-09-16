@@ -211,6 +211,7 @@ export type Candidate = {
 };
 type Schedule = {
   candidateLimit?: number;
+  autoGreet?: boolean;
   id: string;
   positionName: string;
   frequency: 'once' | 'daily' | 'weekdays' | 'weekly';
@@ -1955,6 +1956,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           {frequencyLabel[schedule.frequency]} · 每次最多{' '}
                           {schedule.candidateLimit ?? DEFAULT_SCREENING_LIMIT}{' '}
                           人 ·{' '}
+                          {schedule.autoGreet ? '自动打招呼' : '仅筛选'} ·{' '}
                           {new Date(schedule.nextRunAt).toLocaleString('zh-CN')}
                         </p>
                       </div>
