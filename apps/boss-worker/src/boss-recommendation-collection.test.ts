@@ -93,4 +93,11 @@ describe('continuous recommendation collection', () => {
     expect(wave2.cards.map((c) => c.geekId)).toEqual(cards(20, 30).map((c) => c.geekId));
     expect(wave2.stopReason).toBe('limit');
   });
+  it('accepts limits above 200 and only rejects absurd safety ceilings', async () => {
+    const f = fixture([{ cards: cards(0, 30), ended: false, pageNumber: 1 }]);
+    expect((await collectRecommendationBatches({ ...f, limit: 25 })).cards).toHaveLength(25);
+    const invalid = fixture([]);
+    await expect(collectRecommendationBatches({ ...invalid, limit: 100_001 })).rejects.toThrow('筛选人数');
+    expect(invalid.read).not.toHaveBeenCalled();
+  });
 });

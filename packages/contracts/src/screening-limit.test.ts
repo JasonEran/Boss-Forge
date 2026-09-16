@@ -26,5 +26,7 @@ describe("screening chunks", () => {
     expect(screeningChunkLimit(30, 20)).toBe(10);
     expect(screeningChunkLimit(20, 20)).toBe(0);
     expect(screeningCandidateLimit(40)).toBe(40);
+    expect(screeningCandidateLimit(500)).toBe(500);
+    expect(screeningChunkSizes(100)).toEqual([20, 20, 20, 20, 20]);
   });
 });

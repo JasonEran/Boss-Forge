@@ -27,7 +27,7 @@ try {
   const fill = async (selector: string, value: string) => {
     await page.click(selector, { count: 3 }); await page.keyboard.press('Backspace'); await page.type(selector, value);
   };
-  await fill('#screening-count', '201');
+  await fill('#screening-count', '100001');
   assert.equal(await page.$eval('#screening-count', e => e.getAttribute('aria-invalid')), 'true');
   assert.equal(await page.evaluate(() => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.innerText.startsWith('开始筛选'))!.disabled), true);
   await fill('#screening-count', '7');
@@ -48,8 +48,12 @@ try {
   const scheduleResponse = page.waitForResponse(r => r.url() === api + '/api/schedules' && r.request().method() === 'POST');
   await click('保存定时任务');
   assert.equal((await (await scheduleResponse).json()).schedule.candidateLimit, 11);
-  const invalid = await fetch(api + '/api/tasks', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify({ positionId: position!.id, source: 'recommend', candidateLimit: 385 }) });
+  // 385 is allowed now (old 200 product cap removed); only absurd ceilings are rejected.
+  const large = await fetch(api + '/api/tasks', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify({ positionId: position!.id, source: 'recommend', candidateLimit: 385 }) });
+  assert.equal(large.status, 201);
+  assert.equal(((await large.json()) as { task: { candidateLimit: number } }).task.candidateLimit, 385);
+  const invalid = await fetch(api + '/api/tasks', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify({ positionId: position!.id, source: 'recommend', candidateLimit: 100_001 }) });
   assert.equal(invalid.status, 400);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ ok: true, default: 20, selected: 7, scheduled: 11, invalidInputBlocked: true, invalidApiRejected: true, stopped: true, mobile375: true, pageErrors: 0 }));
+  console.log(JSON.stringify({ ok: true, default: 20, selected: 7, scheduled: 11, large385: true, invalidInputBlocked: true, invalidApiRejected: true, stopped: true, mobile375: true, pageErrors: 0 }));
 } finally { await browser.close(); await sql.end(); }

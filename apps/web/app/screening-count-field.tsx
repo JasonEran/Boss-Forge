@@ -49,7 +49,7 @@ export function ScreeningCountField({
           onChange={(event) => onChange(event.target.value)}
         />
         <span className="text-sm text-muted-foreground">人</span>
-        {[10, 20, 50, 100].map((count) => (
+        {[10, 20, 50, 100, 200, 500].map((count) => (
           <Button
             key={count}
             type="button"
@@ -64,12 +64,12 @@ export function ScreeningCountField({
         ))}
       </div>
       <p id={`${id}-hint`} className="text-xs leading-5 text-muted-foreground">
-        可填 1–{MAX_SCREENING_LIMIT}{' '}
-        人。按设定人数精确筛选（分块最多 20 人/批）；候选人不足时会在确认列表耗尽后停止，并写明原因。未通过和读取异常也计入人数。
+        按需要填写精确人数（不设 200
+        人业务上限）。系统按最多 20 人/批连续筛选；候选人不足时会在确认列表耗尽后停止，并写明原因。未通过和读取异常也计入人数。
       </p>
       {!valid ? (
         <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
-          请输入 1–{MAX_SCREENING_LIMIT} 的整数。
+          请输入不小于 1 的整数人数。
         </p>
       ) : null}
     </div>

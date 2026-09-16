@@ -18,7 +18,7 @@ try {
   assert.equal(task.candidateLimit, 20);
   assert.equal((await repo.createImmediateTask(request)).id, task.id);
   await assert.rejects(repo.createImmediateTask({ ...request, candidateLimit: 21 }), /Idempotency/);
-  await assert.rejects(repo.createImmediateTask({ ...request, idempotencyKey: randomUUID(), candidateLimit: 201 }), /筛选人数/);
+  await assert.rejects(repo.createImmediateTask({ ...request, idempotencyKey: randomUUID(), candidateLimit: 100_001 }), /筛选人数/);
   const claimed = await repo.claimNextTask("limit-test-worker", position.bossAccountId);
   assert(claimed);
   const records: CandidateEvaluationRecord[] = Array.from({ length: 385 }, (_, i) => ({

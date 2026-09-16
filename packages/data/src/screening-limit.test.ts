@@ -16,12 +16,14 @@ export function screeningLimitFixture(index: number): CandidateEvaluationRecord 
 }
 
 describe("screening admission limit", () => {
-  it("defaults to 20 and accepts the inclusive boundaries", () => {
+  it("defaults to 20 and accepts inclusive boundaries including values above 200", () => {
     expect(screeningCandidateLimit()).toBe(20);
     expect(screeningCandidateLimit(1)).toBe(1);
     expect(screeningCandidateLimit(200)).toBe(200);
+    expect(screeningCandidateLimit(500)).toBe(500);
+    expect(screeningCandidateLimit(100_000)).toBe(100_000);
   });
-  it.each([null, "20", "", true, 0, -1, 1.5, 201, Infinity, NaN])("rejects invalid limit %s", (value) => {
+  it.each([null, "20", "", true, 0, -1, 1.5, 100_001, Infinity, NaN])("rejects invalid limit %s", (value) => {
     expect(() => screeningCandidateLimit(value)).toThrow("筛选人数");
   });
   it("only admits the selected 20 from an accumulated 385-card list", () => {
@@ -29,6 +31,7 @@ describe("screening admission limit", () => {
     expect(limitScreeningRecords(records, 20)).toEqual(records.slice(0, 20));
     expect(limitScreeningRecords(records, 1)).toEqual(records.slice(0, 1));
     expect(limitScreeningRecords(records, 200)).toHaveLength(200);
+    expect(limitScreeningRecords(records, 385)).toHaveLength(385);
   });
   it("deduplicates stable identities before counting and does not count decisions as a target", () => {
     const one = screeningLimitFixture(0);
