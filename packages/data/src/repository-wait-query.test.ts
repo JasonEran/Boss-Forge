@@ -131,6 +131,49 @@ describe("resume screening wait query", () => {
     );
   });
 
+  it("reclaims mid-flight resumes viewed on this CPS without requiring retry_authorized", async () => {
+    const queries: string[] = [];
+    const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(
+        strings.reduce(
+          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
+          "",
+        ),
+      );
+      return Promise.resolve([]);
+    }) as unknown as Database;
+    Object.assign(transaction, {
+      begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
+    });
+
+    const repository = new BossForgeRepository(transaction);
+    await expect(
+      repository.claimNextResumeScreening(
+        "worker",
+        "boss-account",
+        new Date("2026-09-04T00:00:00.000Z"),
+      ),
+    ).resolves.toBeNull();
+
+    const query = queries.join("\n").replace(/\s+/gu, " ");
+    // Same-CPS mid-flight view may reclaim while still queued / stale processing.
+    expect(query).toContain("mid_flight_view.action = 'candidate.resume_viewed'");
+    expect(query).toContain(
+      "mid_flight_view.resource_type = 'candidate_position_state'",
+    );
+    expect(query).toContain(
+      "mid_flight_view.resource_id = candidate_position_states.id::text",
+    );
+    // Must stay scoped to this CPS — not payload candidateId — so finished
+    // same-day views on another state still suppress new admits.
+    const midFlightBlock = query.slice(
+      query.indexOf("mid_flight_view.action"),
+      query.indexOf("ORDER BY is_repeat"),
+    );
+    expect(midFlightBlock).not.toContain("candidateId");
+    expect(query).toContain("candidate.resume_screening.retry_authorized");
+  });
+
   it("checks claimable same-account contacts in the same atomic resume claim query", async () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {

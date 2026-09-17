@@ -1949,6 +1949,21 @@ export class BossForgeRepository {
                   '-infinity'::timestamptz
                 )
             )
+            OR EXISTS (
+              -- Mid-flight orphan: this CPS was opened today but never reached
+              -- screened/failed. Claim set is already queued / stale processing,
+              -- so reclaim matches UI requeue without ops writing retry_authorized.
+              -- Do NOT widen to other CPS rows for the same candidateId — same-day
+              -- cross-task suppression for finished views must remain.
+              SELECT 1
+              FROM audit_logs mid_flight_view
+              WHERE mid_flight_view.action = 'candidate.resume_viewed'
+                AND mid_flight_view.resource_type =
+                  'candidate_position_state'
+                AND mid_flight_view.resource_id =
+                  candidate_position_states.id::text
+                AND mid_flight_view.created_at >= ${viewedSince}::timestamptz
+            )
           )
         ORDER BY is_repeat ASC,
           COALESCE(resume_screening_next_attempt_at, '-infinity'::timestamptz) ASC,
