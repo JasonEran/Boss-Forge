@@ -4,10 +4,12 @@ import {
   BossBrowserControlError
 } from "@boss-forge/boss-cli-adapter";
 import {
+  autoGreetDailyLimitFromEnvironment,
   contactDispatchModeFromEnvironment,
   contactPreviewApprovalSigningKeyFromEnvironment,
   contactSideEffectsModeFromEnvironment,
   issueContactPreviewApproval,
+  remainingAutoGreetDailySlots,
   type CandidateSourceLocator,
   type ContactPreviewApprovalContext
 } from "@boss-forge/contracts";
@@ -105,7 +107,34 @@ export async function finalizeScreeningChunks(input: {
 
   for (const taskId of taskIds) {
     const prepared = await input.repository.prepareAutoGreetPassers(taskId);
-    if (prepared.autoGreetEnabled && prepared.passers.length > 0) {
+    const dailyLimit = autoGreetDailyLimitFromEnvironment(process.env);
+    let stopForDailyCap = false;
+    if (prepared.autoGreetEnabled) {
+      const used = await input.repository.countAccountDailyRealGreets(
+        input.bossAccountId
+      );
+      const remaining = remainingAutoGreetDailySlots(used, dailyLimit);
+      if (remaining <= 0) {
+        const stopped = await input.repository.stopTaskForDailyAutoGreetCap({
+          taskId,
+          bossAccountId: input.bossAccountId,
+          used,
+          limit: dailyLimit
+        });
+        console.warn(
+          JSON.stringify({
+            ok: false,
+            event: "m1.auto_greet.daily_cap_reached",
+            taskId,
+            used,
+            limit: dailyLimit,
+            stopped
+          })
+        );
+        worked = worked || stopped;
+        continue;
+      }
+      if (prepared.passers.length > 0) {
       if (!transportMode) {
         console.warn(
           JSON.stringify({
@@ -147,7 +176,8 @@ export async function finalizeScreeningChunks(input: {
         } else {
           const now = new Date();
           let submitted = 0;
-          for (const passer of prepared.passers) {
+          const passers = prepared.passers.slice(0, remaining);
+          for (const passer of passers) {
             try {
               const target = await input.m2Repository.previewContactTarget(
                 passer.stateId
@@ -215,13 +245,38 @@ export async function finalizeScreeningChunks(input: {
               event: "m1.auto_greet.enqueued",
               taskId,
               submitted,
-              requested: prepared.passers.length
+              requested: prepared.passers.length,
+              dailyLimit,
+              dailyUsedBefore: used,
+              dailyRemainingBefore: remaining
             })
           );
           worked = true;
+          if (used + submitted >= dailyLimit) {
+            stopForDailyCap = true;
+            const stopped = await input.repository.stopTaskForDailyAutoGreetCap({
+              taskId,
+              bossAccountId: input.bossAccountId,
+              used: used + submitted,
+              limit: dailyLimit
+            });
+            console.warn(
+              JSON.stringify({
+                ok: false,
+                event: "m1.auto_greet.daily_cap_reached",
+                taskId,
+                used: used + submitted,
+                limit: dailyLimit,
+                stopped
+              })
+            );
+            worked = worked || stopped;
+          }
         }
       }
+      }
     }
+    if (stopForDailyCap) continue;
     const continued = await input.repository.continueScreeningChunk(taskId);
     if (continued) {
       console.log(

@@ -84,6 +84,7 @@ import {
   validScreeningCount,
 } from './screening-count-field';
 import { DEFAULT_SCREENING_LIMIT } from '../../../packages/contracts/src/screening-limit';
+import { isDailyAutoGreetCapStopMessage } from '../../../packages/contracts/src/auto-greet-daily-limit';
 import { ScheduleDialog } from './schedule-dialog';
 import {
   semanticProviderDisplayStatus,
@@ -479,6 +480,13 @@ const taskStatus: Record<Task['status'], string> = {
   failed: '执行失败',
   cancelled: '已取消',
 };
+
+function taskStatusLabel(task: Pick<Task, 'status' | 'errorMessage'>): string {
+  if (task.status === 'cancelled' && isDailyAutoGreetCapStopMessage(task.errorMessage)) {
+    return '已停用';
+  }
+  return taskStatus[task.status];
+}
 const ruleStatusLabel: Record<LatestRule['status'], string> = {
   draft: '草稿',
   pending_approval: '等待负责人发布',
@@ -527,6 +535,8 @@ const auditActionLabel: Record<string, string> = {
   'candidate.resume_screening.requeued': '重新加入简历精筛',
   'candidate.resume_view_quota.reset': '重置本轮简历查看软额度',
   'schedule.created': '创建定时计划',
+  'task.retried': '重试筛选任务',
+  'task.stopped_daily_greet_cap': '达每日打招呼上限，已停用任务',
   'schedule.cancelled': '停用定时计划',
   'contact.intent.created': '创建联系意图',
   'contact.sent': '联系成功',
@@ -1149,7 +1159,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
         >
           <SelectValue placeholder="选择筛选任务">
             {candidateTask
-              ? `${new Date(candidateTask.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${candidateTask.positionName} · ${taskStatus[candidateTask.status]}`
+              ? `${new Date(candidateTask.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${candidateTask.positionName} · ${taskStatusLabel(candidateTask)}`
               : '选择筛选任务'}
           </SelectValue>
         </SelectTrigger>
@@ -1164,7 +1174,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                   hour: '2-digit',
                   minute: '2-digit',
                 })}{' '}
-                · {item.positionName} · {taskStatus[item.status]}
+                · {item.positionName} · {taskStatusLabel(item)}
               </SelectItem>
             ))}
         </SelectContent>
@@ -1422,7 +1432,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                 <CardAction>
                   {latestTask ? (
                     <Badge variant="secondary">
-                      {taskStatus[latestTask.status]}
+                      {taskStatusLabel(latestTask)}
                     </Badge>
                   ) : null}
                 </CardAction>
@@ -1438,7 +1448,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                   <div>
                     <p className="text-muted-foreground">最新任务</p>
                     <p className="mt-1 font-medium">
-                      {latestTask ? taskStatus[latestTask.status] : '暂无任务'}
+                      {latestTask ? taskStatusLabel(latestTask) : '暂无任务'}
                     </p>
                   </div>
                   <div>
@@ -1876,7 +1886,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                 <CardAction>
                   {latestTask ? (
                     <Badge variant="secondary">
-                      {taskStatus[latestTask.status]}
+                      {taskStatusLabel(latestTask)}
                     </Badge>
                   ) : null}
                 </CardAction>
@@ -2063,7 +2073,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           </TableCell>
                           <TableCell className="pr-4 text-right">
                             <Badge variant="outline">
-                              {taskStatus[task.status]}
+                              {taskStatusLabel(task)}
                             </Badge>
                           </TableCell>
                           <TableCell className="pr-4 text-right">

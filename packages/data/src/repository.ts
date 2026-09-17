@@ -1,6 +1,6 @@
 import { enqueueRecruitmentAssessment } from "./recruitment-repository.js";
 import { limitScreeningRecords } from "./screening-limit.js";
-import { screeningCandidateLimit } from "@boss-forge/contracts";
+import { screeningCandidateLimit, dailyAutoGreetCapStopMessage } from "@boss-forge/contracts";
 import { assertRuleScreeningSource } from "./rule-config.js";
 import { randomUUID } from "node:crypto";
 import { bossRecommendationFilterPlanSchema, type BossRecommendationFilterPlan } from "@boss-forge/contracts";
@@ -1734,6 +1734,125 @@ export class BossForgeRepository {
       LIMIT 5
     `;
     return rows.map((row) => row.id);
+  }
+
+  /**
+   * Account-day real auto-greet usage (Asia/Shanghai).
+   * Counts sent + still-queued (ready/processing) + uncertain (consumed attempt).
+   */
+  async countAccountDailyRealGreets(bossAccountId: string): Promise<number> {
+    const rows = await this.sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+      FROM contact_intents ci
+      JOIN tasks t ON t.id = ci.task_id
+      JOIN positions p ON p.id = t.position_id
+      WHERE p.boss_account_id = ${bossAccountId}
+        AND ci.action_kind = 'greet'
+        AND ci.transport_mode = 'real'
+        AND ci.status IN ('sent', 'ready', 'processing', 'uncertain')
+        AND (timezone('Asia/Shanghai', COALESCE(ci.finished_at, ci.created_at)))::date
+          = (timezone('Asia/Shanghai', now()))::date
+    `;
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /**
+   * Stop an auto-greet screening task at the account-day greet cap and disable
+   * its schedule when present (schedule UI shows 已停用).
+   */
+  async stopTaskForDailyAutoGreetCap(input: {
+    taskId: string;
+    bossAccountId: string;
+    used: number;
+    limit: number;
+  }): Promise<boolean> {
+    return this.sql.begin(async (transaction) => {
+      const tasks = await transaction<
+        Array<{
+          id: string;
+          status: Task["status"];
+          auto_greet: boolean;
+          schedule_id: string | null;
+          schedule_version: number | null;
+        }>
+      >`
+        SELECT t.id, t.status, t.auto_greet, t.schedule_id, s.version AS schedule_version
+        FROM tasks t
+        LEFT JOIN schedules s ON s.id = t.schedule_id
+        WHERE t.id = ${input.taskId}
+        FOR UPDATE OF t
+      `;
+      const task = tasks[0];
+      if (!task) return false;
+      if (!task.auto_greet) return false;
+      if (!["queued", "running", "screening", "waiting_review"].includes(task.status)) {
+        return false;
+      }
+      const message = dailyAutoGreetCapStopMessage(input.limit);
+      await transaction`
+        UPDATE tasks
+        SET status = 'cancelled',
+          error_message = ${message},
+          finished_at = now(),
+          claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
+          wait_reason_code = NULL, wait_reason = NULL, next_run_at = NULL,
+          last_progress_at = now(), version = version + 1
+        WHERE id = ${input.taskId}
+      `;
+      await transaction`
+        UPDATE candidate_position_states
+        SET resume_screening_status = 'not_requested',
+          resume_screening_attempts = 0,
+          resume_screening_claimed_by = NULL,
+          resume_screening_claimed_at = NULL,
+          resume_screening_error = NULL,
+          resume_screening_error_code = NULL,
+          resume_screening_next_attempt_at = NULL,
+          version = version + 1, updated_at = now()
+        WHERE latest_task_id = ${input.taskId}
+          AND resume_screening_status IN ('queued', 'processing')
+      `;
+      let scheduleDisabled = false;
+      if (task.schedule_id) {
+        const disabled = await transaction<Array<{ id: string }>>`
+          UPDATE schedules
+          SET enabled = false, version = version + 1, updated_at = now()
+          WHERE id = ${task.schedule_id} AND enabled = true
+          RETURNING id
+        `;
+        scheduleDisabled = Boolean(disabled[0]);
+        if (scheduleDisabled) {
+          await transaction`
+            INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+            VALUES (
+              ${randomUUID()}, 'system:auto-greet-daily-cap', 'schedule.cancelled',
+              'schedule', ${task.schedule_id},
+              ${transaction.json({
+                reason: "daily_auto_greet_cap",
+                taskId: input.taskId,
+                used: input.used,
+                limit: input.limit
+              })}
+            )
+          `;
+        }
+      }
+      await transaction`
+        INSERT INTO audit_logs (id, actor_id, action, resource_type, resource_id, payload)
+        VALUES (
+          ${randomUUID()}, 'system:auto-greet-daily-cap', 'task.stopped_daily_greet_cap',
+          'task', ${input.taskId},
+          ${transaction.json({
+            bossAccountId: input.bossAccountId,
+            used: input.used,
+            limit: input.limit,
+            scheduleDisabled,
+            message
+          })}
+        )
+      `;
+      return true;
+    });
   }
 
   async claimNextResumeScreening(

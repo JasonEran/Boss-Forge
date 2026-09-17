@@ -88,6 +88,8 @@ describe("chunked filter + auto-greet orchestration (30 → 20+10)", () => {
           candidateLimit: 30
         };
       }),
+      countAccountDailyRealGreets: vi.fn(async () => 0),
+      stopTaskForDailyAutoGreetCap: vi.fn(async () => false),
       continueScreeningChunk: vi.fn(async () => {
         order.push("continue");
         return true;
@@ -138,6 +140,50 @@ describe("chunked filter + auto-greet orchestration (30 → 20+10)", () => {
     expect(order.indexOf("prepare")).toBeLessThan(order.indexOf("continue"));
     expect(screeningChunkLimit(30, 20)).toBe(10);
 
+    vi.unstubAllEnvs();
+  });
+
+  it("stops the task instead of continuing when the account-day greet cap is already full", async () => {
+    const repository = {
+      listTasksReadyForChunkFinalize: vi.fn(async () => ["task-cap"]),
+      prepareAutoGreetPassers: vi.fn(async () => ({
+        autoGreetEnabled: true,
+        createdBy: "user-1",
+        passers: [
+          {
+            stateId: "state-1",
+            stateVersion: 1,
+            candidateName: "Alice",
+            positionId: "pos-1",
+            bossAccountId: "boss-account-01",
+            bossJobId: "job-1"
+          }
+        ],
+        candidateCount: 140,
+        candidateLimit: 600
+      })),
+      countAccountDailyRealGreets: vi.fn(async () => 200),
+      stopTaskForDailyAutoGreetCap: vi.fn(async () => true),
+      continueScreeningChunk: vi.fn(async () => true)
+    };
+    vi.stubEnv("BOSS_FORGE_AUTO_GREET_DAILY_LIMIT", "200");
+    vi.stubEnv("BOSS_FORGE_CONTACT_DISPATCH_MODE", "fake");
+    vi.stubEnv("BOSS_FORGE_REAL_GREET_ENABLED", "0");
+
+    const worked = await finalizeScreeningChunks({
+      repository: repository as never,
+      m2Repository: {} as never,
+      bossAccountId: "boss-account-01"
+    });
+
+    expect(worked).toBe(true);
+    expect(repository.stopTaskForDailyAutoGreetCap).toHaveBeenCalledWith({
+      taskId: "task-cap",
+      bossAccountId: "boss-account-01",
+      used: 200,
+      limit: 200
+    });
+    expect(repository.continueScreeningChunk).not.toHaveBeenCalled();
     vi.unstubAllEnvs();
   });
 });
