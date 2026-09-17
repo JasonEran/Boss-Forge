@@ -106,13 +106,24 @@ async function clearStaleLocalLock(path: string): Promise<boolean> {
   const metadata = await readMetadata(path);
   if (!metadata) return false;
   // A PID is meaningful only inside the current host/container namespace. Never
-  // remove a lock written by another hostname: it may still protect the one
-  // authenticated browser session in a sibling container.
+  // remove a fresh lock written by another hostname: it may still protect the
+  // one authenticated browser session in a sibling container.
   const { accountLockStaleMs } = accountLockEnv();
   const isForeignLock = metadata.hostname !== hostname();
   if (isForeignLock) {
     const ageMs = lockMetadataAgeMs(metadata.acquiredAt);
     if (ageMs === null || ageMs < accountLockStaleMs) return false;
+    // Past the stale window the prior container is gone; its PID is unrelated
+    // in this namespace and must not block reclaim after compose recreate.
+    try {
+      await unlink(path);
+      return true;
+    } catch (error: unknown) {
+      const code =
+        error && typeof error === "object" && "code" in error ? error.code : null;
+      if (code === "ENOENT") return true;
+      throw error;
+    }
   }
   if (processExists(metadata.pid)) return false;
   try {
