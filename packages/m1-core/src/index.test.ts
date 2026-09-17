@@ -4,6 +4,7 @@ import { createInstitutionCatalog, TEM8_DICTIONARY_VERSION } from "@boss-forge/r
 import { describe, expect, it } from "vitest";
 import {
   candidateFingerprint,
+  candidateSourceReference,
   evaluateCandidate,
   extractEducationExperiences
 } from "./index.js";
@@ -106,6 +107,25 @@ describe("M1 candidate pipeline", () => {
     const first = candidate();
     const second = candidate({ fields: { 经验: "4年", 学历: "本科" } });
     expect(candidateFingerprint(first)).toBe(candidateFingerprint(second));
+  });
+
+  it("uses geek id in sourceReference so multi-wave index collisions stay unique", () => {
+    const alice = candidate({
+      index: 1,
+      name: "张三",
+      sourceLocator: { kind: "boss_geek_id", value: "geek-a" },
+    });
+    const bobSameSlot = candidate({
+      index: 1,
+      name: "张三",
+      sourceLocator: { kind: "boss_geek_id", value: "geek-b" },
+    });
+    expect(candidateSourceReference(alice)).toBe("recommend:1:geek:geek-a:张三");
+    expect(candidateSourceReference(bobSameSlot)).toBe("recommend:1:geek:geek-b:张三");
+    expect(candidateSourceReference(alice)).not.toBe(candidateSourceReference(bobSameSlot));
+    expect(candidateSourceReference(candidate({ index: 3, name: "李四" }))).toBe(
+      "recommend:3:李四",
+    );
   });
 
   it("keeps the same fingerprint when mutable expectation fields change", () => {

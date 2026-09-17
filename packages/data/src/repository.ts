@@ -957,12 +957,22 @@ export class BossForgeRepository {
       const stateCount = stateCounts[0]?.state_count ?? 0;
       const queuedCount = stateCounts[0]?.queued_count ?? 0;
       const pendingReviewCount = stateCounts[0]?.pending_review_count ?? 0;
-      if (stateCount > 0 && queuedCount === 0 && pendingReviewCount === 0) {
+      // Failed mid multi-wave (e.g. identity clash on a later chunk): keep
+      // admitted rows and re-queue collection toward the remaining headcount.
+      const canContinueCollection =
+        task.candidate_count < task.candidate_limit &&
+        ["failed", "cancelled"].includes(task.status);
+      if (
+        stateCount > 0 &&
+        queuedCount === 0 &&
+        pendingReviewCount === 0 &&
+        !canContinueCollection
+      ) {
         throw new Error("Task has no unfinished screening or review work to retry.");
       }
       const nextStatus = queuedCount > 0
         ? "screening"
-        : stateCount > 0
+        : pendingReviewCount > 0
           ? "waiting_review"
           : "queued";
       const resultingVersion = task.version + 1;
@@ -1152,25 +1162,39 @@ export class BossForgeRepository {
           ) AS repeated
         `;
         const isRepeat = repeatRows[0]?.repeated ?? false;
-        const snapshotRows = await transaction<Array<{ id: string; candidate_id: string }>>`
-          INSERT INTO candidate_snapshots (
-            id, task_id, candidate_id, source_reference, source, source_locator, raw_fields,
-            source_evidence, raw_text
-          ) VALUES (
-            ${randomUUID()}, ${task.id}, ${candidateId}, ${record.sourceReference},
-            ${record.source}, ${record.sourceLocator ? transaction.json(record.sourceLocator) : null},
-            ${transaction.json(record.rawFields)},
-            ${transaction.json(record.sourceEvidence)}, ${record.rawText}
-          )
-          ON CONFLICT (task_id, source_reference) DO UPDATE SET
-            source_locator = EXCLUDED.source_locator,
-            raw_fields = EXCLUDED.raw_fields,
-            source_evidence = EXCLUDED.source_evidence,
-            raw_text = EXCLUDED.raw_text
-          RETURNING id, candidate_id
-        `;
+        const insertSnapshot = async (sourceReference: string) =>
+          transaction<Array<{ id: string; candidate_id: string }>>`
+            INSERT INTO candidate_snapshots (
+              id, task_id, candidate_id, source_reference, source, source_locator, raw_fields,
+              source_evidence, raw_text
+            ) VALUES (
+              ${randomUUID()}, ${task.id}, ${candidateId}, ${sourceReference},
+              ${record.source}, ${record.sourceLocator ? transaction.json(record.sourceLocator) : null},
+              ${transaction.json(record.rawFields)},
+              ${transaction.json(record.sourceEvidence)}, ${record.rawText}
+            )
+            ON CONFLICT (task_id, source_reference) DO UPDATE SET
+              source_locator = EXCLUDED.source_locator,
+              raw_fields = EXCLUDED.raw_fields,
+              source_evidence = EXCLUDED.source_evidence,
+              raw_text = EXCLUDED.raw_text
+            RETURNING id, candidate_id
+          `;
+        // Multi-wave collects restart list indices; index+name refs can collide with
+        // an earlier admit for a different person. Disambiguate instead of failing
+        // the whole screening task.
+        let snapshotRows = await insertSnapshot(record.sourceReference);
         if (snapshotRows[0]!.candidate_id !== candidateId) {
-          throw new Error("Task source reference resolved to a different candidate identity.");
+          const disambiguator =
+            record.sourceLocator?.kind === "boss_geek_id"
+              ? record.sourceLocator.value.trim()
+              : record.fingerprint;
+          snapshotRows = await insertSnapshot(
+            `${record.sourceReference}#${disambiguator || randomUUID()}`,
+          );
+          if (snapshotRows[0]!.candidate_id !== candidateId) {
+            continue;
+          }
         }
         const snapshotId = snapshotRows[0]!.id;
         await transaction`

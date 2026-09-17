@@ -782,6 +782,18 @@ function evaluateNode(
   return withEnglishLevels(evaluateGenericRuleNode(node, candidate, ruleText, resumeText));
 }
 
+/** Stable per-task snapshot key: include geek id so multi-wave re-reads do not collide on list index+name. */
+export function candidateSourceReference(candidate: ParsedCandidate): string {
+  const geekId =
+    candidate.sourceLocator?.kind === "boss_geek_id"
+      ? candidate.sourceLocator.value.trim()
+      : "";
+  if (geekId) {
+    return `${candidate.source}:${candidate.index}:geek:${geekId}:${candidate.name}`;
+  }
+  return `${candidate.source}:${candidate.index}:${candidate.name}`;
+}
+
 function legacyEvaluation(
   candidate: ParsedCandidate,
   config: Extract<RuleConfig, { requiredCapabilities: unknown }>,
@@ -795,7 +807,7 @@ function legacyEvaluation(
   const belowConfiguredConfidence =
     evaluation.decision === "matched" && evaluation.confidence < tem8Requirement.minimumConfidence;
   return {
-    sourceReference: `${candidate.source}:${candidate.index}:${candidate.name}`,
+    sourceReference: candidateSourceReference(candidate),
     ...(candidate.sourceLocator ? { sourceLocator: candidate.sourceLocator } : {}),
     source: candidate.source,
     displayName: candidate.name,
@@ -883,7 +895,7 @@ function compositeEvaluation(
     .slice(0, 5)
     .join("；");
   return {
-    sourceReference: `${candidate.source}:${candidate.index}:${candidate.name}`,
+    sourceReference: candidateSourceReference(candidate),
     ...(candidate.sourceLocator ? { sourceLocator: candidate.sourceLocator } : {}),
     source: candidate.source,
     displayName: candidate.name,
