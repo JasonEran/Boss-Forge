@@ -1590,7 +1590,9 @@ export class BossForgeRepository {
                 SELECT 1 FROM contact_intents ci
                 WHERE ci.candidate_position_state_id = cps.id
                   AND ci.action_kind = 'greet'
-                  AND ci.status IN ('ready', 'processing', 'sent', 'uncertain', 'simulated')
+                  AND ci.status IN (
+                    'ready', 'processing', 'sent', 'uncertain', 'simulated', 'failed'
+                  )
               )
             ORDER BY cps.updated_at ASC, cps.id
           `
@@ -1716,7 +1718,9 @@ export class BossForgeRepository {
                   SELECT 1 FROM contact_intents ci
                   WHERE ci.candidate_position_state_id = cps.id
                     AND ci.action_kind = 'greet'
-                    AND ci.status IN ('ready', 'processing', 'sent', 'uncertain', 'simulated')
+                    AND ci.status IN (
+                      'ready', 'processing', 'sent', 'uncertain', 'simulated', 'failed'
+                    )
                 )
             )
           )

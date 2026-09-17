@@ -1911,7 +1911,14 @@ export class M2Repository {
           ci.created_by, ci.version, ci.created_at, ca.id AS authorization_id,
           policy.external_version_id AS contact_policy_version_id,
           ca.odoo_database_uuid, ca.odoo_job_id, ca.odoo_applicant_id,
-          oe.attempts + 1 AS attempt_no
+          GREATEST(
+            oe.attempts,
+            COALESCE((
+              SELECT MAX(prior_attempt.attempt_no)
+              FROM contact_attempts prior_attempt
+              WHERE prior_attempt.contact_intent_id = ci.id
+            ), 0)
+          ) + 1 AS attempt_no
         FROM outbox_events oe
         JOIN contact_intents ci ON ci.id = oe.aggregate_id
         JOIN candidate_position_states cps ON cps.id = ci.candidate_position_state_id
