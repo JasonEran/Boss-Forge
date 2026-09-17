@@ -1832,10 +1832,23 @@ export class M2Repository {
   ): Promise<ContactDispatchJob | null> {
     return this.sql.begin(async (transaction) => {
       await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${'contact-pacing:' + bossAccountId}::text, 0))`;
+      // Only an in-flight processing send must serialize the account browser.
+      // Uncertain is already finished and needs human reconcile, but blocking
+      // every claim forever freezes multi-wave auto-greet (e.g. 600-run) until
+      // someone clicks verify-not-sent. Keep a short grace window so a just-
+      // marked uncertain receipt is not immediately followed by another send.
       const busy = await transaction`
         SELECT ci.id FROM contact_intents ci JOIN tasks t ON t.id = ci.task_id JOIN positions p ON p.id = t.position_id
         WHERE p.boss_account_id = ${bossAccountId} AND ci.transport_mode = ${transportMode}
-          AND ci.status IN ('processing', 'uncertain') LIMIT 1
+          AND (
+            ci.status = 'processing'
+            OR (
+              ci.status = 'uncertain'
+              AND ci.finished_at IS NOT NULL
+              AND ci.finished_at > now() - interval '10 minutes'
+            )
+          )
+        LIMIT 1
       `;
       if (busy[0]) return null;
       const rows = await transaction<
