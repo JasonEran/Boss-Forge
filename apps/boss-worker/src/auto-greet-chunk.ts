@@ -252,12 +252,15 @@ export async function finalizeScreeningChunks(input: {
             })
           );
           worked = true;
-          if (used + submitted >= dailyLimit) {
+          const usedAfter = await input.repository.countAccountDailyRealGreets(
+            input.bossAccountId
+          );
+          if (usedAfter >= dailyLimit) {
             stopForDailyCap = true;
             const stopped = await input.repository.stopTaskForDailyAutoGreetCap({
               taskId,
               bossAccountId: input.bossAccountId,
-              used: used + submitted,
+              used: usedAfter,
               limit: dailyLimit
             });
             console.warn(
@@ -265,7 +268,9 @@ export async function finalizeScreeningChunks(input: {
                 ok: false,
                 event: "m1.auto_greet.daily_cap_reached",
                 taskId,
-                used: used + submitted,
+                used: usedAfter,
+                submitted,
+                dailyUsedBefore: used,
                 limit: dailyLimit,
                 stopped
               })

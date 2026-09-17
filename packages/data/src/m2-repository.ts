@@ -13,6 +13,7 @@ import {
   contactSideEffectsModeFromEnvironment,
   contactSourceLocatorSha256,
   isContactPreviewApproval,
+  isDailyAutoGreetCapStopMessage,
   sameContactPreviewApproval,
   verifyContactPreviewApproval,
   type ContactActionKind,
@@ -702,6 +703,7 @@ export class M2Repository {
         boss_account_id: string;
         task_id: string;
         task_status: string;
+        task_error_message: string | null;
         source: "recommend" | "search";
         source_locator: import("@boss-forge/contracts").CandidateSourceLocator | null;
         review_status: MessagePreview["reviewStatus"];
@@ -735,7 +737,8 @@ export class M2Repository {
       SELECT cps.id AS state_id, cps.candidate_id, c.display_name AS candidate_name,
         p.id AS position_id, p.name AS position_name, p.status AS position_status,
         p.department_id, p.boss_account_id, task.id AS task_id,
-        task.status AS task_status, task.source, snapshot.source_locator,
+        task.status AS task_status, task.error_message AS task_error_message,
+        task.source, snapshot.source_locator,
         cps.review_status, cps.resume_screening_status, cps.contact_status,
         cps.is_current,
         EXISTS (
@@ -937,6 +940,7 @@ export class M2Repository {
       accountHasUncertain: context.account_has_uncertain,
       positionStatus: context.position_status,
       taskStatus: context.task_status,
+      taskErrorMessage: context.task_error_message,
       source: context.source,
       stableLocatorPresent: Boolean(context.source_locator?.value.trim()),
       legacyEmergencyStop: context.legacy_emergency_stop,
@@ -2033,6 +2037,7 @@ export class M2Repository {
           transport_mode: "fake" | "real";
           task_id: string;
           task_status: string;
+          task_error_message: string | null;
           source: "recommend" | "search";
           state_id: string;
           candidate_id: string;
@@ -2086,7 +2091,7 @@ export class M2Repository {
           ci.policy_snapshot AS manual_policy_snapshot, ci.template_version_id,
           ci.provider_job_id, ci.provider_greeting_id,
           ci.rendered_message, ci.transport_mode, ci.task_id, t.status AS task_status,
-          t.source,
+          t.error_message AS task_error_message, t.source,
           cps.id AS state_id, cps.candidate_id, c.display_name AS candidate_name,
           p.id AS position_id, p.name AS position_name,
           p.department_id, p.status AS position_status,
@@ -2273,7 +2278,15 @@ export class M2Repository {
       if (currentDoNotContact) reasons.push("do_not_contact");
       if (context.position_status === "paused") reasons.push("job_paused");
       if (context.position_status === "closed") reasons.push("job_closed");
-      if (["failed", "cancelled"].includes(context.task_status)) reasons.push("task_not_active");
+      if (
+        ["failed", "cancelled"].includes(context.task_status) &&
+        !(
+          context.task_status === "cancelled" &&
+          isDailyAutoGreetCapStopMessage(context.task_error_message)
+        )
+      ) {
+        reasons.push("task_not_active");
+      }
       if (!context.is_current) reasons.push("current_candidate_state");
       if (context.review_status !== "approved") reasons.push("manual_review_required");
       if (["not_requested", "queued", "processing"].includes(context.resume_screening_status)) {

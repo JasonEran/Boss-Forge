@@ -157,4 +157,22 @@ describe("exact contact preview readiness", () => {
     );
     expect(evaluateExactContactReadiness(readyFacts(true)).ready).toBe(true);
   });
+
+  it("treats daily-cap cancelled tasks as still active for pending greets", () => {
+    const facts = readyFacts(true);
+    facts.taskStatus = "cancelled";
+    facts.taskErrorMessage = "已达每日打招呼上限（200），任务已自动停止";
+    const result = evaluateExactContactReadiness(facts);
+    expect(result.checks.find((c) => c.key === "task_not_active")?.passed).toBe(true);
+    expect(result.reasons).not.toContain("task_not_active");
+  });
+
+  it("still blocks ordinary cancelled tasks", () => {
+    const facts = readyFacts(true);
+    facts.taskStatus = "cancelled";
+    facts.taskErrorMessage = "人工取消";
+    const result = evaluateExactContactReadiness(facts);
+    expect(result.checks.find((c) => c.key === "task_not_active")?.passed).toBe(false);
+    expect(result.reasons).toContain("task_not_active");
+  });
 });

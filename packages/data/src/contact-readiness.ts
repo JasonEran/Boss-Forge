@@ -1,3 +1,5 @@
+import { isDailyAutoGreetCapStopMessage } from "@boss-forge/contracts";
+
 export type ContactReadinessCheck = {
   key: string;
   label: string;
@@ -42,6 +44,8 @@ export type ExactContactReadinessFacts = {
   accountHasUncertain: boolean;
   positionStatus: "active" | "paused" | "closed";
   taskStatus: string;
+  /** When cancelled for the account-day greet cap, pending greets may still send. */
+  taskErrorMessage?: string | null;
   source: "recommend" | "search";
   stableLocatorPresent: boolean;
   legacyEmergencyStop: boolean;
@@ -134,12 +138,19 @@ export function evaluateExactContactReadiness(
     "岗位正在招聘",
     facts.positionStatus === "paused" ? "岗位已暂停" : "岗位已关闭"
   );
+  const dailyCapCancelled =
+    facts.taskStatus === "cancelled" &&
+    isDailyAutoGreetCapStopMessage(facts.taskErrorMessage);
   add(
     "task_not_active",
     "任务状态",
-    !["failed", "cancelled"].includes(facts.taskStatus),
+    !["failed", "cancelled"].includes(facts.taskStatus) || dailyCapCancelled,
     "所属筛选任务可用于本次确认",
-    facts.taskStatus === "cancelled" ? "所属任务已取消" : "所属任务已失败"
+    dailyCapCancelled
+      ? "已达每日打招呼上限，仍可完成已入队打招呼"
+      : facts.taskStatus === "cancelled"
+        ? "所属任务已取消"
+        : "所属任务已失败"
   );
   add(
     "legacy_emergency_stop",
