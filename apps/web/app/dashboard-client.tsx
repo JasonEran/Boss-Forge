@@ -2062,7 +2062,6 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           <TableCell className="max-w-[360px] whitespace-normal text-xs leading-5 text-muted-foreground">
                             {taskNextAction({
                               status: task.status,
-                              waitingReason:
                               waitingReason: taskWaitingReason(task),
                               nextAction: task.nextAction,
                               retryAt: task.nextRunAt,
