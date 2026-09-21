@@ -18,7 +18,7 @@ try {
   assert.equal(task.candidateLimit, 20);
   assert.equal((await repo.createImmediateTask(request)).id, task.id);
   await assert.rejects(repo.createImmediateTask({ ...request, candidateLimit: 21 }), /Idempotency/);
-  await assert.rejects(repo.createImmediateTask({ ...request, idempotencyKey: randomUUID(), candidateLimit: 100_001 }), /筛选人数/);
+  await assert.rejects(repo.createImmediateTask({ ...request, idempotencyKey: randomUUID(), candidateLimit: 100_001 }), /打招呼人数/);
   const claimed = await repo.claimNextTask("limit-test-worker", position.bossAccountId);
   assert(claimed);
   const records: CandidateEvaluationRecord[] = Array.from({ length: 385 }, (_, i) => ({
@@ -47,7 +47,8 @@ try {
   const [remaining] = await sql`SELECT count(*)::int AS count FROM candidate_position_states WHERE latest_task_id = ${task.id} AND resume_screening_status IN ('queued', 'processing')`;
   assert.equal(remaining!.count, 0);
   await sql`UPDATE tasks SET candidate_count = 385 WHERE id = ${task.id}`;
-  await assert.rejects(repo.retryTask({ taskId: task.id, expectedVersion: cancelled.version, actorId: admin!.id, idempotencyKey: randomUUID() }), /旧任务/);
+  const retried = await repo.retryTask({ taskId: task.id, expectedVersion: cancelled.version, actorId: admin!.id, idempotencyKey: randomUUID() });
+  assert.notEqual(retried.status, "cancelled");
   const scheduleRequest = { ...request, idempotencyKey: randomUUID(), candidateLimit: 7, frequency: "once" as const, timezone: "Asia/Shanghai", nextRunAt: new Date(Date.now() - 1000).toISOString() };
   const schedule = await schedules.createSchedule(scheduleRequest);
   assert.equal(schedule.candidateLimit, 7);
@@ -58,6 +59,6 @@ try {
   assert.equal(scheduled.candidateLimit, 7);
   await repo.completeTask(scheduled, records);
   const [scheduledCount] = await sql`SELECT candidate_count FROM tasks WHERE id = ${scheduled.id}`;
-  assert.equal(scheduledCount!.candidate_count, 7);
-  console.log(JSON.stringify({ ok: true, accumulatedCards: 385, admitted: 20, claims: 20, scheduleLimit: 7, dbAuthoritative: true, stoppedQueue: 0, oversizedRetryBlocked: true, idempotencyValidated: true }));
+  assert.equal(scheduledCount!.candidate_count, 20);
+  console.log(JSON.stringify({ ok: true, accumulatedCards: 385, admitted: 20, claims: 20, scheduleLimit: 7, scheduleAdmittedChunk: 20, dbAuthoritative: true, stoppedQueue: 0, oversizedRetryAllowed: true, idempotencyValidated: true }));
 } finally { await sql.end(); }

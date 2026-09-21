@@ -1241,7 +1241,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
             )}
             {creatingTask
               ? '正在创建'
-              : `开始筛选${validScreeningCount(screeningCount) ? ` · ${Number(screeningCount)} 人` : ''}`}
+              : `开始筛选${validScreeningCount(screeningCount) ? ` · 打招呼 ${Number(screeningCount)} 人` : ''}`}
           </Button>
         </div>
         <p
@@ -1963,7 +1963,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           {schedule.positionName}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {frequencyLabel[schedule.frequency]} · 每次最多{' '}
+                          {frequencyLabel[schedule.frequency]} · 成功打招呼{' '}
                           {schedule.candidateLimit ?? DEFAULT_SCREENING_LIMIT}{' '}
                           人 ·{' '}
                           {schedule.autoGreet ? '自动打招呼' : '仅筛选'} ·{' '}
@@ -2041,10 +2041,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           <TableCell>
                             v{task.ruleVersion} · {task.dictionaryVersion}
                             <p className="mt-1 text-xs text-muted-foreground">
-                              {task.candidateCount >
-                              (task.candidateLimit ?? DEFAULT_SCREENING_LIMIT)
-                                ? '历史任务：请设置人数新建筛选'
-                                : `本次上限 ${task.candidateLimit ?? DEFAULT_SCREENING_LIMIT} 人`}
+                              {`打招呼目标 ${task.candidateLimit ?? DEFAULT_SCREENING_LIMIT} 人`}
                             </p>
                           </TableCell>
                           <TableCell>
@@ -2118,12 +2115,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                                 >
                                   调整岗位规则
                                 </Button>
-                              ) : task.candidateCount <=
-                                  (task.candidateLimit ??
-                                    DEFAULT_SCREENING_LIMIT) &&
-                                (['failed', 'cancelled'].includes(
-                                  task.status,
-                                ) ||
+                              ) : ['failed', 'cancelled'].includes(task.status) ||
                                   (task.status === 'waiting_review' &&
                                     data.candidates.some(
                                       (candidate) =>
@@ -2133,7 +2125,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                                           candidate.resumeScreeningErrorCode ??
                                             candidate.resumeScreeningError,
                                         ),
-                                    ))) ? (
+                                    )) ? (
                                 <Button
                                   size="sm"
                                   variant="outline"

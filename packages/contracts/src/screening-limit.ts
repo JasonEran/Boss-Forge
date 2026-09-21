@@ -1,4 +1,9 @@
-/** Counts people admitted to a task, including failures and non-matches. */
+/**
+ * `candidate_limit` is a successful-greet target (status `sent`), not a
+ * resume-screen headcount. Collection still runs in chunks of
+ * {@link SCREENING_CHUNK_SIZE} until that many greets succeed or the pool
+ * is exhausted. The account-day greet cap is separate.
+ */
 export const DEFAULT_SCREENING_LIMIT = 20;
 /**
  * Practical safety ceiling only — product UX is unlimited (no 200 cap).
@@ -12,7 +17,7 @@ export class ScreeningLimitError extends Error {}
 
 export function screeningCandidateLimit(value: unknown = DEFAULT_SCREENING_LIMIT): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_SCREENING_LIMIT) {
-    throw new ScreeningLimitError(`筛选人数须为正整数（最大 ${MAX_SCREENING_LIMIT}）。`);
+    throw new ScreeningLimitError(`打招呼人数须为正整数（最大 ${MAX_SCREENING_LIMIT}）。`);
   }
   return value;
 }

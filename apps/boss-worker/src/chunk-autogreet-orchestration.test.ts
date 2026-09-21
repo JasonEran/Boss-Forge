@@ -89,6 +89,7 @@ describe("chunked filter + auto-greet orchestration (30 → 20+10)", () => {
         };
       }),
       countAccountDailyRealGreets: vi.fn(async () => 0),
+      countTaskGreetProgress: vi.fn(async () => ({ sent: 0, inFlight: 0 })),
       stopTaskForDailyAutoGreetCap: vi.fn(async () => false),
       continueScreeningChunk: vi.fn(async () => {
         order.push("continue");
@@ -163,6 +164,7 @@ describe("chunked filter + auto-greet orchestration (30 → 20+10)", () => {
         candidateLimit: 600
       })),
       countAccountDailyRealGreets: vi.fn(async () => 200),
+      countTaskGreetProgress: vi.fn(async () => ({ sent: 0, inFlight: 0 })),
       stopTaskForDailyAutoGreetCap: vi.fn(async () => true),
       continueScreeningChunk: vi.fn(async () => true)
     };

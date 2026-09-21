@@ -407,7 +407,7 @@ export class M2Repository {
           AND EXISTS (SELECT 1 FROM positions p WHERE p.id = schedules.position_id AND p.status = 'active'
             AND (schedules.source <> 'recommend' OR p.boss_job_id IS NOT NULL OR NOT EXISTS (
               SELECT 1 FROM positions linked WHERE linked.boss_account_id = p.boss_account_id AND linked.boss_job_id IS NOT NULL)))
-        ORDER BY next_run_at ASC
+        ORDER BY next_run_at ASC, created_at ASC, id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 20
       `;
@@ -1926,6 +1926,7 @@ export class M2Repository {
         JOIN candidate_snapshots snapshot ON snapshot.id = cps.latest_snapshot_id
         JOIN positions p ON p.id = cps.position_id
         JOIN tasks t ON t.id = ci.task_id
+        LEFT JOIN schedules s ON s.id = t.schedule_id
         LEFT JOIN contact_authorizations ca ON ca.id = ci.authorization_id
         LEFT JOIN contact_policy_snapshots policy ON policy.id = ca.contact_policy_snapshot_id
         WHERE oe.status = 'pending' AND oe.event_type = 'contact.requested'
@@ -1933,6 +1934,48 @@ export class M2Repository {
           AND ci.transport_mode = ${transportMode}
           AND p.boss_account_id = ${bossAccountId}
           AND p.contact_dispatch_paused = false
+          AND NOT EXISTS (
+            SELECT 1
+            FROM tasks earlier
+            JOIN positions earlier_position ON earlier_position.id = earlier.position_id
+            LEFT JOIN schedules earlier_schedule ON earlier_schedule.id = earlier.schedule_id
+            WHERE earlier_position.boss_account_id = p.boss_account_id
+              AND earlier.id <> t.id
+              AND (
+                earlier.status IN ('queued', 'running', 'screening')
+                OR (
+                  earlier.status = 'waiting_review'
+                  AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                  AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
+                  AND (
+                    SELECT count(*)::int FROM contact_intents sent_greet
+                    WHERE sent_greet.task_id = earlier.id
+                      AND sent_greet.action_kind = 'greet'
+                      AND sent_greet.status = 'sent'
+                  ) < earlier.candidate_limit
+                )
+                OR EXISTS (
+                  SELECT 1 FROM contact_intents open_greet
+                  WHERE open_greet.task_id = earlier.id
+                    AND open_greet.action_kind = 'greet'
+                    AND open_greet.status IN ('ready', 'processing')
+                )
+                OR EXISTS (
+                  SELECT 1 FROM candidate_position_states inflight_resume
+                  WHERE inflight_resume.latest_task_id = earlier.id
+                    AND inflight_resume.resume_screening_status = 'processing'
+                )
+              )
+              AND (
+                COALESCE(earlier_schedule.created_at, earlier.created_at),
+                earlier.created_at,
+                earlier.id
+              ) < (
+                COALESCE(s.created_at, t.created_at),
+                t.created_at,
+                t.id
+              )
+          )
           AND NOT EXISTS (
             SELECT 1 FROM contact_intents prior JOIN tasks pt ON pt.id = prior.task_id JOIN positions pp ON pp.id = pt.position_id
             WHERE pp.boss_account_id = ${bossAccountId} AND prior.transport_mode = ${transportMode}

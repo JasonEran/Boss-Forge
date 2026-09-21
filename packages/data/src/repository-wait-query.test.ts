@@ -172,6 +172,9 @@ describe("resume screening wait query", () => {
     );
     expect(midFlightBlock).not.toContain("candidateId");
     expect(query).toContain("candidate.resume_screening.retry_authorized");
+    expect(query).toContain("greet_target_met");
+    expect(query).toContain("sent_greet.status = 'sent'");
+    expect(query).toContain("COALESCE(earlier_schedule.created_at, earlier.created_at)");
   });
 
   it("checks claimable same-account contacts in the same atomic resume claim query", async () => {
@@ -209,5 +212,29 @@ describe("resume screening wait query", () => {
     );
     expect(claim.values.filter((value) => value === "boss-account-01")).toHaveLength(2);
     expect(claim.values.filter((value) => value === "real")).toHaveLength(2);
+  });
+
+  it("claims the oldest schedule on an account before a later overlapping task", async () => {
+    const queries: string[] = [];
+    const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(
+        strings.reduce(
+          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
+          "",
+        ),
+      );
+      return Promise.resolve([]);
+    }) as unknown as Database & ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>);
+    Object.assign(transaction, {
+      begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
+    });
+    const repository = new BossForgeRepository(transaction as unknown as Database);
+    await expect(repository.claimNextTask("worker", "boss-account")).resolves.toBeNull();
+    const query = queries.join("\n").replace(/\s+/gu, " ");
+    expect(query).toContain("COALESCE(s.created_at, t.created_at)");
+    expect(query).toContain("COALESCE(earlier_schedule.created_at, earlier.created_at)");
+    expect(query).toContain("sent_greet.status = 'sent'");
+    expect(query).toContain("screening_pool_exhausted");
+    expect(query).toContain("ORDER BY COALESCE(s.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC");
   });
 });

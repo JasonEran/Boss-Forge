@@ -30,7 +30,7 @@ export function ScreeningCountField({
     <div className="w-full space-y-2 rounded-lg border bg-muted/20 p-3 text-left">
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor={id} className="text-sm font-medium">
-          {scheduled ? '每次筛选人数' : '本次筛选人数'}
+          {scheduled ? '每次打招呼人数' : '本次打招呼人数'}
         </label>
         <Input
           id={id}
@@ -39,7 +39,7 @@ export function ScreeningCountField({
           min={1}
           max={MAX_SCREENING_LIMIT}
           step={1}
-          aria-label={scheduled ? '每次筛选人数' : '本次筛选人数'}
+          aria-label={scheduled ? '每次打招呼人数' : '本次打招呼人数'}
           className="h-11 w-24"
           value={value}
           disabled={disabled}
@@ -64,8 +64,9 @@ export function ScreeningCountField({
         ))}
       </div>
       <p id={`${id}-hint`} className="text-xs leading-5 text-muted-foreground">
-        按需要填写精确人数（不设 200
-        人业务上限）。系统按最多 20 人/批连续筛选；候选人不足时会在确认列表耗尽后停止，并写明原因。未通过和读取异常也计入人数。
+        这里填的是成功发出的打招呼人数，不是筛简历人数。系统仍按最多 20
+        人一批筛选并自动打招呼，直到成功打招呼达到该人数，或推荐列表确认没有新人。账号每天最多
+        200 个打招呼（含已发出和还在队列里的）。未通过的简历不计入打招呼人数。
       </p>
       {!valid ? (
         <p id={`${id}-error`} role="alert" className="text-xs text-destructive">

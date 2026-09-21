@@ -151,7 +151,8 @@ const waitingReasonLabels: Record<string, string> = {
   account_unhealthy: 'BOSS 账号状态未通过安全检查',
   resume_retry_scheduled: '简历加载或识别失败，正等待自动重试',
   resume_retry: '简历加载或识别失败，正等待自动重试',
-  no_new_candidates: '本轮未发现新候选人',
+  screening_pool_exhausted: '推荐列表没有更多新人，已停止收集',
+  greet_target_met: '已达到设定的成功打招呼人数',
 };
 
 export function waitingReasonLabel(value: unknown): string | null {

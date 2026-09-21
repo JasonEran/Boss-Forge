@@ -178,7 +178,9 @@ export type TaskWaitReasonCode =
   | "hourly_quota_reached"
   | "daily_quota_reached"
   | "batch_break"
-  | "resume_retry_scheduled";
+  | "resume_retry_scheduled"
+  | "screening_pool_exhausted"
+  | "greet_target_met";
 
 export type Task = {
   id: string;
