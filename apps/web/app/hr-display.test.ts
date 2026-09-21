@@ -138,6 +138,20 @@ describe('HR-facing status copy', () => {
     expect(candidateRuleEvidenceRecognitionLabel('女')).toBe('女');
   });
 
+  it('does not promise that a finished greet target will resume', () => {
+    expect(
+      taskNextAction({
+        status: 'waiting_review',
+        waitingReason: 'greet_target_met',
+      }),
+    ).toBe('已达到设定的成功打招呼人数');
+    expect(
+      taskNextAction({
+        status: 'waiting_review',
+        waitingReason: '这次筛选在打招呼人数规则上线前已经结束，不会重新开始。',
+      }),
+    ).toBe('这次筛选在打招呼人数规则上线前已经结束，不会重新开始。');
+  });
   it('tells HR why a queued task is waiting and what happens next', () => {
     expect(
       taskNextAction({

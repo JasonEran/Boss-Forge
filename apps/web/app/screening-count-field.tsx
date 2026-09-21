@@ -63,7 +63,10 @@ export function ScreeningCountField({
           </Button>
         ))}
       </div>
-      <p id={`${id}-hint`} className="text-xs leading-5 text-muted-foreground">
+      <p
+        id={`${id}-hint`}
+        className="max-w-full text-xs leading-5 break-words text-muted-foreground"
+      >
         这里填的是成功发出的打招呼人数，不是筛简历人数。系统仍按最多 20
         人一批筛选并自动打招呼，直到成功打招呼达到该人数，或推荐列表确认没有新人。账号每天最多
         200 个打招呼（含已发出和还在队列里的）。未通过的简历不计入打招呼人数。

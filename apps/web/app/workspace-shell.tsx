@@ -258,7 +258,10 @@ function WorkspaceShellContent({
             </p>
           </div>
           {actions ? (
-            <div className="shrink-0" data-spotlight="page-actions">
+            <div
+              className="w-full min-w-0 xl:max-w-3xl"
+              data-spotlight="page-actions"
+            >
               {actions}
             </div>
           ) : null}
