@@ -164,17 +164,60 @@ describe("resume screening wait query", () => {
     expect(query).toContain(
       "mid_flight_view.resource_id = candidate_position_states.id::text",
     );
-    // Must stay scoped to this CPS — not payload candidateId — so finished
-    // same-day views on another state still suppress new admits.
-    const midFlightBlock = query.slice(
-      query.indexOf("mid_flight_view.action"),
-      query.indexOf("ORDER BY is_repeat"),
+    // Mid-flight EXISTS block itself stays scoped to this CPS id.
+    const midFlightStart = query.indexOf("mid_flight_view.action");
+    const midFlightEnd = query.indexOf(")", midFlightStart);
+    const midFlightBlock = query.slice(midFlightStart, midFlightEnd);
+    expect(midFlightBlock).toContain(
+      "mid_flight_view.resource_id = candidate_position_states.id::text",
     );
+    expect(midFlightBlock).not.toContain("payload");
     expect(midFlightBlock).not.toContain("candidateId");
     expect(query).toContain("candidate.resume_screening.retry_authorized");
     expect(query).toContain("greet_target_met");
     expect(query).toContain("sent_greet.status = 'sent'");
     expect(query).toContain("COALESCE(earlier_schedule.created_at, earlier.created_at)");
+  });
+
+  it("reclaims unfinished claimable CPS blocked only by same-day candidateId views", async () => {
+    const queries: string[] = [];
+    const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(
+        strings.reduce(
+          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
+          "",
+        ),
+      );
+      return Promise.resolve([]);
+    }) as unknown as Database;
+    Object.assign(transaction, {
+      begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
+    });
+
+    const repository = new BossForgeRepository(transaction);
+    await expect(
+      repository.claimNextResumeScreening(
+        "worker",
+        "boss-account",
+        new Date("2026-09-22T00:00:00.000Z"),
+      ),
+    ).resolves.toBeNull();
+
+    const query = queries.join("\n").replace(/\s+/gu, " ");
+    expect(query).toContain("FROM candidate_position_states other_done");
+    expect(query).toContain(
+      "other_done.candidate_id = candidate_position_states.candidate_id",
+    );
+    expect(query).toContain("other_done.id <> candidate_position_states.id");
+    expect(query).toContain(
+      "other_done.resume_screening_status IN ( 'screened', 'failed', 'no_text' )",
+    );
+    // Finished same-candidate screens today still suppress; mere views do not.
+    const orphanBlock = query.slice(
+      query.indexOf("FROM candidate_position_states other_done"),
+      query.indexOf("ORDER BY is_repeat"),
+    );
+    expect(orphanBlock).not.toContain("candidate.resume_viewed");
   });
 
   it("checks claimable same-account contacts in the same atomic resume claim query", async () => {

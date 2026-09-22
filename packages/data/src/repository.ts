@@ -2184,8 +2184,6 @@ export class BossForgeRepository {
               -- Mid-flight orphan: this CPS was opened today but never reached
               -- screened/failed. Claim set is already queued / stale processing,
               -- so reclaim matches UI requeue without ops writing retry_authorized.
-              -- Do NOT widen to other CPS rows for the same candidateId — same-day
-              -- cross-task suppression for finished views must remain.
               SELECT 1
               FROM audit_logs mid_flight_view
               WHERE mid_flight_view.action = 'candidate.resume_viewed'
@@ -2194,6 +2192,26 @@ export class BossForgeRepository {
                 AND mid_flight_view.resource_id =
                   candidate_position_states.id::text
                 AND mid_flight_view.created_at >= ${viewedSince}::timestamptz
+            )
+            OR (
+              -- Cross-resource same-day view orphan (2026-09-22 morning):
+              -- a newly admitted / still-claimable CPS is blocked by
+              -- candidate.resume_viewed on candidateId (other CPS, boss_chat,
+              -- list browse) while THIS row never finished screening.
+              -- Auto-allow reclaim like ops POST …/resume-screenings.
+              -- Still suppress when another CPS for the same candidate already
+              -- finished screening today (screened / failed / no_text).
+              NOT EXISTS (
+                SELECT 1
+                FROM candidate_position_states other_done
+                WHERE other_done.candidate_id =
+                    candidate_position_states.candidate_id
+                  AND other_done.id <> candidate_position_states.id
+                  AND other_done.resume_screening_status IN (
+                    'screened', 'failed', 'no_text'
+                  )
+                  AND other_done.updated_at >= ${viewedSince}::timestamptz
+              )
             )
           )
         ORDER BY is_repeat ASC,
