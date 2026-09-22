@@ -122,10 +122,9 @@ export function TaskProgress({
           可检查 BOSS 推荐列表，或调整岗位的官方筛选条件后新建任务。
         </p>
       ) : null}
-      {task.candidateLimit && p.total <= task.candidateLimit ? (
+      {task.candidateLimit ? (
         <p className="text-xs text-muted-foreground">
-          本次上限 {task.candidateLimit} 人 · 已收集 {p.total}{' '}
-          人，未通过与异常也计入人数
+          打招呼目标 {task.candidateLimit} 人 · 已收集 {p.total} 人（收集数不是打招呼数）
         </p>
       ) : null}
       {task.sourceBossFilters ? (

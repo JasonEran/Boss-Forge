@@ -34,7 +34,7 @@ try {
   const createdResponse = page.waitForResponse(r => r.url() === api + '/api/tasks' && r.request().method() === 'POST');
   await click('开始筛选 · 7 人');
   const created = await (await createdResponse).json(); assert.equal(created.task.candidateLimit, 7);
-  await page.waitForFunction(() => document.body.innerText.includes('本次上限 7 人'));
+  await page.waitForFunction(() => document.body.innerText.includes('打招呼目标 7 人'));
   await mkdir('artifacts/screening-limit-20260907', { recursive: true });
   await page.screenshot({ path: 'artifacts/screening-limit-20260907/desktop.png' });
   await page.setViewport({ width: 375, height: 812 });

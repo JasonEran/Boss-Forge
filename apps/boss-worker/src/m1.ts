@@ -39,7 +39,7 @@ import {
   nextResumeViewingAt,
   resumeViewPolicyState,
   resumeViewPolicyFromEnvironment,
-  screeningChunkLimit,
+  SCREENING_CHUNK_SIZE,
   shanghaiDayStart,
   type ParsedCandidate
 } from "@boss-forge/contracts";
@@ -468,12 +468,13 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
     await setWorkerHeartbeat({ state: "busy", activeAccountId: accountId });
     try {
       const alreadyCollected = task.candidateCount ?? 0;
-      const totalLimit = task.candidateLimit ?? 20;
-      const chunkLimit = screeningChunkLimit(totalLimit, alreadyCollected);
-      if (chunkLimit < 1) {
+      const totalLimit = task.candidateLimit ?? SCREENING_CHUNK_SIZE;
+      const sentGreets = (await repository.countTaskGreetProgress(task.id)).sent;
+      if (sentGreets >= totalLimit) {
         await repository.markTaskWaitingReviewIfIdle(task.id, task.claimToken);
         return true;
       }
+      const chunkLimit = SCREENING_CHUNK_SIZE;
       const excludeGeekIds =
         alreadyCollected > 0
           ? await repository.listTaskAdmittedGeekIds(task.id)

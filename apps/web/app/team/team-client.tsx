@@ -238,7 +238,7 @@ function TeamContent() {
                   <>
                     <p className="mt-1 text-xl font-semibold">无限制</p>
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      全天可跑，不分批暂停；筛选人数按任务设定精确执行。
+                      全天可跑，不分批暂停；打招呼人数按任务设定，直到成功发出或列表耗尽。账号每天最多 200 个打招呼。
                     </p>
                   </>
                 )}

@@ -151,8 +151,28 @@ const waitingReasonLabels: Record<string, string> = {
   account_unhealthy: 'BOSS 账号状态未通过安全检查',
   resume_retry_scheduled: '简历加载或识别失败，正等待自动重试',
   resume_retry: '简历加载或识别失败，正等待自动重试',
-  no_new_candidates: '本轮未发现新候选人',
+  screening_pool_exhausted: '推荐列表没有更多新人，已停止收集',
+  greet_target_met: '已达到设定的成功打招呼人数',
 };
+
+const terminalWaitCodes = new Set([
+  'screening_pool_exhausted',
+  'greet_target_met',
+]);
+
+export function taskWaitingReason(input: {
+  waitReasonCode?: string | null;
+  waitReason?: string | null;
+}): string | null {
+  if (
+    input.waitReason &&
+    input.waitReasonCode &&
+    terminalWaitCodes.has(input.waitReasonCode)
+  ) {
+    return input.waitReason;
+  }
+  return input.waitReasonCode ?? input.waitReason ?? null;
+}
 
 export function waitingReasonLabel(value: unknown): string | null {
   if (typeof value !== 'string' || !value) return null;
@@ -188,9 +208,17 @@ export function taskNextAction(input: {
     typeof input.retryAt === 'string' ? new Date(input.retryAt) : null;
   const retryTime =
     retryAt && !Number.isNaN(retryAt.getTime())
-      ? retryAt.toLocaleString('zh-CN')
+      ? retryAt.toLocaleString('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          hour12: false,
+        })
       : null;
-  const reason = waitingReasonLabel(input.waitingReason);
+  const raw =
+    typeof input.waitingReason === 'string' ? input.waitingReason.trim() : '';
+  const known = raw ? waitingReasonLabels[raw] : undefined;
+  if (known && terminalWaitCodes.has(raw)) return known;
+  if (raw && !known && /[\u4e00-\u9fff]/u.test(raw)) return raw;
+  const reason = known ?? (raw ? '系统正在等待可继续的条件' : undefined);
   if (reason)
     return retryTime
       ? `${reason}；预计 ${retryTime} 后自动继续。`

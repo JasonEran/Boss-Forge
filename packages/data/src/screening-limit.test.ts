@@ -24,7 +24,7 @@ describe("screening admission limit", () => {
     expect(screeningCandidateLimit(100_000)).toBe(100_000);
   });
   it.each([null, "20", "", true, 0, -1, 1.5, 100_001, Infinity, NaN])("rejects invalid limit %s", (value) => {
-    expect(() => screeningCandidateLimit(value)).toThrow("筛选人数");
+    expect(() => screeningCandidateLimit(value)).toThrow("打招呼人数");
   });
   it("only admits the selected 20 from an accumulated 385-card list", () => {
     const records = Array.from({ length: 385 }, (_, index) => screeningLimitFixture(index));

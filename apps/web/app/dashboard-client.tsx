@@ -107,6 +107,7 @@ import {
   safeIdentifierLabel,
   taskNextAction,
   taskNeedsFilterUpdate,
+  taskWaitingReason,
 } from './hr-display';
 import {
   type DepartmentRole,
@@ -754,7 +755,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
   const latestTaskGuidance = latestTask
     ? taskNextAction({
         status: latestTask.status,
-        waitingReason: latestTask.waitReasonCode ?? latestTask.waitReason,
+        waitingReason: taskWaitingReason(latestTask),
         nextAction: latestTask.nextAction,
         retryAt: latestTask.nextRunAt,
         errorMessage: latestTask.errorMessage,
@@ -1188,7 +1189,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
 
   function taskActions() {
     return (
-      <div className="flex flex-col gap-2 md:items-end">
+        <div className="flex w-full min-w-0 flex-col gap-2">
         <ScreeningCountField
           id="screening-count"
           value={screeningCount}
@@ -1241,7 +1242,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
             )}
             {creatingTask
               ? '正在创建'
-              : `开始筛选${validScreeningCount(screeningCount) ? ` · ${Number(screeningCount)} 人` : ''}`}
+              : `开始筛选${validScreeningCount(screeningCount) ? ` · 打招呼 ${Number(screeningCount)} 人` : ''}`}
           </Button>
         </div>
         <p
@@ -1943,7 +1944,10 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
             <Card>
               <CardHeader className="border-b">
                 <CardTitle>定时计划</CardTitle>
-                <CardDescription>统一使用 Asia/Shanghai 时区</CardDescription>
+                <CardDescription>
+                  统一使用 Asia/Shanghai
+                  时区。同一时间的计划按创建先后依次执行，前一个筛选和打招呼完成后再开始下一个。
+                </CardDescription>
                 <CardAction>
                   <Badge variant="outline">
                     {activeSchedules.length} 个启用
@@ -1955,23 +1959,27 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                   data.schedules.map((schedule) => (
                     <div
                       key={schedule.id}
-                      className="flex items-center gap-3 rounded-lg border px-3 py-2.5"
+                      className="flex items-start gap-3 rounded-lg border px-3 py-2.5"
                     >
-                      <CalendarClock className="size-4 text-muted-foreground" />
+                      <CalendarClock className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">
                           {schedule.positionName}
                         </p>
-                        <p className="text-xs text-muted-foreground">
-                          {frequencyLabel[schedule.frequency]} · 每次最多{' '}
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          {frequencyLabel[schedule.frequency]} · 成功打招呼{' '}
                           {schedule.candidateLimit ?? DEFAULT_SCREENING_LIMIT}{' '}
                           人 ·{' '}
                           {schedule.autoGreet ? '自动打招呼' : '仅筛选'} ·{' '}
-                          {new Date(schedule.nextRunAt).toLocaleString('zh-CN')}
+                          {new Date(schedule.nextRunAt).toLocaleString(
+                            'zh-CN',
+                            { timeZone: 'Asia/Shanghai', hour12: false },
+                          )}
                         </p>
                       </div>
                       {schedule.enabled ? (
                         <Button
+                          className="shrink-0"
                           variant="ghost"
                           size="sm"
                           onClick={() => void cancelSchedule(schedule)}
@@ -2041,10 +2049,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           <TableCell>
                             v{task.ruleVersion} · {task.dictionaryVersion}
                             <p className="mt-1 text-xs text-muted-foreground">
-                              {task.candidateCount >
-                              (task.candidateLimit ?? DEFAULT_SCREENING_LIMIT)
-                                ? '历史任务：请设置人数新建筛选'
-                                : `本次上限 ${task.candidateLimit ?? DEFAULT_SCREENING_LIMIT} 人`}
+                              {`打招呼目标 ${task.candidateLimit ?? DEFAULT_SCREENING_LIMIT} 人`}
                             </p>
                           </TableCell>
                           <TableCell>
@@ -2057,8 +2062,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                           <TableCell className="max-w-[360px] whitespace-normal text-xs leading-5 text-muted-foreground">
                             {taskNextAction({
                               status: task.status,
-                              waitingReason:
-                                task.waitReasonCode ?? task.waitReason,
+                              waitingReason: taskWaitingReason(task),
                               nextAction: task.nextAction,
                               retryAt: task.nextRunAt,
                               errorMessage: task.errorMessage,
@@ -2077,7 +2081,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                             </Badge>
                           </TableCell>
                           <TableCell className="pr-4 text-right">
-                            <div className="flex justify-end gap-2">
+                            <div className="flex flex-wrap justify-end gap-2">
                               <Link
                                 href={taskWorkspaceHref('/candidates', task)}
                                 className="inline-flex min-h-9 items-center whitespace-nowrap rounded-md border px-3 text-xs font-medium text-primary hover:bg-secondary"
@@ -2118,12 +2122,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                                 >
                                   调整岗位规则
                                 </Button>
-                              ) : task.candidateCount <=
-                                  (task.candidateLimit ??
-                                    DEFAULT_SCREENING_LIMIT) &&
-                                (['failed', 'cancelled'].includes(
-                                  task.status,
-                                ) ||
+                              ) : ['failed', 'cancelled'].includes(task.status) ||
                                   (task.status === 'waiting_review' &&
                                     data.candidates.some(
                                       (candidate) =>
@@ -2133,7 +2132,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
                                           candidate.resumeScreeningErrorCode ??
                                             candidate.resumeScreeningError,
                                         ),
-                                    ))) ? (
+                                    )) ? (
                                 <Button
                                   size="sm"
                                   variant="outline"

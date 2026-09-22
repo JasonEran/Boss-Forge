@@ -97,7 +97,7 @@ describe('continuous recommendation collection', () => {
     const f = fixture([{ cards: cards(0, 30), ended: false, pageNumber: 1 }]);
     expect((await collectRecommendationBatches({ ...f, limit: 25 })).cards).toHaveLength(25);
     const invalid = fixture([]);
-    await expect(collectRecommendationBatches({ ...invalid, limit: 100_001 })).rejects.toThrow('筛选人数');
+    await expect(collectRecommendationBatches({ ...invalid, limit: 100_001 })).rejects.toThrow('打招呼人数');
     expect(invalid.read).not.toHaveBeenCalled();
   });
 });

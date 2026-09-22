@@ -1,6 +1,6 @@
 import { enqueueRecruitmentAssessment } from "./recruitment-repository.js";
 import { limitScreeningRecords } from "./screening-limit.js";
-import { screeningCandidateLimit, dailyAutoGreetCapStopMessage } from "@boss-forge/contracts";
+import { screeningCandidateLimit, dailyAutoGreetCapStopMessage, SCREENING_CHUNK_SIZE } from "@boss-forge/contracts";
 import { assertRuleScreeningSource } from "./rule-config.js";
 import { randomUUID } from "node:crypto";
 import { bossRecommendationFilterPlanSchema, type BossRecommendationFilterPlan } from "@boss-forge/contracts";
@@ -878,9 +878,6 @@ export class BossForgeRepository {
       if (!["failed", "cancelled", "waiting_review"].includes(task.status)) {
         throw new Error(`Task in ${task.status} state cannot be retried.`);
       }
-      if (task.candidate_count > task.candidate_limit) {
-        throw new Error("旧任务的候选人数超过本次数量上限，请选择筛选人数并新建任务；原有结果已保留。");
-      }
       if (task.status === "waiting_review") {
         const retryable = await transaction<Array<{ count: number }>>`
           SELECT COUNT(*)::int AS count FROM candidate_position_states
@@ -1011,11 +1008,19 @@ export class BossForgeRepository {
     });
   }
 
+  /**
+   * One BOSS account, one browser. Overlapping tasks run strictly in sequence:
+   * older schedule.created_at first (tasks with no schedule use task.created_at),
+   * then task.created_at, then task id. Later tasks are not claimed until the
+   * earlier task is finished (greet target met, pool exhausted, cancelled, or
+   * daily greet cap). `candidate_limit` is successful greets sent, not people screened.
+   */
   async claimNextTask(workerId: string, bossAccountId: string): Promise<Task | null> {
     return this.sql.begin(async (transaction) => {
       const selected = await transaction<{ id: string }[]>`
         SELECT t.id FROM tasks t
         JOIN positions p ON p.id = t.position_id
+        LEFT JOIN schedules s ON s.id = t.schedule_id
         WHERE (
             t.status = 'queued'
             OR (
@@ -1023,8 +1028,64 @@ export class BossForgeRepository {
               AND t.claimed_at < now() - interval '15 minutes'
             )
           )
+          AND (t.next_run_at IS NULL OR t.next_run_at <= now())
           AND p.boss_account_id = ${bossAccountId}
-        ORDER BY t.created_at ASC
+          AND NOT EXISTS (
+            SELECT 1
+            FROM tasks earlier
+            JOIN positions earlier_position ON earlier_position.id = earlier.position_id
+            LEFT JOIN schedules earlier_schedule ON earlier_schedule.id = earlier.schedule_id
+            WHERE earlier_position.boss_account_id = p.boss_account_id
+              AND earlier.id <> t.id
+              AND (
+                earlier.status IN ('queued', 'running', 'screening')
+                OR (
+                  earlier.status = 'waiting_review'
+                  AND COALESCE(earlier.wait_reason_code, '') <> 'screening_pool_exhausted'
+                  AND COALESCE(earlier.wait_reason_code, '') <> 'greet_target_met'
+                  AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
+                  AND (
+                    SELECT count(*)::int FROM contact_intents sent_greet
+                    WHERE sent_greet.task_id = earlier.id
+                      AND sent_greet.action_kind = 'greet'
+                      AND sent_greet.status = 'sent'
+                  ) < earlier.candidate_limit
+                )
+                OR EXISTS (
+                  SELECT 1 FROM contact_intents open_greet
+                  WHERE open_greet.task_id = earlier.id
+                    AND open_greet.action_kind = 'greet'
+                    AND open_greet.status IN ('ready', 'processing')
+                )
+                OR EXISTS (
+                  SELECT 1 FROM candidate_position_states inflight_resume
+                  WHERE inflight_resume.latest_task_id = earlier.id
+                    AND inflight_resume.resume_screening_status = 'processing'
+                )
+                OR EXISTS (
+                  SELECT 1 FROM candidate_position_states open_resume
+                  WHERE open_resume.latest_task_id = earlier.id
+                    AND open_resume.resume_screening_status IN ('queued', 'processing')
+                    AND (
+                      SELECT count(*)::int FROM contact_intents sent_gate
+                      WHERE sent_gate.task_id = earlier.id
+                        AND sent_gate.action_kind = 'greet'
+                        AND sent_gate.status = 'sent'
+                    ) < earlier.candidate_limit
+                    AND COALESCE(earlier.wait_reason_code, '') <> 'greet_target_met'
+                )
+              )
+              AND (
+                COALESCE(earlier_schedule.created_at, earlier.created_at),
+                earlier.created_at,
+                earlier.id
+              ) < (
+                COALESCE(s.created_at, t.created_at),
+                t.created_at,
+                t.id
+              )
+          )
+        ORDER BY COALESCE(s.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
         FOR UPDATE OF t SKIP LOCKED
         LIMIT 1
       `;
@@ -1102,7 +1163,18 @@ export class BossForgeRepository {
         WHERE state.latest_task_id = ${task.id}
       `;
       const priorKeySet = new Set(priorKeys.map((row) => row.key));
-      const remainingSlots = Math.max(0, currentTask.candidate_limit - priorKeySet.size);
+      const sentRows = await transaction<Array<{ count: number }>>`
+        SELECT count(*)::int AS count
+        FROM contact_intents
+        WHERE task_id = ${task.id}
+          AND action_kind = 'greet'
+          AND status = 'sent'
+      `;
+      const sentGreets = Number(sentRows[0]?.count ?? 0);
+      // One wave admits at most a chunk. Stop admitting once successful greets
+      // reach candidate_limit; screened headcount is not the budget.
+      const remainingSlots =
+        sentGreets >= currentTask.candidate_limit ? 0 : SCREENING_CHUNK_SIZE;
       const freshRecords = records.filter((record) => {
         const key =
           record.sourceLocator?.kind === "boss_geek_id"
@@ -1110,7 +1182,10 @@ export class BossForgeRepository {
             : `fingerprint:${record.fingerprint}`;
         return !priorKeySet.has(key);
       });
-      const admittedRecords = limitScreeningRecords(freshRecords, remainingSlots);
+      const admittedRecords =
+        remainingSlots === 0
+          ? []
+          : limitScreeningRecords(freshRecords, remainingSlots);
       for (const record of admittedRecords) {
         let candidateRows: Array<{ id: string }> = [];
         if (record.sourceLocator?.kind === "boss_geek_id") {
@@ -1372,7 +1447,14 @@ export class BossForgeRepository {
         `;
         return false;
       }
-      if (task.candidate_count >= task.candidate_limit) return false;
+      const sentRows = await transaction<Array<{ count: number }>>`
+        SELECT count(*)::int AS count
+        FROM contact_intents
+        WHERE task_id = ${taskId}
+          AND action_kind = 'greet'
+          AND status = 'sent'
+      `;
+      if (Number(sentRows[0]?.count ?? 0) >= task.candidate_limit) return false;
 
       const emptyStreak = await transaction<Array<{ count: number }>>`
         SELECT count(*)::int AS count
@@ -1423,18 +1505,14 @@ export class BossForgeRepository {
       `;
       await transaction`
         UPDATE tasks
-        SET candidate_limit = CASE
-            WHEN candidate_count > 0 THEN candidate_count
-            ELSE candidate_limit
-          END,
-          status = ${pending[0] ? "screening" : "waiting_review"},
+        SET status = ${pending[0] ? "screening" : "waiting_review"},
           finished_at = ${pending[0] ? null : new Date()},
           claimed_by = NULL, claim_token = NULL, claimed_at = NULL,
           wait_reason_code = ${pending[0] ? null : "screening_pool_exhausted"},
           wait_reason = ${
             pending[0]
               ? null
-              : "推荐列表在重试后仍无新增候选人，已按实际筛选人数结束（未达到设定人数）。"
+              : "推荐列表在重试后仍无新增候选人，已停止收集（成功打招呼未达设定人数）。"
           },
           next_run_at = NULL,
           last_progress_at = now(), version = version + 1
@@ -1633,8 +1711,8 @@ export class BossForgeRepository {
   }
 
   /**
-   * Re-queue a task for the next screening chunk once greets for the current
-   * chunk are no longer blocking and headcount remains.
+   * Re-queue the next screening chunk until successful greets reach
+   * candidate_limit, or the recommend pool is exhausted.
    */
   async continueScreeningChunk(taskId: string): Promise<boolean> {
     return this.sql.begin(async (transaction) => {
@@ -1643,16 +1721,54 @@ export class BossForgeRepository {
           status: Task["status"];
           candidate_count: number;
           candidate_limit: number;
+          wait_reason_code: string | null;
         }>
       >`
-        SELECT status, candidate_count, candidate_limit
+        SELECT status, candidate_count, candidate_limit, wait_reason_code
         FROM tasks WHERE id = ${taskId} FOR UPDATE
       `;
       const task = tasks[0];
       if (!task) return false;
       if (!["waiting_review", "completed"].includes(task.status)) return false;
+      if (task.wait_reason_code === "screening_pool_exhausted") return false;
       if (task.candidate_count <= 0) return false;
-      if (task.candidate_count >= task.candidate_limit) return false;
+      const sentRows = await transaction<Array<{ count: number }>>`
+        SELECT count(*)::int AS count
+        FROM contact_intents
+        WHERE task_id = ${taskId}
+          AND action_kind = 'greet'
+          AND status = 'sent'
+      `;
+      const sentGreets = Number(sentRows[0]?.count ?? 0);
+      if (sentGreets >= task.candidate_limit) {
+        const processing = await transaction`
+          SELECT id FROM candidate_position_states
+          WHERE latest_task_id = ${taskId}
+            AND resume_screening_status = 'processing'
+          LIMIT 1
+        `;
+        if (processing[0]) return false;
+        await transaction`
+          UPDATE candidate_position_states
+          SET resume_screening_status = 'not_requested',
+            resume_screening_claimed_by = NULL,
+            resume_screening_claimed_at = NULL,
+            updated_at = now()
+          WHERE latest_task_id = ${taskId}
+            AND resume_screening_status = 'queued'
+        `;
+        await transaction`
+          UPDATE tasks
+          SET wait_reason_code = 'greet_target_met',
+            wait_reason = '已达到设定的成功打招呼人数。',
+            next_run_at = NULL,
+            last_progress_at = now(),
+            version = version + 1
+          WHERE id = ${taskId}
+            AND status IN ('waiting_review', 'completed')
+        `;
+        return false;
+      }
       const pendingResume = await transaction`
         SELECT id FROM candidate_position_states
         WHERE latest_task_id = ${taskId}
@@ -1697,12 +1813,57 @@ export class BossForgeRepository {
       SELECT t.id
       FROM tasks t
       JOIN positions p ON p.id = t.position_id
+      LEFT JOIN schedules s ON s.id = t.schedule_id
       WHERE p.boss_account_id = ${bossAccountId}
         AND t.status IN ('waiting_review', 'completed')
+        AND COALESCE(t.wait_reason_code, '') <> 'screening_pool_exhausted'
+        AND COALESCE(t.wait_reason_code, '') <> 'greet_target_met'
         AND NOT EXISTS (
           SELECT 1 FROM candidate_position_states cps
           WHERE cps.latest_task_id = t.id
             AND cps.resume_screening_status IN ('queued', 'processing')
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM tasks earlier
+          JOIN positions earlier_position ON earlier_position.id = earlier.position_id
+          LEFT JOIN schedules earlier_schedule ON earlier_schedule.id = earlier.schedule_id
+          WHERE earlier_position.boss_account_id = p.boss_account_id
+            AND earlier.id <> t.id
+            AND (
+              earlier.status IN ('queued', 'running', 'screening')
+              OR (
+                earlier.status = 'waiting_review'
+                AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
+                AND (
+                  SELECT count(*)::int FROM contact_intents sent_greet
+                  WHERE sent_greet.task_id = earlier.id
+                    AND sent_greet.action_kind = 'greet'
+                    AND sent_greet.status = 'sent'
+                ) < earlier.candidate_limit
+              )
+              OR EXISTS (
+                SELECT 1 FROM contact_intents open_greet
+                WHERE open_greet.task_id = earlier.id
+                  AND open_greet.action_kind = 'greet'
+                  AND open_greet.status IN ('ready', 'processing')
+              )
+              OR EXISTS (
+                SELECT 1 FROM candidate_position_states inflight_resume
+                WHERE inflight_resume.latest_task_id = earlier.id
+                  AND inflight_resume.resume_screening_status = 'processing'
+              )
+            )
+            AND (
+              COALESCE(earlier_schedule.created_at, earlier.created_at),
+              earlier.created_at,
+              earlier.id
+            ) < (
+              COALESCE(s.created_at, t.created_at),
+              t.created_at,
+              t.id
+            )
         )
         AND (
           (
@@ -1725,7 +1886,12 @@ export class BossForgeRepository {
             )
           )
           OR (
-            t.candidate_count < t.candidate_limit
+            (
+              SELECT count(*)::int FROM contact_intents sent_greet
+              WHERE sent_greet.task_id = t.id
+                AND sent_greet.action_kind = 'greet'
+                AND sent_greet.status = 'sent'
+            ) < t.candidate_limit
             AND NOT EXISTS (
               SELECT 1 FROM contact_intents ci
               WHERE ci.task_id = t.id
@@ -1734,8 +1900,8 @@ export class BossForgeRepository {
             )
           )
         )
-      ORDER BY t.finished_at ASC NULLS LAST, t.created_at ASC
-      LIMIT 5
+      ORDER BY COALESCE(s.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
+      LIMIT 1
     `;
     return rows.map((row) => row.id);
   }
@@ -1758,6 +1924,22 @@ export class BossForgeRepository {
           = (timezone('Asia/Shanghai', now()))::date
     `;
     return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Successful and still-open greets for one task. `candidate_limit` is compared to `sent`. */
+  async countTaskGreetProgress(taskId: string): Promise<{ sent: number; inFlight: number }> {
+    const rows = await this.sql<Array<{ sent: number; in_flight: number }>>`
+      SELECT
+        count(*) FILTER (WHERE status = 'sent')::int AS sent,
+        count(*) FILTER (WHERE status IN ('ready', 'processing'))::int AS in_flight
+      FROM contact_intents
+      WHERE task_id = ${taskId}
+        AND action_kind = 'greet'
+    `;
+    return {
+      sent: Number(rows[0]?.sent ?? 0),
+      inFlight: Number(rows[0]?.in_flight ?? 0)
+    };
   }
 
   /**
@@ -1884,8 +2066,57 @@ export class BossForgeRepository {
             JOIN positions ON positions.id = tasks.position_id
             WHERE tasks.id = candidate_position_states.latest_task_id
               AND tasks.status IN ('screening', 'waiting_review')
-              AND tasks.candidate_count <= tasks.candidate_limit
+              AND COALESCE(tasks.wait_reason_code, '') <> 'greet_target_met'
+              AND (
+                SELECT count(*)::int FROM contact_intents sent_greet
+                WHERE sent_greet.task_id = tasks.id
+                  AND sent_greet.action_kind = 'greet'
+                  AND sent_greet.status = 'sent'
+              ) < tasks.candidate_limit
               AND positions.boss_account_id = ${bossAccountId}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM tasks earlier
+                JOIN positions earlier_position ON earlier_position.id = earlier.position_id
+                LEFT JOIN schedules earlier_schedule ON earlier_schedule.id = earlier.schedule_id
+                LEFT JOIN schedules current_schedule ON current_schedule.id = tasks.schedule_id
+                WHERE earlier_position.boss_account_id = positions.boss_account_id
+                  AND earlier.id <> tasks.id
+                  AND (
+                    earlier.status IN ('queued', 'running', 'screening')
+                    OR (
+                      earlier.status = 'waiting_review'
+                      AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                      AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
+                      AND (
+                        SELECT count(*)::int FROM contact_intents sent_earlier
+                        WHERE sent_earlier.task_id = earlier.id
+                          AND sent_earlier.action_kind = 'greet'
+                          AND sent_earlier.status = 'sent'
+                      ) < earlier.candidate_limit
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM contact_intents open_greet
+                      WHERE open_greet.task_id = earlier.id
+                        AND open_greet.action_kind = 'greet'
+                        AND open_greet.status IN ('ready', 'processing')
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM candidate_position_states inflight_resume
+                      WHERE inflight_resume.latest_task_id = earlier.id
+                        AND inflight_resume.resume_screening_status = 'processing'
+                    )
+                  )
+                  AND (
+                    COALESCE(earlier_schedule.created_at, earlier.created_at),
+                    earlier.created_at,
+                    earlier.id
+                  ) < (
+                    COALESCE(current_schedule.created_at, tasks.created_at),
+                    tasks.created_at,
+                    tasks.id
+                  )
+              )
           )
           AND (
             ${contactPriorityTransportMode}::text IS NULL

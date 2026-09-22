@@ -113,8 +113,14 @@ export async function finalizeScreeningChunks(input: {
       const used = await input.repository.countAccountDailyRealGreets(
         input.bossAccountId
       );
-      const remaining = remainingAutoGreetDailySlots(used, dailyLimit);
-      if (remaining <= 0) {
+      const progress = await input.repository.countTaskGreetProgress(taskId);
+      const taskRemaining = Math.max(
+        0,
+        prepared.candidateLimit - progress.sent - progress.inFlight
+      );
+      const dailyRemaining = remainingAutoGreetDailySlots(used, dailyLimit);
+      const remaining = Math.min(dailyRemaining, taskRemaining);
+      if (dailyRemaining <= 0) {
         const stopped = await input.repository.stopTaskForDailyAutoGreetCap({
           taskId,
           bossAccountId: input.bossAccountId,
@@ -134,7 +140,9 @@ export async function finalizeScreeningChunks(input: {
         worked = worked || stopped;
         continue;
       }
-      if (prepared.passers.length > 0) {
+      if (taskRemaining <= 0) {
+        // Successful greets already cover the task target; continuation marks it met.
+      } else if (prepared.passers.length > 0) {
       if (!transportMode) {
         console.warn(
           JSON.stringify({
