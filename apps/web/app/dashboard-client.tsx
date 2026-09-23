@@ -85,6 +85,7 @@ import {
 } from './screening-count-field';
 import { DEFAULT_SCREENING_LIMIT } from '../../../packages/contracts/src/screening-limit';
 import { isDailyAutoGreetCapStopMessage } from '../../../packages/contracts/src/auto-greet-daily-limit';
+import { ImmediateStartDialog } from './immediate-start-dialog';
 import { ScheduleDialog } from './schedule-dialog';
 import {
   semanticProviderDisplayStatus,
@@ -648,6 +649,8 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
     useState(false);
   const [publishingRule, setPublishingRule] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
+  const [immediateStartDialogOpen, setImmediateStartDialogOpen] =
+    useState(false);
   const [screeningCount, setScreeningCount] = useState(
     String(DEFAULT_SCREENING_LIMIT),
   );
@@ -863,7 +866,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
     }
   }
 
-  async function createImmediateTask() {
+  async function createImmediateTask(autoGreet = false) {
     if (
       !position?.bossJobId ||
       position.status !== 'active' ||
@@ -884,6 +887,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
         body: JSON.stringify({
           positionId: position.id,
           candidateLimit: Number(screeningCount),
+          autoGreet,
           source: 'recommend',
           createdBy: 'hr:dashboard',
         }),
@@ -899,9 +903,10 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
       setApprovedCandidatePage(1);
       await loadDashboard();
     } catch (taskError) {
-      setError(
-        taskError instanceof Error ? taskError.message : String(taskError),
-      );
+      const message =
+        taskError instanceof Error ? taskError.message : String(taskError);
+      setError(message);
+      throw taskError instanceof Error ? taskError : new Error(message);
     } finally {
       setCreatingTask(false);
     }
@@ -1233,7 +1238,7 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
               !validScreeningCount(screeningCount)
             }
             data-spotlight="start-screening"
-            onClick={() => void createImmediateTask()}
+            onClick={() => setImmediateStartDialogOpen(true)}
           >
             {creatingTask ? (
               <LoaderCircle className="animate-spin" />
@@ -2658,6 +2663,13 @@ function AuthenticatedDashboardClient({ page }: { page: DashboardPage }) {
         controlApi={controlApi}
         positionId={position?.id ?? null}
         onCreated={loadDashboard}
+      />
+      <ImmediateStartDialog
+        open={immediateStartDialogOpen}
+        onOpenChange={setImmediateStartDialogOpen}
+        screeningCount={screeningCount}
+        submitting={creatingTask}
+        onConfirm={createImmediateTask}
       />
       <CandidateReviewDialog
         open={reviewDialogOpen}
