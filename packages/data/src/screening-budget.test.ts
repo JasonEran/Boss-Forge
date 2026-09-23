@@ -119,7 +119,11 @@ describe("continueScreeningChunk budget", () => {
     expect(calls.some((call) => call.text.includes("resume_screening_status = 'not_requested'"))).toBe(
       true,
     );
-    expect(calls.some((call) => call.text.includes("resume_screening_status = 'queued'"))).toBe(true);
+    expect(
+      calls.some((call) =>
+        call.text.includes("resume_screening_status IN ('queued', 'processing')"),
+      ),
+    ).toBe(true);
   });
 
   it("keeps screening when failed and not_matched rows leave the pass count under the limit", async () => {
@@ -168,7 +172,7 @@ describe("continueScreeningChunk budget", () => {
     expect(values).not.toContain("screening_pass_target_met");
   });
 
-  it("keeps an in-flight resume when the pass target is met and does not queue another chunk", async () => {
+  it("parks an already-overshot screening task, including a resume left in processing", async () => {
     const { calls, repository } = fakeRepository({
       autoGreet: false,
       candidateLimit: 100,
@@ -182,8 +186,13 @@ describe("continueScreeningChunk budget", () => {
     await expect(repository.sealScreeningBudgetIfMet("task-amazon")).resolves.toBe(true);
     const values = valuesOf(calls);
     expect(values).toContain("screening_pass_target_met");
-    expect(values).toContain("screening");
+    expect(values).toContain("waiting_review");
     expect(values).not.toContain("queued");
+    expect(
+      calls.some((call) =>
+        call.text.includes("resume_screening_status IN ('queued', 'processing')"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -209,6 +218,9 @@ describe("sealAccountTasksAtScreeningBudget", () => {
     expect(query).toContain("pass_budget.resume_screening_status = 'screened'");
     expect(query).toContain("screening_pass_target_met");
     expect(query).toContain("sent_budget.status = 'sent'");
-    expect(query).toContain("claimed_at < now() - interval '15 minutes'");
+    expect(query).toContain(
+      "t.status IN ('queued', 'running', 'screening', 'waiting_review', 'completed')",
+    );
+    expect(query).not.toContain("interval '15 minutes'");
   });
 });

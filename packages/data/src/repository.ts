@@ -1789,9 +1789,9 @@ export class BossForgeRepository {
   }
 
   /**
-   * Park every task on this account whose budget is already met so a sibling
-   * task can run. Skips a fresh collection claim; the collector seals itself
-   * before reading another chunk.
+   * Park every task on this account whose budget is already met, including a
+   * collection claim left `running` by the previous process. Called at the
+   * start of each worker loop, before another resume or chunk is claimed.
    */
   async sealAccountTasksAtScreeningBudget(bossAccountId: string): Promise<string[]> {
     return this.sql.begin(async (transaction) => {
@@ -1800,13 +1800,7 @@ export class BossForgeRepository {
         FROM tasks t
         JOIN positions p ON p.id = t.position_id
         WHERE p.boss_account_id = ${bossAccountId}
-          AND (
-            t.status IN ('queued', 'screening', 'waiting_review', 'completed')
-            OR (
-              t.status = 'running'
-              AND t.claimed_at < now() - interval '15 minutes'
-            )
-          )
+          AND t.status IN ('queued', 'running', 'screening', 'waiting_review', 'completed')
           AND ${transaction.unsafe(screeningTerminalWaitExcludedSql("t.wait_reason_code"))}
           AND NOT ${transaction.unsafe(screeningBudgetStillOpenSql("t"))}
         FOR UPDATE OF t

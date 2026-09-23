@@ -64,9 +64,10 @@ export function screeningBudgetStillOpenSql(taskAlias: string): string {
 }
 
 /**
- * Park a task once its budget is met: cancel not-yet-opened resumes and set the
- * existing terminal wait reason. In-flight (`processing`) resumes are left to finish.
- * Returns true when the budget is met (including when it was already sealed).
+ * Park a task once its budget is met. Queued and in-flight resume claims are
+ * released so an already-overshot task does not open another resume, including
+ * after a worker restart. Returns true when the budget is met (including when
+ * it was already sealed).
  */
 export async function applyScreeningBudgetSeal(
   transaction: Database,
@@ -123,6 +124,8 @@ export async function applyScreeningBudgetSeal(
     return false;
   }
   const wait = screeningBudgetWait(task.auto_greet);
+  // Release every resume that has not finished. A processing row left by a
+  // restarted worker would otherwise keep status=screening and block the account.
   await transaction`
     UPDATE candidate_position_states
     SET resume_screening_status = 'not_requested',
@@ -130,26 +133,13 @@ export async function applyScreeningBudgetSeal(
       resume_screening_claimed_at = NULL,
       updated_at = now()
     WHERE latest_task_id = ${taskId}
-      AND resume_screening_status = 'queued'
+      AND resume_screening_status IN ('queued', 'processing')
   `;
-  const processing = await transaction<Array<{ id: string }>>`
-    SELECT id FROM candidate_position_states
-    WHERE latest_task_id = ${taskId}
-      AND resume_screening_status = 'processing'
-    LIMIT 1
-  `;
-  const nextStatus = processing[0]
-    ? "screening"
-    : task.status === "completed"
-      ? "completed"
-      : "waiting_review";
+  const nextStatus = task.status === "completed" ? "completed" : "waiting_review";
   await transaction`
     UPDATE tasks
     SET status = ${nextStatus},
-      finished_at = CASE
-        WHEN ${Boolean(processing[0])} THEN NULL
-        ELSE COALESCE(finished_at, now())
-      END,
+      finished_at = COALESCE(finished_at, now()),
       claimed_by = NULL,
       claim_token = NULL,
       claimed_at = NULL,
