@@ -180,7 +180,8 @@ export type TaskWaitReasonCode =
   | "batch_break"
   | "resume_retry_scheduled"
   | "screening_pool_exhausted"
-  | "greet_target_met";
+  | "greet_target_met"
+  | "screening_pass_target_met";
 
 export type Task = {
   id: string;

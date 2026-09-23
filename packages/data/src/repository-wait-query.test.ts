@@ -7,6 +7,23 @@ import {
   semanticReasonCodesIndicateRuntimeProblem,
 } from "./repository.js";
 
+function queryText(strings: TemplateStringsArray, values: unknown[]): string {
+  return strings.reduce((query, part, index) => {
+    const value = values[index];
+    const inline =
+      value && typeof value === "object" && value !== null && "__fragment" in value
+        ? String((value as { __fragment: string }).__fragment)
+        : "$value";
+    return `${query}${part}${index < values.length ? inline : ""}`;
+  }, "");
+}
+
+function attachUnsafe(sql: object): void {
+  Object.assign(sql, {
+    unsafe: (fragment: string) => ({ __fragment: fragment }),
+  });
+}
+
 describe("resume screening wait query", () => {
   it("only permits retries for errors that are safe to reopen", () => {
     expect(resumeScreeningFailureRecoverable("content_empty")).toBe(true);
@@ -98,18 +115,14 @@ describe("resume screening wait query", () => {
   it("suppresses a candidate viewed today even when a later task has a new state id", async () => {
     const queries: string[] = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      queries.push(
-        strings.reduce(
-          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
-          "",
-        ),
-      );
+      queries.push(queryText(strings, values));
       return Promise.resolve([]);
     }) as unknown as Database;
     const sql = transaction as unknown as {
       begin: (callback: (value: Database) => Promise<unknown>) => Promise<unknown>;
     };
     sql.begin = (callback: (value: Database) => Promise<unknown>) => callback(transaction);
+    attachUnsafe(transaction);
 
     const repository = new BossForgeRepository(transaction);
     await repository.claimNextResumeScreening(
@@ -134,17 +147,13 @@ describe("resume screening wait query", () => {
   it("reclaims mid-flight resumes viewed on this CPS without requiring retry_authorized", async () => {
     const queries: string[] = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      queries.push(
-        strings.reduce(
-          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
-          "",
-        ),
-      );
+      queries.push(queryText(strings, values));
       return Promise.resolve([]);
     }) as unknown as Database;
     Object.assign(transaction, {
       begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
     });
+    attachUnsafe(transaction);
 
     const repository = new BossForgeRepository(transaction);
     await expect(
@@ -175,24 +184,24 @@ describe("resume screening wait query", () => {
     expect(midFlightBlock).not.toContain("candidateId");
     expect(query).toContain("candidate.resume_screening.retry_authorized");
     expect(query).toContain("greet_target_met");
-    expect(query).toContain("sent_greet.status = 'sent'");
+    expect(query).toContain("screening_pass_target_met");
+    expect(query).toContain("sent_budget.status = 'sent'");
+    expect(query).toContain("pass_budget.rule_decision = 'matched'");
+    expect(query).toContain("pass_budget.resume_screening_status = 'screened'");
+    expect(query).toContain("WHEN tasks.auto_greet");
     expect(query).toContain("COALESCE(earlier_schedule.created_at, earlier.created_at)");
   });
 
   it("reclaims unfinished claimable CPS blocked only by same-day candidateId views", async () => {
     const queries: string[] = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      queries.push(
-        strings.reduce(
-          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
-          "",
-        ),
-      );
+      queries.push(queryText(strings, values));
       return Promise.resolve([]);
     }) as unknown as Database;
     Object.assign(transaction, {
       begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
     });
+    attachUnsafe(transaction);
 
     const repository = new BossForgeRepository(transaction);
     await expect(
@@ -224,7 +233,7 @@ describe("resume screening wait query", () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       queries.push({
-        text: strings.join("$value").replace(/\s+/gu, " ").trim(),
+        text: queryText(strings, values).replace(/\s+/gu, " ").trim(),
         values,
       });
       return Promise.resolve([]);
@@ -232,6 +241,7 @@ describe("resume screening wait query", () => {
     Object.assign(transaction, {
       begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
     });
+    attachUnsafe(transaction);
 
     const repository = new BossForgeRepository(transaction);
     await expect(repository.claimNextResumeScreening(
@@ -260,23 +270,21 @@ describe("resume screening wait query", () => {
   it("claims the oldest schedule on an account before a later overlapping task", async () => {
     const queries: string[] = [];
     const transaction = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      queries.push(
-        strings.reduce(
-          (query, part, index) => `${query}${part}${index < values.length ? "$value" : ""}`,
-          "",
-        ),
-      );
+      queries.push(queryText(strings, values));
       return Promise.resolve([]);
     }) as unknown as Database & ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>);
     Object.assign(transaction, {
       begin: (callback: (sql: Database) => Promise<unknown>) => callback(transaction),
     });
+    attachUnsafe(transaction);
     const repository = new BossForgeRepository(transaction as unknown as Database);
     await expect(repository.claimNextTask("worker", "boss-account")).resolves.toBeNull();
     const query = queries.join("\n").replace(/\s+/gu, " ");
     expect(query).toContain("COALESCE(s.created_at, t.created_at)");
     expect(query).toContain("COALESCE(earlier_schedule.created_at, earlier.created_at)");
-    expect(query).toContain("sent_greet.status = 'sent'");
+    expect(query).toContain("sent_budget.status = 'sent'");
+    expect(query).toContain("pass_budget.rule_decision = 'matched'");
+    expect(query).toContain("screening_pass_target_met");
     expect(query).toContain("screening_pool_exhausted");
     expect(query).toContain("ORDER BY COALESCE(s.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC");
   });

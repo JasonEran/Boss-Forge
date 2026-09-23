@@ -1,8 +1,12 @@
 /**
- * `candidate_limit` is a successful-greet target (status `sent`), not a
- * resume-screen headcount. Collection still runs in chunks of
- * {@link SCREENING_CHUNK_SIZE} until that many greets succeed or the pool
- * is exhausted. The account-day greet cap is separate.
+ * `candidate_limit` is the task budget. Collection still runs in chunks of
+ * {@link SCREENING_CHUNK_SIZE} until that budget is met or the pool is exhausted.
+ *
+ * - auto-greet on: budget is successful greets (`contact_intents.status = sent`)
+ * - auto-greet off: budget is screening passes (resume screened and `matched`)
+ *
+ * Failed resumes, `not_matched`, and other decisions do not count as passes.
+ * The account-day greet cap is separate and only applies when auto-greet is on.
  */
 export const DEFAULT_SCREENING_LIMIT = 20;
 /**
@@ -43,4 +47,48 @@ export function screeningChunkSizes(candidateLimit: number): number[] {
     remaining -= size;
   }
   return sizes;
+}
+
+/** Resume finished and the rule marked the person as a pass (筛通过). */
+export function countsAsScreeningPass(input: {
+  ruleDecision: string;
+  resumeScreeningStatus: string;
+}): boolean {
+  return input.ruleDecision === "matched" && input.resumeScreeningStatus === "screened";
+}
+
+export function screeningPassCount(
+  rows: readonly { ruleDecision: string; resumeScreeningStatus: string }[],
+): number {
+  return rows.filter(countsAsScreeningPass).length;
+}
+
+/**
+ * Auto-greet tasks stop on successful greets. Screening-only tasks stop on
+ * screening passes. The other counter never satisfies the budget.
+ */
+export function screeningBudgetMet(input: {
+  autoGreet: boolean;
+  candidateLimit: number;
+  successfulGreets: number;
+  screeningPasses: number;
+}): boolean {
+  const progress = input.autoGreet ? input.successfulGreets : input.screeningPasses;
+  return progress >= input.candidateLimit;
+}
+
+export const GREET_TARGET_MET_WAIT_REASON = "已达到设定的成功打招呼人数。";
+export const SCREENING_PASS_TARGET_MET_WAIT_REASON =
+  "已达到设定的筛通过人数，已停止继续筛选。";
+
+export function screeningBudgetWait(autoGreet: boolean): {
+  code: "greet_target_met" | "screening_pass_target_met";
+  message: string;
+} {
+  return autoGreet
+    ? { code: "greet_target_met", message: GREET_TARGET_MET_WAIT_REASON }
+    : {
+        code: "screening_pass_target_met",
+        message: SCREENING_PASS_TARGET_MET_WAIT_REASON,
+      };
 }

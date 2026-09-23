@@ -456,6 +456,30 @@ export async function readSingleResumePreviewAttempt(
   return readResumePreview(previewCommandForCandidate(target), provider, onScreenshot, onTiming);
 }
 
+async function sealScreeningBudgets(repository: BossForgeRepository): Promise<void> {
+  const accountId = process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01";
+  try {
+    const taskIds = await repository.sealAccountTasksAtScreeningBudget(accountId);
+    if (taskIds.length > 0) {
+      console.log(
+        JSON.stringify({
+          ok: true,
+          event: "m1.task.screening_budget_met",
+          taskIds,
+        })
+      );
+    }
+  } catch (error: unknown) {
+    console.error(
+      JSON.stringify({
+        ok: false,
+        event: "m1.task.screening_budget_seal_failed",
+        message: safeWorkerErrorMessage(error),
+      })
+    );
+  }
+}
+
 async function processNextTask(repository: BossForgeRepository, activity: WorkspaceActivityRepository): Promise<boolean> {
   const workerId = process.env.BOSS_FORGE_WORKER_ID?.trim() || "worker-local-01";
   const accountId = process.env.BOSS_FORGE_ACCOUNT_ID?.trim() || "boss-account-01";
@@ -469,9 +493,16 @@ async function processNextTask(repository: BossForgeRepository, activity: Worksp
     try {
       const alreadyCollected = task.candidateCount ?? 0;
       const totalLimit = task.candidateLimit ?? SCREENING_CHUNK_SIZE;
-      const sentGreets = (await repository.countTaskGreetProgress(task.id)).sent;
-      if (sentGreets >= totalLimit) {
-        await repository.markTaskWaitingReviewIfIdle(task.id, task.claimToken);
+      if (await repository.sealScreeningBudgetIfMet(task.id)) {
+        console.log(
+          JSON.stringify({
+            ok: true,
+            event: "m1.task.screening_budget_met",
+            taskId: task.id,
+            candidateLimit: totalLimit,
+            autoGreet: task.autoGreet === true,
+          })
+        );
         return true;
       }
       const chunkLimit = SCREENING_CHUNK_SIZE;
@@ -847,6 +878,7 @@ async function main(options: M1ExecutionOptions): Promise<void> {
       if (capabilities.materializeSchedules) {
         await m2Repository.materializeDueSchedules();
       }
+      await sealScreeningBudgets(repository);
       const taskProcessed = capabilities.processCollections
         ? await processNextTask(repository, activity)
         : false;
@@ -922,6 +954,7 @@ async function main(options: M1ExecutionOptions): Promise<void> {
             );
           }
         }
+        await sealScreeningBudgets(repository);
         const resumeProcessed =
           capabilities.processResumes &&
           resumeScreeningEnabled() &&

@@ -148,6 +148,12 @@ describe('HR-facing status copy', () => {
     expect(
       taskNextAction({
         status: 'waiting_review',
+        waitingReason: 'screening_pass_target_met',
+      }),
+    ).toBe('已达到设定的筛通过人数，已停止继续筛选');
+    expect(
+      taskNextAction({
+        status: 'waiting_review',
         waitingReason: '这次筛选在打招呼人数规则上线前已经结束，不会重新开始。',
       }),
     ).toBe('这次筛选在打招呼人数规则上线前已经结束，不会重新开始。');

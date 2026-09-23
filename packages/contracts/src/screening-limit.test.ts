@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  countsAsScreeningPass,
+  screeningBudgetMet,
+  screeningBudgetWait,
   screeningChunkLimit,
   screeningChunkSizes,
   screeningCandidateLimit,
+  screeningPassCount,
   SCREENING_CHUNK_SIZE
 } from "./screening-limit.js";
 
@@ -28,5 +32,62 @@ describe("screening chunks", () => {
     expect(screeningCandidateLimit(40)).toBe(40);
     expect(screeningCandidateLimit(500)).toBe(500);
     expect(screeningChunkSizes(100)).toEqual([20, 20, 20, 20, 20]);
+  });
+});
+
+describe("screening budget", () => {
+  const rows = [
+    { ruleDecision: "matched", resumeScreeningStatus: "screened" },
+    { ruleDecision: "matched", resumeScreeningStatus: "screened" },
+    { ruleDecision: "not_matched", resumeScreeningStatus: "screened" },
+    { ruleDecision: "matched", resumeScreeningStatus: "failed" },
+    { ruleDecision: "insufficient", resumeScreeningStatus: "failed" },
+    { ruleDecision: "matched", resumeScreeningStatus: "no_text" },
+    { ruleDecision: "matched", resumeScreeningStatus: "queued" },
+    { ruleDecision: "ambiguous", resumeScreeningStatus: "screened" },
+  ];
+
+  it("counts only matched resumes that finished screening", () => {
+    expect(countsAsScreeningPass(rows[0]!)).toBe(true);
+    expect(countsAsScreeningPass(rows[2]!)).toBe(false);
+    expect(countsAsScreeningPass(rows[3]!)).toBe(false);
+    expect(countsAsScreeningPass(rows[5]!)).toBe(false);
+    expect(screeningPassCount(rows)).toBe(2);
+  });
+
+  it("stops auto-greet off at N screening passes, ignoring greets and non-passes", () => {
+    const screeningPasses = screeningPassCount(rows);
+    expect(screeningBudgetMet({
+      autoGreet: false,
+      candidateLimit: 2,
+      successfulGreets: 0,
+      screeningPasses,
+    })).toBe(true);
+    expect(screeningBudgetMet({
+      autoGreet: false,
+      candidateLimit: 3,
+      successfulGreets: 100,
+      screeningPasses,
+    })).toBe(false);
+    expect(screeningBudgetWait(false)).toEqual({
+      code: "screening_pass_target_met",
+      message: "已达到设定的筛通过人数，已停止继续筛选。",
+    });
+  });
+
+  it("stops auto-greet on at N successful greets, even when passes already exceed the limit", () => {
+    expect(screeningBudgetMet({
+      autoGreet: true,
+      candidateLimit: 100,
+      successfulGreets: 100,
+      screeningPasses: 0,
+    })).toBe(true);
+    expect(screeningBudgetMet({
+      autoGreet: true,
+      candidateLimit: 100,
+      successfulGreets: 99,
+      screeningPasses: 500,
+    })).toBe(false);
+    expect(screeningBudgetWait(true).code).toBe("greet_target_met");
   });
 });
