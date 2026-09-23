@@ -1,4 +1,8 @@
 import { screeningCandidateLimit } from "@boss-forge/contracts";
+import {
+  screeningBudgetStillOpenSql,
+  screeningTerminalWaitExcludedSql,
+} from "./screening-budget.js";
 import { assertRuleScreeningSource } from "./rule-config.js";
 import { randomUUID } from "node:crypto";
 import { evaluateContactPolicy } from "@boss-forge/contact-policy";
@@ -1945,14 +1949,9 @@ export class M2Repository {
                 earlier.status IN ('queued', 'running', 'screening')
                 OR (
                   earlier.status = 'waiting_review'
-                  AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                  AND ${transaction.unsafe(screeningTerminalWaitExcludedSql("earlier.wait_reason_code"))}
                   AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
-                  AND (
-                    SELECT count(*)::int FROM contact_intents sent_greet
-                    WHERE sent_greet.task_id = earlier.id
-                      AND sent_greet.action_kind = 'greet'
-                      AND sent_greet.status = 'sent'
-                  ) < earlier.candidate_limit
+                  AND ${transaction.unsafe(screeningBudgetStillOpenSql("earlier"))}
                 )
                 OR EXISTS (
                   SELECT 1 FROM contact_intents open_greet

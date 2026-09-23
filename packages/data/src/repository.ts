@@ -1,6 +1,12 @@
 import { enqueueRecruitmentAssessment } from "./recruitment-repository.js";
 import { limitScreeningRecords } from "./screening-limit.js";
-import { screeningCandidateLimit, dailyAutoGreetCapStopMessage, SCREENING_CHUNK_SIZE } from "@boss-forge/contracts";
+import { screeningCandidateLimit, screeningBudgetMet, dailyAutoGreetCapStopMessage, SCREENING_CHUNK_SIZE } from "@boss-forge/contracts";
+import {
+  applyScreeningBudgetSeal,
+  screeningBudgetMetWaitExcludedSql,
+  screeningBudgetStillOpenSql,
+  screeningTerminalWaitExcludedSql,
+} from "./screening-budget.js";
 import { assertRuleScreeningSource } from "./rule-config.js";
 import { randomUUID } from "node:crypto";
 import { bossRecommendationFilterPlanSchema, type BossRecommendationFilterPlan } from "@boss-forge/contracts";
@@ -1012,8 +1018,10 @@ export class BossForgeRepository {
    * One BOSS account, one browser. Overlapping tasks run strictly in sequence:
    * older schedule.created_at first (tasks with no schedule use task.created_at),
    * then task.created_at, then task id. Later tasks are not claimed until the
-   * earlier task is finished (greet target met, pool exhausted, cancelled, or
-   * daily greet cap). `candidate_limit` is successful greets sent, not people screened.
+   * earlier task is finished (screening-pass target met when auto-greet is off,
+   * greet target met when auto-greet is on, pool exhausted, cancelled, or
+   * daily greet cap). `candidate_limit` is successful greets when auto_greet
+   * is true, and screening passes (matched + resume screened) when it is false.
    */
   async claimNextTask(workerId: string, bossAccountId: string): Promise<Task | null> {
     return this.sql.begin(async (transaction) => {
@@ -1041,15 +1049,9 @@ export class BossForgeRepository {
                 earlier.status IN ('queued', 'running', 'screening')
                 OR (
                   earlier.status = 'waiting_review'
-                  AND COALESCE(earlier.wait_reason_code, '') <> 'screening_pool_exhausted'
-                  AND COALESCE(earlier.wait_reason_code, '') <> 'greet_target_met'
+                  AND ${transaction.unsafe(screeningTerminalWaitExcludedSql("earlier.wait_reason_code"))}
                   AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
-                  AND (
-                    SELECT count(*)::int FROM contact_intents sent_greet
-                    WHERE sent_greet.task_id = earlier.id
-                      AND sent_greet.action_kind = 'greet'
-                      AND sent_greet.status = 'sent'
-                  ) < earlier.candidate_limit
+                  AND ${transaction.unsafe(screeningBudgetStillOpenSql("earlier"))}
                 )
                 OR EXISTS (
                   SELECT 1 FROM contact_intents open_greet
@@ -1066,13 +1068,8 @@ export class BossForgeRepository {
                   SELECT 1 FROM candidate_position_states open_resume
                   WHERE open_resume.latest_task_id = earlier.id
                     AND open_resume.resume_screening_status IN ('queued', 'processing')
-                    AND (
-                      SELECT count(*)::int FROM contact_intents sent_gate
-                      WHERE sent_gate.task_id = earlier.id
-                        AND sent_gate.action_kind = 'greet'
-                        AND sent_gate.status = 'sent'
-                    ) < earlier.candidate_limit
-                    AND COALESCE(earlier.wait_reason_code, '') <> 'greet_target_met'
+                    AND ${transaction.unsafe(screeningBudgetStillOpenSql("earlier"))}
+                    AND ${transaction.unsafe(screeningBudgetMetWaitExcludedSql("earlier.wait_reason_code"))}
                 )
               )
               AND (
@@ -1132,9 +1129,14 @@ export class BossForgeRepository {
   ): Promise<void> {
     await this.sql.begin(async (transaction) => {
       const currentTasks = await transaction<
-        Array<{ status: Task["status"]; claim_token: string | null; candidate_limit: number }>
+        Array<{
+          status: Task["status"];
+          claim_token: string | null;
+          candidate_limit: number;
+          auto_greet: boolean;
+        }>
       >`
-        SELECT status, claim_token, candidate_limit FROM tasks WHERE id = ${task.id} FOR UPDATE
+        SELECT status, claim_token, candidate_limit, auto_greet FROM tasks WHERE id = ${task.id} FOR UPDATE
       `;
       const currentTask = currentTasks[0];
       if (!currentTask) throw new Error("Task was not found during collection completion.");
@@ -1163,18 +1165,33 @@ export class BossForgeRepository {
         WHERE state.latest_task_id = ${task.id}
       `;
       const priorKeySet = new Set(priorKeys.map((row) => row.key));
-      const sentRows = await transaction<Array<{ count: number }>>`
-        SELECT count(*)::int AS count
-        FROM contact_intents
-        WHERE task_id = ${task.id}
-          AND action_kind = 'greet'
-          AND status = 'sent'
+      const progressRows = await transaction<Array<{ sent: number; passes: number }>>`
+        SELECT
+          (
+            SELECT count(*)::int FROM contact_intents
+            WHERE task_id = ${task.id}
+              AND action_kind = 'greet'
+              AND status = 'sent'
+          ) AS sent,
+          (
+            SELECT count(*)::int FROM candidate_position_states
+            WHERE latest_task_id = ${task.id}
+              AND rule_decision = 'matched'
+              AND resume_screening_status = 'screened'
+          ) AS passes
       `;
-      const sentGreets = Number(sentRows[0]?.count ?? 0);
-      // One wave admits at most a chunk. Stop admitting once successful greets
-      // reach candidate_limit; screened headcount is not the budget.
-      const remainingSlots =
-        sentGreets >= currentTask.candidate_limit ? 0 : SCREENING_CHUNK_SIZE;
+      const sentGreets = Number(progressRows[0]?.sent ?? 0);
+      const screeningPasses = Number(progressRows[0]?.passes ?? 0);
+      // One wave admits at most a chunk. Stop admitting once the task budget is
+      // met: successful greets when auto-greet is on, screening passes when it is off.
+      const remainingSlots = screeningBudgetMet({
+        autoGreet: currentTask.auto_greet,
+        candidateLimit: currentTask.candidate_limit,
+        successfulGreets: sentGreets,
+        screeningPasses,
+      })
+        ? 0
+        : SCREENING_CHUNK_SIZE;
       const freshRecords = records.filter((record) => {
         const key =
           record.sourceLocator?.kind === "boss_geek_id"
@@ -1415,6 +1432,7 @@ export class BossForgeRepository {
         )
       `;
       await enqueueTaskCompletionIfReady(transaction, task.id);
+      await applyScreeningBudgetSeal(transaction, task.id);
     });
   }
 
@@ -1447,14 +1465,7 @@ export class BossForgeRepository {
         `;
         return false;
       }
-      const sentRows = await transaction<Array<{ count: number }>>`
-        SELECT count(*)::int AS count
-        FROM contact_intents
-        WHERE task_id = ${taskId}
-          AND action_kind = 'greet'
-          AND status = 'sent'
-      `;
-      if (Number(sentRows[0]?.count ?? 0) >= task.candidate_limit) return false;
+      if (await applyScreeningBudgetSeal(transaction, taskId)) return false;
 
       const emptyStreak = await transaction<Array<{ count: number }>>`
         SELECT count(*)::int AS count
@@ -1711,8 +1722,9 @@ export class BossForgeRepository {
   }
 
   /**
-   * Re-queue the next screening chunk until successful greets reach
-   * candidate_limit, or the recommend pool is exhausted.
+   * Re-queue the next screening chunk until the task budget is met
+   * (successful greets when auto-greet is on, screening passes when it is off),
+   * or the recommend pool is exhausted.
    */
   async continueScreeningChunk(taskId: string): Promise<boolean> {
     return this.sql.begin(async (transaction) => {
@@ -1731,44 +1743,8 @@ export class BossForgeRepository {
       if (!task) return false;
       if (!["waiting_review", "completed"].includes(task.status)) return false;
       if (task.wait_reason_code === "screening_pool_exhausted") return false;
+      if (await applyScreeningBudgetSeal(transaction, taskId)) return false;
       if (task.candidate_count <= 0) return false;
-      const sentRows = await transaction<Array<{ count: number }>>`
-        SELECT count(*)::int AS count
-        FROM contact_intents
-        WHERE task_id = ${taskId}
-          AND action_kind = 'greet'
-          AND status = 'sent'
-      `;
-      const sentGreets = Number(sentRows[0]?.count ?? 0);
-      if (sentGreets >= task.candidate_limit) {
-        const processing = await transaction`
-          SELECT id FROM candidate_position_states
-          WHERE latest_task_id = ${taskId}
-            AND resume_screening_status = 'processing'
-          LIMIT 1
-        `;
-        if (processing[0]) return false;
-        await transaction`
-          UPDATE candidate_position_states
-          SET resume_screening_status = 'not_requested',
-            resume_screening_claimed_by = NULL,
-            resume_screening_claimed_at = NULL,
-            updated_at = now()
-          WHERE latest_task_id = ${taskId}
-            AND resume_screening_status = 'queued'
-        `;
-        await transaction`
-          UPDATE tasks
-          SET wait_reason_code = 'greet_target_met',
-            wait_reason = '已达到设定的成功打招呼人数。',
-            next_run_at = NULL,
-            last_progress_at = now(),
-            version = version + 1
-          WHERE id = ${taskId}
-            AND status IN ('waiting_review', 'completed')
-        `;
-        return false;
-      }
       const pendingResume = await transaction`
         SELECT id FROM candidate_position_states
         WHERE latest_task_id = ${taskId}
@@ -1807,6 +1783,42 @@ export class BossForgeRepository {
     });
   }
 
+  /** Stop one task when its greet or screening-pass budget is already met. */
+  async sealScreeningBudgetIfMet(taskId: string): Promise<boolean> {
+    return this.sql.begin((transaction) => applyScreeningBudgetSeal(transaction, taskId));
+  }
+
+  /**
+   * Park every task on this account whose budget is already met so a sibling
+   * task can run. Skips a fresh collection claim; the collector seals itself
+   * before reading another chunk.
+   */
+  async sealAccountTasksAtScreeningBudget(bossAccountId: string): Promise<string[]> {
+    return this.sql.begin(async (transaction) => {
+      const rows = await transaction<Array<{ id: string }>>`
+        SELECT t.id
+        FROM tasks t
+        JOIN positions p ON p.id = t.position_id
+        WHERE p.boss_account_id = ${bossAccountId}
+          AND (
+            t.status IN ('queued', 'screening', 'waiting_review', 'completed')
+            OR (
+              t.status = 'running'
+              AND t.claimed_at < now() - interval '15 minutes'
+            )
+          )
+          AND ${transaction.unsafe(screeningTerminalWaitExcludedSql("t.wait_reason_code"))}
+          AND NOT ${transaction.unsafe(screeningBudgetStillOpenSql("t"))}
+        FOR UPDATE OF t
+      `;
+      const sealed: string[] = [];
+      for (const row of rows) {
+        if (await applyScreeningBudgetSeal(transaction, row.id)) sealed.push(row.id);
+      }
+      return sealed;
+    });
+  }
+
   /** Tasks that finished a resume chunk and may need auto-greet / continuation. */
   async listTasksReadyForChunkFinalize(bossAccountId: string): Promise<string[]> {
     const rows = await this.sql<Array<{ id: string }>>`
@@ -1816,8 +1828,7 @@ export class BossForgeRepository {
       LEFT JOIN schedules s ON s.id = t.schedule_id
       WHERE p.boss_account_id = ${bossAccountId}
         AND t.status IN ('waiting_review', 'completed')
-        AND COALESCE(t.wait_reason_code, '') <> 'screening_pool_exhausted'
-        AND COALESCE(t.wait_reason_code, '') <> 'greet_target_met'
+        AND ${this.sql.unsafe(screeningTerminalWaitExcludedSql("t.wait_reason_code"))}
         AND NOT EXISTS (
           SELECT 1 FROM candidate_position_states cps
           WHERE cps.latest_task_id = t.id
@@ -1834,14 +1845,9 @@ export class BossForgeRepository {
               earlier.status IN ('queued', 'running', 'screening')
               OR (
                 earlier.status = 'waiting_review'
-                AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                AND ${this.sql.unsafe(screeningTerminalWaitExcludedSql("earlier.wait_reason_code"))}
                 AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
-                AND (
-                  SELECT count(*)::int FROM contact_intents sent_greet
-                  WHERE sent_greet.task_id = earlier.id
-                    AND sent_greet.action_kind = 'greet'
-                    AND sent_greet.status = 'sent'
-                ) < earlier.candidate_limit
+                AND ${this.sql.unsafe(screeningBudgetStillOpenSql("earlier"))}
               )
               OR EXISTS (
                 SELECT 1 FROM contact_intents open_greet
@@ -1886,18 +1892,17 @@ export class BossForgeRepository {
             )
           )
           OR (
-            (
-              SELECT count(*)::int FROM contact_intents sent_greet
-              WHERE sent_greet.task_id = t.id
-                AND sent_greet.action_kind = 'greet'
-                AND sent_greet.status = 'sent'
-            ) < t.candidate_limit
+            ${this.sql.unsafe(screeningBudgetStillOpenSql("t"))}
             AND NOT EXISTS (
               SELECT 1 FROM contact_intents ci
               WHERE ci.task_id = t.id
                 AND ci.action_kind = 'greet'
                 AND ci.status IN ('ready', 'processing')
             )
+          )
+          OR (
+            NOT ${this.sql.unsafe(screeningBudgetStillOpenSql("t"))}
+            AND ${this.sql.unsafe(screeningBudgetMetWaitExcludedSql("t.wait_reason_code"))}
           )
         )
       ORDER BY COALESCE(s.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
@@ -2066,13 +2071,8 @@ export class BossForgeRepository {
             JOIN positions ON positions.id = tasks.position_id
             WHERE tasks.id = candidate_position_states.latest_task_id
               AND tasks.status IN ('screening', 'waiting_review')
-              AND COALESCE(tasks.wait_reason_code, '') <> 'greet_target_met'
-              AND (
-                SELECT count(*)::int FROM contact_intents sent_greet
-                WHERE sent_greet.task_id = tasks.id
-                  AND sent_greet.action_kind = 'greet'
-                  AND sent_greet.status = 'sent'
-              ) < tasks.candidate_limit
+              AND ${transaction.unsafe(screeningBudgetMetWaitExcludedSql("tasks.wait_reason_code"))}
+              AND ${transaction.unsafe(screeningBudgetStillOpenSql("tasks"))}
               AND positions.boss_account_id = ${bossAccountId}
               AND NOT EXISTS (
                 SELECT 1
@@ -2086,14 +2086,9 @@ export class BossForgeRepository {
                     earlier.status IN ('queued', 'running', 'screening')
                     OR (
                       earlier.status = 'waiting_review'
-                      AND COALESCE(earlier.wait_reason_code, '') NOT IN ('screening_pool_exhausted', 'greet_target_met')
+                      AND ${transaction.unsafe(screeningTerminalWaitExcludedSql("earlier.wait_reason_code"))}
                       AND COALESCE(earlier.error_message, '') NOT LIKE '%每日打招呼上限%'
-                      AND (
-                        SELECT count(*)::int FROM contact_intents sent_earlier
-                        WHERE sent_earlier.task_id = earlier.id
-                          AND sent_earlier.action_kind = 'greet'
-                          AND sent_earlier.status = 'sent'
-                      ) < earlier.candidate_limit
+                      AND ${transaction.unsafe(screeningBudgetStillOpenSql("earlier"))}
                     )
                     OR EXISTS (
                       SELECT 1 FROM contact_intents open_greet
@@ -2530,6 +2525,7 @@ export class BossForgeRepository {
         });
       }
       await enqueueTaskCompletionIfReady(transaction, input.job.taskId);
+      await applyScreeningBudgetSeal(transaction, input.job.taskId);
     });
   }
 
@@ -2641,6 +2637,7 @@ export class BossForgeRepository {
         });
       }
       await enqueueTaskCompletionIfReady(transaction, input.taskId);
+      await applyScreeningBudgetSeal(transaction, input.taskId);
     });
   }
 
@@ -2767,6 +2764,7 @@ export class BossForgeRepository {
         });
       }
       await enqueueTaskCompletionIfReady(transaction, input.taskId);
+      await applyScreeningBudgetSeal(transaction, input.taskId);
     });
   }
 
