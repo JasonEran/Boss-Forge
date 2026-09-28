@@ -27,7 +27,7 @@ await page.evaluateOnNewDocument(() =>
   sessionStorage.setItem('boss-forge.session-token', 'isolated-fixture'),
 );
 await page.setRequestInterception(true);
-page.on('request', (r) => {
+page.on('request', async (r) => {
   const url = new URL(r.url());
   if (url.pathname.startsWith('/api/')) {
     const headers = {
@@ -51,7 +51,7 @@ page.on('request', (r) => {
       };
     else if (url.pathname === '/api/boss-login/status') value = status;
     else if (url.pathname === '/api/boss-login/refresh') {
-      const data = JSON.parse(r.postData() || '{}');
+      const data = JSON.parse((await r.fetchPostData()) || '{}');
       posts.push(data);
       status = {
         ...status,
