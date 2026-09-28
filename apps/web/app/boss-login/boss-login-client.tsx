@@ -132,7 +132,12 @@ function BossLoginContent() {
 
   const refreshQrCode = useCallback(async () => {
     setRefreshing(true);
+    setError(null);
     try {
+      const recovering =
+        status?.state === 'error' ||
+        status?.state === 'offline' ||
+        status?.state === 'starting';
       const previousImageUpdatedAt = status?.imageUpdatedAt ?? null;
       const response = await apiFetch(`${controlApi}/api/boss-login/refresh`, {
         method: 'POST',
@@ -141,17 +146,22 @@ function BossLoginContent() {
       if (!response.ok)
         throw new Error(payload.message ?? `HTTP ${response.status}`);
 
-      const deadline = Date.now() + 30_000;
+      // Error-hold recovery restarts Chromium via compose on-failure; allow
+      // longer than a normal in-place QR refresh, and do not abort on the
+      // transient error/offline/starting states that appear mid-restart.
+      const deadline = Date.now() + (recovering ? 90_000 : 45_000);
+      let lastMessage = payload.message ?? null;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 700));
         const next = await readStatus();
         setStatus(next);
+        lastMessage = next.message;
         if (next.state === 'authenticated') {
           replaceImage(null);
           setError(null);
           return;
         }
-        if (next.state === 'error' || next.state === 'offline') {
+        if (next.state === 'risk_controlled') {
           replaceImage(null);
           throw new Error(next.message);
         }
@@ -166,7 +176,11 @@ function BossLoginContent() {
           return;
         }
       }
-      throw new Error('二维码刷新超时，请稍后重试。');
+      throw new Error(
+        lastMessage
+          ? `二维码刷新超时：${lastMessage}`
+          : '二维码刷新超时，请稍后重试。',
+      );
     } catch (refreshError) {
       setError(
         refreshError instanceof Error
@@ -227,6 +241,17 @@ function BossLoginContent() {
     status.verification?.workerHeartbeatFresh === true;
   const waiting = status?.state === 'awaiting_scan';
   const riskControlled = status?.state === 'risk_controlled';
+  const serviceFault =
+    status?.state === 'error' ||
+    status?.state === 'offline' ||
+    (!status && Boolean(error));
+  const refreshLabel = refreshing
+    ? serviceFault
+      ? '正在重新连接'
+      : '正在刷新'
+    : serviceFault
+      ? '重新连接扫码服务'
+      : '立即刷新二维码';
   const realGreetingConfigured =
     status?.contactDispatchMode === 'real' &&
     (status?.sideEffectsMode === 'real_greet_enabled' ||
@@ -342,6 +367,7 @@ function BossLoginContent() {
               <Button
                 type="button"
                 size="sm"
+                data-testid="boss-login-refresh"
                 onClick={() => void refreshQrCode()}
                 disabled={
                   refreshing || checking || authenticated || riskControlled
@@ -355,7 +381,7 @@ function BossLoginContent() {
                 ) : (
                   <RefreshCw className="size-4" aria-hidden="true" />
                 )}
-                {refreshing ? '正在刷新' : '立即刷新二维码'}
+                {refreshLabel}
               </Button>
             </div>
           </div>
@@ -409,9 +435,46 @@ function BossLoginContent() {
                   已停止自动操作，不会继续刷新、筛选或发送消息。
                 </p>
               </div>
+            ) : serviceFault ? (
+              <div className="max-w-md space-y-4 text-center">
+                <ShieldAlert
+                  className="mx-auto size-12 text-destructive"
+                  aria-hidden="true"
+                />
+                <p className="text-lg font-semibold text-destructive">
+                  扫码服务异常
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {status?.message ??
+                    error ??
+                    '二维码暂时不可用。可重新连接扫码服务，系统会重启浏览器连接并重新获取微信小程序二维码。'}
+                </p>
+                <Button
+                  type="button"
+                  size="lg"
+                  data-testid="boss-login-reconnect"
+                  onClick={() => void refreshQrCode()}
+                  disabled={refreshing || checking}
+                >
+                  {refreshing ? (
+                    <LoaderCircle
+                      className="size-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <RefreshCw className="size-4" aria-hidden="true" />
+                  )}
+                  {refreshing ? '正在重新连接' : '重新连接扫码服务'}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  不会清除已保存的登录目录。若仍失败，请稍后再试或联系管理员。
+                </p>
+              </div>
             ) : (
               <div className="max-w-md space-y-3 text-center">
-                {status?.state === 'starting' || !status ? (
+                {status?.state === 'starting' ||
+                status?.state === 'refreshing' ||
+                !status ? (
                   <LoaderCircle
                     className="mx-auto size-10 animate-spin text-primary"
                     aria-hidden="true"
@@ -462,10 +525,9 @@ function BossLoginContent() {
               </li>
             </ol>
           </Panel>
-          <Panel title="二维码过期怎么办">
+          <Panel title="二维码过期或服务异常怎么办">
             <p className="text-sm text-muted-foreground">
-              点击“立即刷新二维码”后，服务器只会向 BOSS
-              请求一次新二维码并截取一次画面。按钮处理期间会锁定，避免重复请求。
+              过期时点“立即刷新二维码”；若提示“二维码刷新失败”或服务异常，点“重新连接扫码服务”，系统会重启浏览器连接并重新获取微信小程序二维码。处理期间按钮会锁定，避免重复请求。
             </p>
           </Panel>
           <Panel title="安全边界">
