@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
+import { isLoginMethod, saveLoginMethod, type LoginMethod } from "./login-method.js";
 
 /** Claim the request before doing any recovery work. A newer refresh written
  * by the API must not be removed when the previous request finishes. */
 export async function consumeLoginRefreshRequest(
   path: string,
-  onConsumed?: () => Promise<void>
+  onConsumed?: (request: { loginMethod?: LoginMethod }) => Promise<void>
 ): Promise<boolean> {
   const claimedPath = `${path}.${process.pid}.${randomUUID()}.consuming`;
   try {
@@ -27,7 +29,11 @@ export async function consumeLoginRefreshRequest(
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(request.requestId) ||
         typeof request.requestedAt !== "string" ||
         !Number.isFinite(Date.parse(request.requestedAt))) return false;
-    await onConsumed?.();
+    if (request.loginMethod !== undefined && !isLoginMethod(request.loginMethod)) return false;
+    // Persist the explicit choice before a recovery callback can restart the
+    // browser. A request without a method preserves the existing preference.
+    if (isLoginMethod(request.loginMethod)) await saveLoginMethod(dirname(path), request.loginMethod);
+    await onConsumed?.(isLoginMethod(request.loginMethod) ? { loginMethod: request.loginMethod } : {});
     return true;
   } finally {
     await unlink(claimedPath);

@@ -35,6 +35,8 @@ type RelayStatus = {
   updatedAt: string | null;
   imageAvailable: boolean;
   imageUpdatedAt: string | null;
+  loginMethod?: 'wechat' | 'boss_app';
+  appLoginRequired?: boolean;
   contactDispatchMode: 'disabled' | 'fake' | 'real';
   sideEffectsMode:
     | 'preview_only'
@@ -78,13 +80,23 @@ function BossLoginContent() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [pendingMethod, setPendingMethod] = useState<
+    'wechat' | 'boss_app' | null
+  >(null);
   const imageUrlRef = useRef<string | null>(null);
+  const imageUpdatedAtRef = useRef<string | null>(null);
+  const imageRequestRef = useRef(0);
+  const refreshInFlight = useRef(false);
+  const cancelImageLoad = useCallback(() => {
+    imageRequestRef.current += 1;
+  }, []);
 
   const replaceImage = useCallback((next: string | null) => {
     const previous = imageUrlRef.current;
     imageUrlRef.current = next;
     setImageUrl(next);
     if (previous) URL.revokeObjectURL(previous);
+    if (!next) imageUpdatedAtRef.current = null;
   }, []);
 
   const readStatus = useCallback(async (): Promise<RelayStatus> => {
@@ -96,7 +108,12 @@ function BossLoginContent() {
   const applyStatus = useCallback(
     async (next: RelayStatus, loadImage: boolean) => {
       setStatus(next);
-      if (next.state === 'awaiting_scan' && next.imageAvailable && loadImage) {
+      const requestId = ++imageRequestRef.current;
+      if (
+        next.state === 'awaiting_scan' &&
+        next.imageAvailable &&
+        (loadImage || imageUpdatedAtRef.current !== next.imageUpdatedAt)
+      ) {
         const imageResponse = await apiFetch(
           `${controlApi}/api/boss-login/image?updatedAt=${encodeURIComponent(next.imageUpdatedAt ?? '')}`,
           { cache: 'no-store' },
@@ -105,11 +122,11 @@ function BossLoginContent() {
           const payload = (await imageResponse.json()) as { message?: string };
           throw new Error(payload.message ?? `HTTP ${imageResponse.status}`);
         }
-        replaceImage(URL.createObjectURL(await imageResponse.blob()));
-      } else if (
-        next.state !== 'awaiting_scan' &&
-        next.state !== 'refreshing'
-      ) {
+        const blob = await imageResponse.blob();
+        if (requestId !== imageRequestRef.current) return;
+        imageUpdatedAtRef.current = next.imageUpdatedAt;
+        replaceImage(URL.createObjectURL(blob));
+      } else if (next.state !== 'awaiting_scan' || !next.imageAvailable) {
         replaceImage(null);
       }
     },
@@ -130,67 +147,83 @@ function BossLoginContent() {
     }
   }, [applyStatus, readStatus]);
 
-  const refreshQrCode = useCallback(async () => {
-    setRefreshing(true);
-    setError(null);
-    try {
-      const recovering =
-        status?.state === 'error' ||
-        status?.state === 'offline' ||
-        status?.state === 'starting';
-      const previousImageUpdatedAt = status?.imageUpdatedAt ?? null;
-      const response = await apiFetch(`${controlApi}/api/boss-login/refresh`, {
-        method: 'POST',
-      });
-      const payload = (await response.json()) as { message?: string };
-      if (!response.ok)
-        throw new Error(payload.message ?? `HTTP ${response.status}`);
+  const refreshQrCode = useCallback(
+    async (method?: 'wechat' | 'boss_app') => {
+      if (refreshInFlight.current) return;
+      refreshInFlight.current = true;
+      setRefreshing(true);
+      setPendingMethod(method ?? status?.loginMethod ?? 'wechat');
+      setError(null);
+      try {
+        const recovering =
+          status?.state === 'error' ||
+          status?.state === 'offline' ||
+          status?.state === 'starting';
+        const previousImageUpdatedAt = status?.imageUpdatedAt ?? null;
+        const response = await apiFetch(
+          `${controlApi}/api/boss-login/refresh`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(method ? { loginMethod: method } : {}),
+          },
+        );
+        const payload = (await response.json()) as { message?: string };
+        if (!response.ok)
+          throw new Error(payload.message ?? `HTTP ${response.status}`);
+        ++imageRequestRef.current;
+        replaceImage(null);
 
-      // Error-hold recovery restarts Chromium via compose on-failure; allow
-      // longer than a normal in-place QR refresh, and do not abort on the
-      // transient error/offline/starting states that appear mid-restart.
-      const deadline = Date.now() + (recovering ? 90_000 : 45_000);
-      let lastMessage = payload.message ?? null;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 700));
-        const next = await readStatus();
-        setStatus(next);
-        lastMessage = next.message;
-        if (next.state === 'authenticated') {
-          replaceImage(null);
-          setError(null);
-          return;
+        // Error-hold recovery restarts Chromium via compose on-failure; allow
+        // longer than a normal in-place QR refresh, and do not abort on the
+        // transient error/offline/starting states that appear mid-restart.
+        const deadline = Date.now() + (recovering ? 90_000 : 45_000);
+        let lastMessage = payload.message ?? null;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 700));
+          const next = await readStatus();
+          setStatus(next);
+          lastMessage = next.message;
+          if (next.state === 'authenticated') {
+            replaceImage(null);
+            setError(null);
+            return;
+          }
+          if (next.state === 'risk_controlled') {
+            replaceImage(null);
+            throw new Error(next.message);
+          }
+          if (
+            next.state === 'awaiting_scan' &&
+            next.imageAvailable &&
+            next.imageUpdatedAt &&
+            (!method || next.loginMethod === method) &&
+            next.imageUpdatedAt !== previousImageUpdatedAt
+          ) {
+            await applyStatus(next, true);
+            setError(null);
+            return;
+          }
         }
-        if (next.state === 'risk_controlled') {
-          replaceImage(null);
-          throw new Error(next.message);
-        }
-        if (
-          next.state === 'awaiting_scan' &&
-          next.imageAvailable &&
-          next.imageUpdatedAt &&
-          next.imageUpdatedAt !== previousImageUpdatedAt
-        ) {
-          await applyStatus(next, true);
-          setError(null);
-          return;
-        }
+        throw new Error(
+          lastMessage
+            ? `二维码刷新超时：${lastMessage}`
+            : '二维码刷新超时，请稍后重试。',
+        );
+      } catch (refreshError) {
+        setError(
+          refreshError instanceof Error
+            ? refreshError.message
+            : String(refreshError),
+        );
+      } finally {
+        refreshInFlight.current = false;
+        setRefreshing(false);
+        setPendingMethod(null);
       }
-      throw new Error(
-        lastMessage
-          ? `二维码刷新超时：${lastMessage}`
-          : '二维码刷新超时，请稍后重试。',
-      );
-    } catch (refreshError) {
-      setError(
-        refreshError instanceof Error
-          ? refreshError.message
-          : String(refreshError),
-      );
-    } finally {
-      setRefreshing(false);
-    }
-  }, [applyStatus, readStatus, replaceImage, status]);
+    },
+    [applyStatus, readStatus, replaceImage, status],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -226,11 +259,12 @@ function BossLoginContent() {
     }, 3_000);
     return () => {
       cancelled = true;
+      cancelImageLoad();
       window.clearInterval(timer);
       if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
       imageUrlRef.current = null;
     };
-  }, [applyStatus, readStatus]);
+  }, [applyStatus, readStatus, cancelImageLoad]);
 
   const authenticated = status?.state === 'authenticated';
   const runtimeConsistent = status?.runtimeConsistent === true;
@@ -241,6 +275,10 @@ function BossLoginContent() {
     status.verification?.workerHeartbeatFresh === true;
   const waiting = status?.state === 'awaiting_scan';
   const riskControlled = status?.state === 'risk_controlled';
+  const appLoginRequired = status?.appLoginRequired === true;
+  const loginMethod = pendingMethod ?? status?.loginMethod ?? 'wechat';
+  const appLogin = loginMethod === 'boss_app';
+  const showAppInstructions = appLogin || appLoginRequired;
   const serviceFault =
     status?.state === 'error' ||
     status?.state === 'offline' ||
@@ -277,7 +315,7 @@ function BossLoginContent() {
     <WorkspaceShell
       current="/boss-login"
       title="BOSS 扫码登录"
-      description="使用微信扫一扫，进入 BOSS 直聘小程序确认登录。二维码过期时可手动刷新。"
+      description="可切换微信扫码或 BOSS 直聘 App 扫码，在手机上确认登录。"
     >
       <Notice error={error} />
       {riskControlled ? (
@@ -330,16 +368,73 @@ function BossLoginContent() {
       ) : null}
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.75fr)]">
         <Panel
-          title="微信小程序扫码登录"
-          description="已为你选择 BOSS「微信登录/注册」。请用微信扫描下方小程序二维码。"
+          title={
+            appLoginRequired
+              ? '此账号需要 BOSS App 扫码'
+              : appLogin
+                ? 'BOSS App 扫码登录'
+                : '微信小程序扫码登录'
+          }
+          description={
+            showAppInstructions
+              ? '请使用 BOSS 直聘 App「我的 → 登录网页版」扫描下方二维码。'
+              : '请用微信扫描下方小程序二维码，并在小程序中确认登录。'
+          }
         >
+          <fieldset
+            aria-label="选择扫码登录方式"
+            className="flex flex-wrap gap-2"
+          >
+            <Button
+              type="button"
+              variant={!appLogin ? 'default' : 'outline'}
+              aria-pressed={!appLogin}
+              className="min-h-11"
+              data-testid="boss-login-wechat"
+              disabled={
+                refreshing ||
+                checking ||
+                authenticated ||
+                riskControlled ||
+                appLoginRequired
+              }
+              onClick={() => void refreshQrCode('wechat')}
+            >
+              微信扫码
+            </Button>
+            <Button
+              type="button"
+              variant={appLogin ? 'default' : 'outline'}
+              aria-pressed={appLogin}
+              className="min-h-11"
+              data-testid="boss-login-app"
+              disabled={
+                refreshing || checking || authenticated || riskControlled
+              }
+              onClick={() => void refreshQrCode('boss_app')}
+            >
+              BOSS App 扫码
+            </Button>
+          </fieldset>
+          {appLoginRequired ? (
+            <p
+              role="alert"
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"
+            >
+              BOSS 要求此账号使用 App
+              登录，微信扫码尚未完成网页登录。请点击「BOSS App 扫码」后，用 BOSS
+              直聘 App 扫描新二维码。
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <output className="flex items-center gap-2" aria-atomic="true">
               <Badge variant={badgeVariant}>
                 {authenticated && !verifiedAuthenticated
                   ? '网页登录可见，后台待确认'
                   : status
-                    ? stateLabels[status.state]
+                    ? appLoginRequired
+                      ? '需要 App 扫码'
+                      : stateLabels[status.state]
                     : '正在读取状态'}
               </Badge>
               <span className="text-sm text-muted-foreground">
@@ -370,7 +465,11 @@ function BossLoginContent() {
                 data-testid="boss-login-refresh"
                 onClick={() => void refreshQrCode()}
                 disabled={
-                  refreshing || checking || authenticated || riskControlled
+                  refreshing ||
+                  checking ||
+                  authenticated ||
+                  riskControlled ||
+                  appLoginRequired
                 }
               >
                 {refreshing ? (
@@ -387,10 +486,14 @@ function BossLoginContent() {
           </div>
 
           <div className="grid min-h-[420px] place-items-center overflow-hidden rounded-xl border bg-muted/35 p-3 sm:p-5">
-            {imageUrl && (waiting || status?.state === 'refreshing') ? (
+            {imageUrl && waiting && !refreshing ? (
               <Image
                 src={imageUrl}
-                alt="BOSS 直聘微信小程序登录二维码，请使用微信扫一扫"
+                alt={
+                  appLogin
+                    ? 'BOSS 直聘 App 登录二维码，请使用 BOSS 直聘 App 扫码'
+                    : 'BOSS 直聘微信小程序登录二维码，请使用微信扫一扫'
+                }
                 width={1100}
                 height={820}
                 unoptimized
@@ -447,7 +550,7 @@ function BossLoginContent() {
                 <p className="text-sm text-muted-foreground">
                   {status?.message ??
                     error ??
-                    '二维码暂时不可用。可重新连接扫码服务，系统会重启浏览器连接并重新获取微信小程序二维码。'}
+                    '二维码暂时不可用。可重新连接扫码服务，系统会重启浏览器连接并重新获取当前所选方式的二维码。'}
                 </p>
                 <Button
                   type="button"
@@ -486,7 +589,9 @@ function BossLoginContent() {
                   />
                 )}
                 <p className="font-medium">
-                  {status?.message ?? '正在等待扫码画面…'}
+                  {refreshing
+                    ? `正在获取${appLogin ? 'BOSS App' : '微信'}二维码…`
+                    : (status?.message ?? '正在等待扫码画面…')}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   二维码只会在管理员登录后的页面中显示，不会公开暴露。
@@ -509,32 +614,43 @@ function BossLoginContent() {
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                   1
                 </span>
-                <span>打开手机微信，点击右上角“＋”选择“扫一扫”。</span>
+                <span>
+                  {showAppInstructions
+                    ? '打开手机 BOSS 直聘 App，进入「我的 → 登录网页版」。'
+                    : '打开手机微信，点击右上角“＋”选择“扫一扫”。'}
+                </span>
               </li>
               <li className="flex gap-3">
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                   2
                 </span>
-                <span>扫描左侧二维码，进入 BOSS 直聘微信小程序。</span>
+                <span>
+                  {showAppInstructions
+                    ? '使用 BOSS 直聘 App 扫描左侧二维码。'
+                    : '扫描左侧二维码，进入 BOSS 直聘微信小程序。'}
+                </span>
               </li>
               <li className="flex gap-3">
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                   3
                 </span>
-                <span>在小程序中确认登录，然后点击“检查登录状态”。</span>
+                <span>
+                  在{showAppInstructions ? 'BOSS 直聘 App' : '微信小程序'}
+                  中确认登录，控制台会自动更新登录状态。
+                </span>
               </li>
             </ol>
           </Panel>
           <Panel title="二维码过期或服务异常怎么办">
             <p className="text-sm text-muted-foreground">
-              过期时点“立即刷新二维码”；若提示“二维码刷新失败”或服务异常，点“重新连接扫码服务”，系统会重启浏览器连接并重新获取微信小程序二维码。处理期间按钮会锁定，避免重复请求。
+              过期时点“立即刷新二维码”；若提示“二维码刷新失败”或服务异常，点“重新连接扫码服务”，系统会重启浏览器连接并重新获取当前所选方式的二维码。处理期间按钮会锁定，避免重复请求。
             </p>
           </Panel>
           <Panel title="安全边界">
             <div
-              className={`flex gap-3 rounded-lg p-4 text-sm ${runtimeConsistent ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}`}
+              className={`flex gap-3 rounded-lg p-4 text-sm ${verifiedAuthenticated ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}`}
             >
-              {runtimeConsistent ? (
+              {verifiedAuthenticated ? (
                 <ShieldCheck
                   className="mt-0.5 size-5 shrink-0"
                   aria-hidden="true"
@@ -546,13 +662,15 @@ function BossLoginContent() {
                 />
               )}
               <p>
-                {!runtimeConsistent || !knownContactMode
-                  ? '无法确认联系运行模式，真实联系应保持阻止，请管理员查看系统状态。'
-                  : realGreetingEnabled
-                    ? '登录和后台状态已一致确认。真实联系仍必须逐人预览、人工确认，并通过时段、额度、账号健康、冷却期和紧急停止检查。'
-                    : fakeContactEnabled
-                      ? '登录和后台状态已一致确认；当前只允许筛选和模拟联系，不会向候选人发送消息。'
-                      : '登录和后台状态已一致确认；筛选继续运行，联系消息仅供预览，发送处理程序未启动。'}
+                {!verifiedAuthenticated
+                  ? '尚未完成登录与后台验证，自动筛选和联系保持暂停。请按上方提示完成扫码。'
+                  : !runtimeConsistent || !knownContactMode
+                    ? '无法确认联系运行模式，真实联系应保持阻止，请管理员查看系统状态。'
+                    : realGreetingEnabled
+                      ? '登录和后台状态已一致确认。真实联系仍必须逐人预览、人工确认，并通过时段、额度、账号健康、冷却期和紧急停止检查。'
+                      : fakeContactEnabled
+                        ? '登录和后台状态已一致确认；当前只允许筛选和模拟联系，不会向候选人发送消息。'
+                        : '登录和后台状态已一致确认；筛选继续运行，联系消息仅供预览，发送处理程序未启动。'}
               </p>
             </div>
           </Panel>
