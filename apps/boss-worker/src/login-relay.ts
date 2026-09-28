@@ -18,6 +18,9 @@ import { isBossRiskSignal } from "./boss-risk.js";
 import { ensureRuntimeDirectory } from "./runtime.js";
 import { hasPersistedBossLogin, openPersistedBossPage } from "./persisted-login.js";
 import { ensureWechatLoginQr } from "./wechat-login.js";
+import { ensureBossAppLoginQr } from "./app-login.js";
+import { readLoginMethod, type LoginMethod } from "./login-method.js";
+import { readLoginPageFeedback } from "./login-page-feedback.js";
 
 type RelayState =
   | "starting"
@@ -32,6 +35,8 @@ type RelayStatus = {
   message: string;
   updatedAt: string;
   imageUpdatedAt: string | null;
+  loginMethod?: LoginMethod;
+  appLoginRequired?: boolean;
   releaseId: string;
   contactDispatchMode: ContactDispatchMode;
   resumePolicy: ReturnType<typeof resumeViewPolicyFromEnvironment>;
@@ -190,12 +195,16 @@ async function connectBrowser(): Promise<Browser> {
     : new Error("Chrome remote debugging endpoint did not become available.");
 }
 
-async function ensureQrMode(page: Page): Promise<void> {
+async function ensureQrMode(page: Page, method: LoginMethod, refresh = false): Promise<void> {
   if (!loginPage(page.url())) return;
-  await ensureWechatLoginQr(page);
+  const feedback = await readLoginPageFeedback(page, method);
+  if (feedback.appLoginRequired && method !== "boss_app") return;
+  if (!feedback.appLoginRequired && feedback.dialogText) throw new Error(`BOSS 提示：${feedback.dialogText}`);
+  if (method === "boss_app") await ensureBossAppLoginQr(page, refresh);
+  else await ensureWechatLoginQr(page, refresh);
 }
 
-async function openLoginPage(): Promise<Page> {
+async function openLoginPage(method: LoginMethod): Promise<Page> {
   if (!browser || !browser.connected) browser = await connectBrowser();
   const existingPages = (await browser.pages()).filter((page) => !page.isClosed());
   let page =
@@ -208,7 +217,8 @@ async function openLoginPage(): Promise<Page> {
     page = await browser.newPage();
   }
   await installBossPageGuards(page);
-  if (!authenticatedBossPage(page.url()) && !riskOrVerificationPage(page.url()) &&
+  const pendingPrompt = loginPage(page.url()) && (await readLoginPageFeedback(page, method)).dialogText;
+  if (!pendingPrompt && !authenticatedBossPage(page.url()) && !riskOrVerificationPage(page.url()) &&
     hasPersistedBossLogin(await browser.cookies())) {
     // A login URL can remain visible even with saved credentials. Let the
     // normal recruiter page validate those credentials once, without changing
@@ -218,12 +228,12 @@ async function openLoginPage(): Promise<Page> {
     await page.goto(bossLoginUrl, { waitUntil: "load", timeout: 60_000 });
   }
   await openHomepageLogin(page);
-  await ensureQrMode(page);
+  await ensureQrMode(page, method);
   return page;
 }
 
-async function refreshQrCode(page: Page): Promise<void> {
-  await ensureWechatLoginQr(page, true);
+async function refreshQrCode(page: Page, method: LoginMethod): Promise<void> {
+  await ensureQrMode(page, method, true);
 }
 
 async function holdStatus(
@@ -250,15 +260,17 @@ async function run(): Promise<boolean> {
   const statusPath = join(runtime, "boss-login-status.json");
   const screenshotPath = join(runtime, "boss-login.png");
   const refreshRequestPath = join(runtime, "boss-login-refresh-request.json");
+  let loginMethod = await readLoginMethod(runtime);
   await removeScreenshot(screenshotPath);
   await writeStatus(statusPath, {
     state: "starting",
+    loginMethod,
     message: "正在检查 BOSS 已保存的登录状态…",
     imageUpdatedAt: null
   });
 
   try {
-    let page = await openLoginPage();
+    let page = await openLoginPage(loginMethod);
     if (await authenticatedBossSession(page)) {
       await removeScreenshot(screenshotPath);
       await writeStatus(statusPath, {
@@ -272,10 +284,14 @@ async function run(): Promise<boolean> {
       throw new Error(unexpectedLoginFlowMessage(page.url()));
     }
     let imageUpdatedAt = new Date().toISOString();
+    let feedback = await readLoginPageFeedback(page, loginMethod);
+    if (!feedback.appLoginRequired && isBossRiskSignal(feedback.dialogText)) throw new Error(feedback.dialogText);
     await writeScreenshot(page, screenshotPath);
     await writeStatus(statusPath, {
       state: "awaiting_scan",
-      message: "请使用微信扫一扫，打开 BOSS 直聘小程序并确认登录。",
+      message: feedback.message,
+      loginMethod: feedback.loginMethod,
+      appLoginRequired: feedback.appLoginRequired,
       imageUpdatedAt
     });
     let lastHeartbeat = Date.now();
@@ -285,19 +301,25 @@ async function run(): Promise<boolean> {
       const url = page.url();
       if (loginPage(url)) {
         if (await consumeLoginRefreshRequest(refreshRequestPath)) {
+          loginMethod = await readLoginMethod(runtime);
           await writeStatus(statusPath, {
             state: "refreshing",
-            message: "正在获取微信小程序登录二维码…",
+            loginMethod,
+            message: `正在获取${loginMethod === "boss_app" ? "BOSS App" : "微信小程序"}登录二维码…`,
             imageUpdatedAt
           });
           try {
-            await refreshQrCode(page);
+            await refreshQrCode(page, loginMethod);
             if (!loginPage(page.url())) continue;
+            feedback = await readLoginPageFeedback(page, loginMethod);
+            if (!feedback.appLoginRequired && isBossRiskSignal(feedback.dialogText)) throw new Error(feedback.dialogText);
             imageUpdatedAt = new Date().toISOString();
             await writeScreenshot(page, screenshotPath);
             await writeStatus(statusPath, {
               state: "awaiting_scan",
-              message: "微信小程序二维码已刷新，请使用微信扫一扫并确认登录。",
+              message: feedback.message,
+              loginMethod: feedback.loginMethod,
+              appLoginRequired: feedback.appLoginRequired,
               imageUpdatedAt
             });
           } catch (error) {
@@ -311,9 +333,19 @@ async function run(): Promise<boolean> {
           continue;
         }
         if (Date.now() - lastHeartbeat >= 5_000) {
+          const nextFeedback = await readLoginPageFeedback(page, loginMethod);
+          if (!loginPage(page.url())) continue;
+          if (!nextFeedback.appLoginRequired && isBossRiskSignal(nextFeedback.dialogText)) throw new Error(nextFeedback.dialogText);
+          if (nextFeedback.signature !== feedback.signature) {
+            await writeScreenshot(page, screenshotPath);
+            imageUpdatedAt = new Date().toISOString();
+          }
+          feedback = nextFeedback;
           await writeStatus(statusPath, {
             state: "awaiting_scan",
-            message: "请使用微信扫一扫，打开 BOSS 直聘小程序并确认登录。",
+            message: feedback.message,
+            loginMethod: feedback.loginMethod,
+            appLoginRequired: feedback.appLoginRequired,
             imageUpdatedAt
           });
           lastHeartbeat = Date.now();
@@ -339,6 +371,7 @@ async function run(): Promise<boolean> {
     const riskControlled = isBossRiskSignal(error);
     return await holdStatus(statusPath, {
       state: riskControlled ? "risk_controlled" : "error",
+      loginMethod,
       message: riskControlled
         ? "检测到 BOSS 风控或安全验证，Worker 未启动。请先在 BOSS 官方页面完成验证，确认账号恢复后再重启服务。"
         : `扫码登录服务异常：${message}`,

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { consumeLoginRefreshRequest } from "./login-refresh-request.js";
+import { readLoginMethod } from "./login-method.js";
 
 const directories: string[] = [];
 async function fixture() {
@@ -15,6 +16,28 @@ function request() { return JSON.stringify({requestId: randomUUID(), requestedAt
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, {recursive:true, force:true}))); });
 
 describe("login refresh request consumption", () => {
+  it("keeps the selected login method through recovery and ordinary refreshes", async () => {
+    const { path, directory } = await fixture();
+    expect(await readLoginMethod(directory)).toBe("wechat");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(request()), loginMethod: "boss_app" }));
+    await consumeLoginRefreshRequest(path, async value => {
+      expect(value.loginMethod).toBe("boss_app");
+      expect(await readLoginMethod(directory)).toBe("boss_app");
+    });
+    await writeFile(path, request());
+    await consumeLoginRefreshRequest(path);
+    expect(await readLoginMethod(directory)).toBe("boss_app");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(request()), loginMethod: "wechat" }));
+    await consumeLoginRefreshRequest(path);
+    expect(await readLoginMethod(directory)).toBe("wechat");
+  });
+
+  it("rejects an unsupported mode without changing the persisted choice", async () => {
+    const { path, directory } = await fixture();
+    await writeFile(path, JSON.stringify({ ...JSON.parse(request()), loginMethod: "sms" }));
+    expect(await consumeLoginRefreshRequest(path)).toBe(false);
+    expect(await readLoginMethod(directory)).toBe("wechat");
+  });
   it("consumes an accepted refresh once even when readers race", async () => {
     const {path, directory} = await fixture();
     await writeFile(path, request());

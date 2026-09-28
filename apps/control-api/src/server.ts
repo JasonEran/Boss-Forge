@@ -195,6 +195,8 @@ type BossLoginRelayStatus = {
   updatedAt: string | null;
   imageAvailable: boolean;
   imageUpdatedAt: string | null;
+  loginMethod?: "wechat" | "boss_app";
+  appLoginRequired?: boolean;
   verification: Record<string, unknown> | null;
   releaseId: string | null;
   contactDispatchMode: string | null;
@@ -333,6 +335,8 @@ async function bossLoginRelayStatus(): Promise<BossLoginRelayStatus> {
       updatedAt,
       imageAvailable,
       imageUpdatedAt: typeof status.imageUpdatedAt === "string" ? status.imageUpdatedAt : null,
+      loginMethod: status.loginMethod === "boss_app" ? "boss_app" : "wechat",
+      appLoginRequired: status.appLoginRequired === true,
       verification,
       releaseId: workerReleaseId,
       contactDispatchMode: workerContactDispatchMode,
@@ -366,12 +370,12 @@ async function bossLoginRelayStatus(): Promise<BossLoginRelayStatus> {
   }
 }
 
-async function requestBossLoginRefresh(): Promise<string> {
+async function requestBossLoginRefresh(loginMethod?: "wechat" | "boss_app"): Promise<string> {
   const requestId = randomUUID();
   const temporaryPath = `${bossLoginRefreshRequestPath}.${process.pid}.${requestId}.tmp`;
   await writeFile(
     temporaryPath,
-    `${JSON.stringify({ requestId, requestedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ requestId, requestedAt: new Date().toISOString(), loginMethod }, null, 2)}\n`,
     { mode: 0o600 }
   );
   await rename(temporaryPath, bossLoginRefreshRequestPath);
@@ -594,7 +598,12 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       send(response, 409, { message: "二维码正在刷新，请稍候。" });
       return;
     }
-    send(response, 202, { requestId: await requestBossLoginRefresh() });
+    const body = await readJson(request);
+    if (body.loginMethod !== undefined && body.loginMethod !== "wechat" && body.loginMethod !== "boss_app") {
+      send(response, 400, { message: "请选择微信扫码或 BOSS App 扫码。" });
+      return;
+    }
+    send(response, 202, { requestId: await requestBossLoginRefresh(body.loginMethod) });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
