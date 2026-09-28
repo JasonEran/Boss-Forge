@@ -86,9 +86,11 @@ function BossLoginContent() {
   const imageUrlRef = useRef<string | null>(null);
   const imageUpdatedAtRef = useRef<string | null>(null);
   const imageRequestRef = useRef(0);
+  const imageLoadingVersionRef = useRef<string | null>(null);
   const refreshInFlight = useRef(false);
   const cancelImageLoad = useCallback(() => {
     imageRequestRef.current += 1;
+    imageLoadingVersionRef.current = null;
   }, []);
 
   const replaceImage = useCallback((next: string | null) => {
@@ -108,29 +110,40 @@ function BossLoginContent() {
   const applyStatus = useCallback(
     async (next: RelayStatus, loadImage: boolean) => {
       setStatus(next);
-      const requestId = ++imageRequestRef.current;
       if (
         next.state === 'awaiting_scan' &&
         next.imageAvailable &&
         (loadImage || imageUpdatedAtRef.current !== next.imageUpdatedAt)
       ) {
-        const imageResponse = await apiFetch(
-          `${controlApi}/api/boss-login/image?updatedAt=${encodeURIComponent(next.imageUpdatedAt ?? '')}`,
-          { cache: 'no-store' },
-        );
-        if (!imageResponse.ok) {
-          const payload = (await imageResponse.json()) as { message?: string };
-          throw new Error(payload.message ?? `HTTP ${imageResponse.status}`);
+        const version = next.imageUpdatedAt ?? '';
+        if (imageLoadingVersionRef.current === version) return;
+        const requestId = ++imageRequestRef.current;
+        imageLoadingVersionRef.current = version;
+        try {
+          const imageResponse = await apiFetch(
+            `${controlApi}/api/boss-login/image?updatedAt=${encodeURIComponent(version)}`,
+            { cache: 'no-store' },
+          );
+          if (!imageResponse.ok) {
+            const payload = (await imageResponse.json()) as {
+              message?: string;
+            };
+            throw new Error(payload.message ?? `HTTP ${imageResponse.status}`);
+          }
+          const blob = await imageResponse.blob();
+          if (requestId !== imageRequestRef.current) return;
+          imageUpdatedAtRef.current = next.imageUpdatedAt;
+          replaceImage(URL.createObjectURL(blob));
+        } finally {
+          if (requestId === imageRequestRef.current)
+            imageLoadingVersionRef.current = null;
         }
-        const blob = await imageResponse.blob();
-        if (requestId !== imageRequestRef.current) return;
-        imageUpdatedAtRef.current = next.imageUpdatedAt;
-        replaceImage(URL.createObjectURL(blob));
       } else if (next.state !== 'awaiting_scan' || !next.imageAvailable) {
+        cancelImageLoad();
         replaceImage(null);
       }
     },
-    [replaceImage],
+    [replaceImage, cancelImageLoad],
   );
 
   const checkStatus = useCallback(async () => {
@@ -171,7 +184,7 @@ function BossLoginContent() {
         const payload = (await response.json()) as { message?: string };
         if (!response.ok)
           throw new Error(payload.message ?? `HTTP ${response.status}`);
-        ++imageRequestRef.current;
+        cancelImageLoad();
         replaceImage(null);
 
         // Error-hold recovery restarts Chromium via compose on-failure; allow
@@ -222,7 +235,7 @@ function BossLoginContent() {
         setPendingMethod(null);
       }
     },
-    [applyStatus, readStatus, replaceImage, status],
+    [applyStatus, readStatus, replaceImage, status, cancelImageLoad],
   );
 
   useEffect(() => {
