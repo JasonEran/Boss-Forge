@@ -1,5 +1,7 @@
 # 实时沟通线上同步修复
 
+> **历史记录 · 2026-09-10**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 2026-09-10，登录恢复后的真实账号验收发现并修复以下问题：
 
 - BOSS 使用 `boss-virtual-list`，`.user-list` 为 `overflow:hidden`，仅渲染 40 行。较早的联系人已在原生 `dataSources` 中但没有 DOM 行，原来的普通滚动定位会漏掉。现使用原生列表数据按稳定候选人 ID 查找、`scrollToIndex` 定位后点击，并再次核对打开的会话 ID；需要下一页时使用 `scrollToBottom` 触发原生加载。不按姓名匹配。

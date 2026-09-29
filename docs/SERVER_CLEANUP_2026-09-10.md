@@ -1,5 +1,7 @@
 # 服务器清理与运行库修复 · 2026-09-10
 
+> **历史记录 · 2026-09-10**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 生产环境：https://106.12.106.113。最终发布 `boss-runtime-fix-20260910-1900cst`，镜像 `sha256:25c90e9cfa291bb215689601e13f738e821e366c9fd65bf713144c22882f19c1`，Linux amd64。API、Web、BOSS worker 已更新，健康检查通过，BOSS authenticated，运行版本一致。
 
 ## 本次上线内容

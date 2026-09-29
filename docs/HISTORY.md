@@ -1,0 +1,99 @@
+# 历史发布、事故与验收索引
+
+> 历史文件全部保留原路径，避免破坏旧链接。每份报告只证明其记录时的环境和结果；现在如何操作请读[现行文档](README.md)。
+
+## 2026-09-29
+
+- [换账号后的岗位与任务恢复 · 2026-09-29](BOSS_ACCOUNT_RECOVERY_2026-09-29.md)
+
+## 2026-09-28
+
+- [微信与 BOSS App 扫码切换（2026-09-28）](BOSS_APP_LOGIN_2026-09-28.md)
+
+## 2026-09-14
+
+- [扫码服务异常与刷新恢复修复（2026-09-14）](LOGIN_REFRESH_RECOVERY_2026-09-14.md)
+
+## 2026-09-12
+
+- [腾讯云 OCR 账号切换（2026-09-12）](OCR_ACCOUNT_SWITCH_2026-09-12.md)
+- [联系数量不限与手动开关（2026-09-12）](MANUAL_CONTACT_CONTROL_2026-09-12.md)
+- [联系提速及过期批次补发（2026-09-12）](CONTACT_SPEED_AND_RETRY_2026-09-12.md)
+- [批量联系排队时确认过期（2026-09-12）](CONTACT_QUEUE_EXPIRY_FIX_2026-09-12.md)
+
+## 2026-09-11
+
+- [招聘闭环补全 · 2026-09-11](RECRUITMENT_LIFECYCLE_2026-09-11.md)
+- [扫码恢复与导航整理 · 2026-09-11](QR_NAVIGATION_FIX_2026-09-11.md)
+- [新功能验收与修复 · 2026-09-11](NEW_FEATURES_AUDIT_2026-09-11.md)
+- [沟通与招聘跟进上线 · 2026-09-11](LIFECYCLE_DEPLOYMENT_2026-09-11.md)
+- [毕业年份识别修复 · 2026-09-11](GRADUATION_RECOGNITION_FIX_2026-09-11.md)
+- [实时沟通工作区改进 · 2026-09-11](COMMUNICATION_WORKSPACE_2026-09-11.md)
+- [BOSS 沟通栏与常用语改造（2026-09-11）](COMMUNICATION_INBOX_2026-09-11.md)
+
+## 2026-09-10
+
+- [简历停留与实时沟通切换](WORKSPACE_BROWSER_HANDOFF_2026-09-10.md)
+- [服务器清理与运行库修复 · 2026-09-10](SERVER_CLEANUP_2026-09-10.md)
+- [实时沟通](REALTIME_COMMUNICATION_2026-09-10.md)
+- [招聘完整流程检查 · 2026-09-10](FULL_FLOW_AUDIT_2026-09-10.md)
+- [岗位和任务联系配置补齐](CONTACT_SCOPE_CONFIGURATION_FIX_2026-09-10.md)
+- [实时沟通线上同步修复](COMMUNICATION_LIVE_FIX_2026-09-10.md)
+
+## 2026-09-09
+
+- [Worker 退出码 0 导致服务异常](WORKER_LIFECYCLE_FIX_2026-09-09.md)
+- [BOSS 微信小程序扫码登录](WECHAT_LOGIN_2026-09-09.md)
+- [BOSS 登录误判与服务恢复（2026-09-09）](SESSION_RECOVERY_FIX_2026-09-09.md)
+- [一人真实打招呼与回执修复（2026-09-09）](GREETING_DELIVERY_FIX_2026-09-09.md)
+- [打招呼重试误报修复（2026-09-09）](CONTACT_PREWRITE_FIX_2026-09-09.md)
+- [BOSS VIP 筛选完整映射](BOSS_VIP_FILTER_MAPPING_2026-09-09.md)
+
+## 2026-09-08
+
+- [单候选人精筛反复异常：跨域画布截图修复](RESUME_TAINTED_CANVAS_FIX_2026-09-08.md)
+- [招聘目标、薪资预算、AI 分析与批量联系](RECRUITMENT_AI_AND_BATCH_CONTACT_2026-09-08.md)
+- [AI 排名一键打招呼（2026-09-08）](RANKING_GREETING_2026-09-08.md)
+- [招呼语首次设置、Sol 主模型与简历滚动条修复](GREETING_SOL_RESUME_FIX_2026-09-08.md)
+- [BOSS 招呼语实际保存请求修复](GREETING_SAVE_REQUEST_FIX_2026-09-08.md)
+- [按人数持续加载 BOSS 推荐](CONTINUOUS_RECOMMEND_COLLECTION_2026-09-08.md)
+- [联系启用、09:00–21:00 与账号健康刷新](CONTACT_READINESS_FIX_2026-09-08.md)
+- [打招呼候选人定位修复](CONTACT_LOCATOR_FIX_2026-09-08.md)
+- [BOSS 无符合候选人与补充推荐修复](BOSS_RECOMMEND_EMPTY_FIX_2026-09-08.md)
+- [BOSS 专业完整列表接入缺口](BOSS_MAJOR_CATALOG_DIAGNOSIS_2026-09-08.md)
+
+## 2026-09-07
+
+- [筛选人数上限与候选人清零](SCREENING_LIMIT_AND_RESET_2026-09-07.md)
+- [BOSS 官方筛选 + 补充核验、完整简历预览](SCREENING_FLOW_AND_RESUME_PREVIEW_2026-09-07.md)
+- [简历筛选修复与 BOSS VIP 官方筛选 · 2026-09-07](SCREENING_FIX_2026-09-07.md)
+- [“没有已通过、都是信息不足”生产核对](SCREENING_DIAGNOSIS_2026-09-07.md)
+- [简历候选人定位修复 · 2026-09-07](RESUME_TARGET_RECOVERY_2026-09-07.md)
+- [核心业务逻辑复核 · 2026-09-07](LOGIC_REVIEW_2026-09-07.md)
+- [2026-09-07 生产功能验证](FEATURE_VALIDATION_2026-09-07.md)
+- [2026-09-07 数据归档与新库切换](DATA_RESET_2026-09-07.md)
+- [BOSS 多岗位同步与推荐筛选 · 2026-09-07](BOSS_POSITION_SYNC_2026-09-07.md)
+- [BOSS 实时筛选选项与简历读取修复](BOSS_LIVE_OPTIONS_AND_RESUME_REPAIR_2026-09-07.md)
+- [专业与牛人关键词获取超时修复](BOSS_FILTER_OPTIONS_TIMEOUT_FIX_2026-09-07.md)
+
+## 2026-09-05
+
+- [2026-09-05 前端改版与简历定位修复](UX_REBUILD_2026-09-05.md)
+- [HR 新手导览](HR_ONBOARDING_2026-09-05.md)
+- [前端切换与后台进度优化 · 2026-09-05](FRONTEND_PERFORMANCE_2026-09-05.md)
+
+## 2026-09-04
+
+- [Boss-Forge 生产三简历全路径验收](THREE_RESUME_ACCEPTANCE_2026-09-04.md)
+- [Boss-Forge 修复与复验报告](REMEDIATION_REPORT_2026-09-04.md)
+- [Boss-Forge 产品审计报告](PRODUCT_AUDIT_2026-09-04.md)
+- [Boss-Forge 真实消息发送开启复核](CONTACT_SEND_ENABLEMENT_2026-09-04.md)
+- [Boss-Forge 三条安全边界验收](BOUNDARY_ACCEPTANCE_2026-09-04.md)
+
+## 2026-09-01
+
+- [Boss-Forge R1–R6 验收报告](ACCEPTANCE_REPORT_2026-09-01.md)
+
+## 如何引用
+
+引用时带上报告日期、发布号、测试环境及实际覆盖。不要把报告中的“当前”“最新”直接复制进新的状态页；需要重新核对后再写。新增报告必须加历史提示并纳入本索引。
