@@ -1,5 +1,7 @@
 # HR 新手导览
 
+> **历史记录 · 2026-09-05**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 ## 交互更新：Spotlight 聚光导览
 
 按用户提供的 [Atlassian Spotlight](https://atlassian.design/components/spotlight) 参考，主入口现改为直接启动页面导览：背景遮罩、目标高亮、贴近目标的蓝色说明卡，以及上一项、下一项、稍后继续和关闭。实际页面间使用原生导航延续步骤，不替用户触发业务按钮。

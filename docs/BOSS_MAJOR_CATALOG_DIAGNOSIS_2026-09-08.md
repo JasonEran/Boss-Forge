@@ -1,5 +1,7 @@
 # BOSS 专业完整列表接入缺口
 
+> **历史记录 · 2026-09-08**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 2026-09-08 线上只读核对：BOSS 的「推荐牛人 → 筛选 → 修改筛选专业 → 语言类」明确包含「英语」。当前亚马逊运营的主面板只展示 5 个已配置专业：新闻传播学类、电子商务类、工商管理类、管理科学与工程类、经济与贸易类。
 
 现有 `boss-filters-browser.ts:readFilterPanel` 只读取 `.filter-panel .check-box .option`，`readDynamicFilterOptions` 返回主面板的这些选项。`readRecommendationFilterOptions` 虽然刷新岗位面板，但没有打开 `.filter-panel .operate-btn.major`，所以「获取最新选项」不会获得未配置到主面板的专业。

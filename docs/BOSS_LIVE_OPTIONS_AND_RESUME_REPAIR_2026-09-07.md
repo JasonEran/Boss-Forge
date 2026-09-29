@@ -1,5 +1,7 @@
 # BOSS 实时筛选选项与简历读取修复
 
+> **历史记录 · 2026-09-07**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 日期：2026-09-07；最终 release：`boss-resume-fix-20260907-2035cst`。
 
 ## 本次需求与实现

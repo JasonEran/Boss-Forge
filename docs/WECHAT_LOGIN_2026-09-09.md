@@ -1,5 +1,7 @@
 # BOSS 微信小程序扫码登录
 
+> **历史记录 · 2026-09-09**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 用户要求扫码改为 BOSS 原生「微信注册/登录」入口中的小程序二维码。2026-09-09 实际检查确认入口为 `a.wx-login-btn[ka="wx_signin"]`，目标组件为 `ScanMiniapp`，二维码为 `.scan-wx-wrapper .mini-app-login img.mini-qrcode`（原图 280 px）。BOSS 页面标题为“微信扫码 安全登录”，不是 BOSS App 扫码，也不是公众号二维码。
 
 实现：进入登录页后，如果停在 App 二维码，先点击 `.btn-sign-switch.phone-switch` 返回登录方式选择，再点击微信入口；已经在微信模式则保留有效二维码。过期时点击 BOSS 原生 `refresh_miniapp_sao_qrcode`；有效二维码的手动刷新通过返回验证码页再进入微信生成一次新码，不刷新回 App 模式。发布图片前检查微信二维码可见、加载完成、没有过期遮罩；刷新时还检查图片来源已改变。已登录页和安全验证页不切换登录方式。

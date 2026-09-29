@@ -1,5 +1,7 @@
 # BOSS 招呼语实际保存请求修复
 
+> **历史记录 · 2026-09-08**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 生产日志三次 `BOSS_GREETING_SAVE_REJECTED`，复现普通 fetch 返回 HTTP 200 / code 121 / 请求不合法。BOSS v11323 官方 833.js、838.js 的请求客户端均为 Axios/XHR，并设置 `with-common-headers: true`；页面已有的公共请求钩子据此附加请求信息。使用同样的 XHR 方式，以已配置岗位的原文实际提交，返回 code 0，独立读回正文保持一致。
 
 现在 GET/POST/读回统一走页面原生 XHR 和公共头钩子，保留岗位精确绑定及正文读回核验。30 秒总请求时限；单请求最长 20 秒。确认保存成功后最多读回 3 次，处理短暂同步延迟，不重复提交保存。明确业务拒绝单独传递 `greeting_save_rejected`；网络或回执不确定不自动重写。

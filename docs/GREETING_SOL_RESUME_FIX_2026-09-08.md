@@ -1,5 +1,7 @@
 # 招呼语首次设置、Sol 主模型与简历滚动条修复
 
+> **历史记录 · 2026-09-08**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 ## 问题与修改
 
 BOSS 当前亚马逊、AI 实习岗位的 `jobGreeting` / `encGreetingId` 为空；其余 3 个岗位有明确招呼语。原 CLI 将空配置报为 `BOSS_GREETING_JOB_BODY_EMPTY`，supervisor 又统一改成 `greeting_unavailable`，UI 用失败 Notice 展示并附带“相关数据没有更新”，把正常的首次设置当成技术故障。

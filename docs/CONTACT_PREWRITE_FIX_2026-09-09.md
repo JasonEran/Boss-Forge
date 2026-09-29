@@ -1,5 +1,7 @@
 # 打招呼重试误报修复（2026-09-09）
 
+> **历史记录 · 2026-09-09**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 本次 14:44:43 谭紫怡 / 亚马逊运营的 intent `4ea0157d-00ec-4b12-afb5-48fcf120d175` 于 14:46:05 返回 `BOSS_GREET_TARGET_UNVERIFIED：候选人的原生打招呼入口未就绪或已经联系`。该分支在原生 `chatStop` 调用之前退出；但 Worker 在启动 CLI 时已标记 externalWriteStarted，把它包装成 uncertain，页面又把所有 uncertain 统一显示为“过程被中断”。
 
 实际原始 ID `214f3a8c22ec2c8a1nV82921FVJS` 的 BOSS 历史卡片显示 isFriend=1、按钮“继续沟通”，因此本次重试没有执行首次打招呼。此证据不用于认定早上 09:20 那次招呼的正文或送达状态；早上记录已经由用户在 14:43 手工解除，保持原样。

@@ -1,5 +1,7 @@
 # Boss-Forge R1–R6 验收报告
 
+> **历史记录 · 2026-09-01**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 > **历史快照：**本文仅反映 2026-09-01 的验收基线，不代表当前生产状态。当前事实请以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 和 [2026-09-04 修复与复验报告](REMEDIATION_REPORT_2026-09-04.md) 为准。
 >
 > 验收日期：2026-09-01  

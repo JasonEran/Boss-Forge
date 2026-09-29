@@ -1,6 +1,6 @@
 # AGENTS.md — Boss-Forge
 
-给 **Codex / Cursor 等 AI 代理** 与 **非编程继任运维** 的短操作手册。细节见 `docs/` 与运维 runbook；本文件只写红线与最短路径。
+给 **Codex / Cursor 等 AI 代理** 与 **非编程继任运维** 的短操作手册。入口见 [文档索引](docs/README.md)、[当前状态](docs/CURRENT_STATUS.md)和[运维手册](docs/OPERATIONS_RUNBOOK.md)；本文件只写红线与最短路径。
 
 本地 Mac 路径 `/Users/jasoneran/Boss-Forge` **仅开发用**，不是部署目标。
 
@@ -40,7 +40,7 @@ Boss-Forge：内网 HR 控制面，对接 BOSS 直聘做 **招聘筛简历 + 受
 | `packages/rule-engine` / `m1-core` | 确定性规则与候选人评估 |
 | `packages/boss-cli-adapter` | 调 boss-cli、账号锁、风险分类 |
 | `packages/contact-policy` | 联系开关、时段、限额、熔断 |
-| `packages/semantic-engine` | 语义提取（生产默认关/仅 shadow） |
+| `packages/semantic-engine` | 旧规则语义 off/shadow、招聘 AI 辅助评估 |
 
 事实来源：**PostgreSQL**。同一 BOSS 浏览器会话由 `boss-login` 监督，读写经账号锁串行。
 
@@ -65,7 +65,7 @@ Boss-Forge：内网 HR 控制面，对接 BOSS 直聘做 **招聘筛简历 + 受
 | Compose | `/opt/boss-forge/deploy`（`compose.intranet.yaml` + `.env.intranet`） |
 | 健康检查 | `curl -sS http://127.0.0.1:3100/health` |
 
-健康检查关注：`releaseId`（应对齐已部署的 Git SHA / 发布号）、`contactDispatchMode`（生产期望 **`real`**）。发版后核对 live SHA 与 GitHub `main` 是否一致；**纯文档变更可只合入 GitHub，不必强求立刻部署**。
+健康检查关注：`releaseId`（应对齐已部署的 Git SHA / 发布号）、`contactDispatchMode`（生产期望 **`real`**）。代码发版后核对 live SHA 与本次批准的应用提交是否一致（后续纯文档提交可领先生产）；**纯文档变更可只合入 GitHub，不必强求立刻部署**。
 
 ---
 
@@ -73,18 +73,18 @@ Boss-Forge：内网 HR 控制面，对接 BOSS 直聘做 **招聘筛简历 + 受
 
 | 现象 | 怎么做 |
 | --- | --- |
-| 二维码 Waiting / 刷新失败、「二维码暂时不可用」 | Web「BOSS 登录」页点 **「重新连接扫码服务」**（会重启浏览器连接并重新取微信码）。仍要扫码时 **通知人** 用微信扫，代理不可代扫。 |
+| 二维码 Waiting / 刷新失败、「二维码暂时不可用」 | Web「BOSS 登录」页点 **「重新连接扫码服务」**（恢复浏览器连接并保留已选微信 / BOSS App 方式）。仍要扫码时 **通知人** 使用对应应用，代理不可代扫。 |
 | `risk_controlled` / 安全验证文案 | **人** 在 BOSS 官方页完成验证；确认后再重启 `boss-login` 续跑。未验证时不要反复硬重启。 |
 | 日上限 200 停机 | 预期停机；有余下 `ready` 招呼可在 Worker 健康时发完，不要强行重开定时凑筛选。 |
 | `uncertain` 打招呼堵队列 | 核对岗位/账号后，对确认未发出的走产品核验（如 `verify-not-sent`）；不要无回执自动重试。 |
 
-更完整的陪跑与排障步骤见运维 runbook（项目 Context / ops 文档里的 Grok 说明书），概念与上文一致。
+换账号后同名岗位 ID 可能改变；按[账号切换与岗位恢复](docs/BOSS_ACCOUNT_SWITCH.md)核对新岗位、规则、联系控制和任务/计划，保留旧历史，不按名称自动重绑。完整排障步骤见[运维手册](docs/OPERATIONS_RUNBOOK.md)。
 
 ---
 
 ## 7. 如何验证改动
 
-1. **本地/CI**：`pnpm typecheck` · `pnpm lint:web` · `pnpm test`；涉及数据层再跑 `pnpm test:integration:data`；用户流 `pnpm test:e2e:user`（隔离 E2E 须 `realGreetingExecuted: false`）。
+1. **本地/CI**：按[验证指南](docs/TESTING.md)选择范围；纯文档检查链接、命令、事实和 diff，不为更新文档操作真实业务。代码检查：`pnpm typecheck` · `pnpm lint:web` · `pnpm test`；涉及数据层再跑 `pnpm test:integration:data`；用户流 `pnpm test:e2e:user`（隔离 E2E 须 `realGreetingExecuted: false`）。
 2. **合入**：开 PR → 合并到 `main`；记下 tip SHA。
 3. **上线（代码改动）**：按 `docs/INTRANET_DEPLOYMENT.md` 部署到 `106.12.106.113`；`/health` 的 `releaseId` **匹配** 本次 main SHA（或发布号）；确认 `contactDispatchMode`。
 4. **文档-only**：合入 GitHub `main` 即可；可选是否同步服务器工作树。

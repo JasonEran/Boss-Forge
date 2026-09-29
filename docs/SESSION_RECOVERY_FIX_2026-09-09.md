@@ -1,5 +1,7 @@
 # BOSS 登录误判与服务恢复（2026-09-09）
 
+> **历史记录 · 2026-09-09**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 用户反馈“BOSS 登录已经失效或页面已关闭，系统已停止全部 BOSS Worker”。生产复查发现同一浏览器仍处于 authenticated，页面是 BOSS interaction，没有登录页或安全验证页；联系队列为空。
 
 ## 原因

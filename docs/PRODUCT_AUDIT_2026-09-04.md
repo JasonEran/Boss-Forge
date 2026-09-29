@@ -1,5 +1,7 @@
 # Boss-Forge 产品审计报告
 
+> **历史记录 · 2026-09-04**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 审计日期：2026-09-04（Asia/Shanghai）  
 审计对象：`/Users/jasoneran/Boss-Forge` 及 `106.12.106.113` 上的实际部署  
 修复前审计结论：**目前不够用**

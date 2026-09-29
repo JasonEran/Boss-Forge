@@ -1,5 +1,7 @@
 # Worker 退出码 0 导致服务异常
 
+> **历史记录 · 2026-09-09**：下文保留当时的版本、验证和限制，不代表当前生产状态。现行说明见[文档索引](README.md)、[当前状态](CURRENT_STATUS.md)与[运维手册](OPERATIONS_RUNBOOK.md)。
+
 2026-09-09 09:20:39，联系任务 `0f2f1cfa-d1b8-4855-9c59-aebeb201da9b` 因 BOSS 招呼语响应与预览正文不一致，被记录为 uncertain。联系 Worker 随后主动结束循环并退出 0；session supervisor 将常驻子进程结束视为故障，停止筛选 Worker，并持续发布“Worker 异常停止（退出码 0）”。不是容器 OOM，也不是数据库中的十分钟超时回收。
 
 修复：联系 Worker 在 uncertain 后保持运行并按 2–30 秒退避查询。数据库原有的同账号 processing/uncertain 阻断继续生效，不会重发不确定任务或绕过核验继续发送。真正的数据库、风控、进程异常仍由 supervisor 处理；单次执行仍可正常退出，SIGTERM 停止后不会多领任务。uncertain 日志改为 ok=false。
