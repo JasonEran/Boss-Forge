@@ -409,6 +409,13 @@ async function maintainWorkerStatus(
     const observation = observeSession(browserSession, Date.now());
     if (observation.kind === "stop") {
       sessionMonitorFailure = observation.failure;
+      console.error(JSON.stringify({
+        event: "boss_session_supervisor.session_stopped",
+        state: observation.failure.state,
+        message: observation.failure.message,
+        browserState: browserSession.state,
+        probeError: browserSession.state === "unavailable" ? browserSession.message : null
+      }));
       await writeSessionStatus(statusPath, sessionMonitorFailure);
       stopSessionWorkers(children);
       return;

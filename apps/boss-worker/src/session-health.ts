@@ -1,5 +1,45 @@
 import { probeLoggedInFromPage } from "@boss-forge/boss-cli-adapter";
-import puppeteer, { type Page } from "puppeteer-core";
+import puppeteer, { type ConnectionTransport, type Page } from "puppeteer-core";
+
+export const SESSION_HEALTH_TIMEOUT_MS = 15_000;
+
+/** Own the socket before connect(): Puppeteer cannot disconnect a Browser that
+ * failed to finish attaching. Close it even when Page.enable or connect stalls. */
+async function healthTransport(endpoint: string, signal: AbortSignal): Promise<ConnectionTransport> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(endpoint);
+    let closed = false;
+    const transport: ConnectionTransport = {
+      send: (message) => socket.send(message),
+      close() {
+        if (closed) return;
+        closed = true;
+        socket.close();
+        signal.removeEventListener("abort", abort);
+      }
+    };
+    const abort = () => {
+      transport.close();
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    socket.addEventListener("open", () => {
+      if (signal.aborted) abort();
+      else resolve(transport);
+    }, { once: true });
+    socket.addEventListener("error", () => {
+      transport.close();
+      reject(new Error("Chromium health WebSocket connection failed."));
+    });
+    socket.addEventListener("message", (event) => transport.onmessage?.(String(event.data)));
+    socket.addEventListener("close", () => {
+      signal.removeEventListener("abort", abort);
+      transport.onclose?.();
+      reject(new Error("Chromium health WebSocket closed before connecting."));
+    });
+  });
+}
 
 export type BrowserSessionState =
   | { state: "authenticated"; url: string }
@@ -147,31 +187,44 @@ export async function inspectBossBrowserSession(
   fetcher: typeof fetch = fetch
 ): Promise<BrowserSessionState> {
   let browser: Awaited<ReturnType<typeof puppeteer.connect>> | null = null;
-  try {
+  let transport: ConnectionTransport | null = null;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("BOSS browser health probe timed out after 15000ms.");
+      controller.abort(error);
+      reject(error);
+    }, SESSION_HEALTH_TIMEOUT_MS);
+  });
+  const inspect = async (): Promise<BrowserSessionState> => {
     const response = await fetcher(`http://127.0.0.1:${debuggingPort}/json`, {
-      signal: AbortSignal.timeout(3_000)
+      signal: controller.signal
     });
-    if (!response.ok) {
-      return {
-        state: "unavailable",
-        message: `Chromium CDP 状态检查返回 HTTP ${response.status}。`
-      };
-    }
+    if (!response.ok) return { state: "unavailable", message: `Chromium CDP 状态检查返回 HTTP ${response.status}。` };
     const targetState = inspectBossTargets(await response.json());
     if (targetState.state !== "authenticated") return targetState;
-
-    browser = await puppeteer.connect({
-      browserURL: `http://127.0.0.1:${debuggingPort}`,
+    const version = await fetcher(`http://127.0.0.1:${debuggingPort}/json/version`, { signal: controller.signal });
+    if (!version.ok) throw new Error(`Chromium CDP version returned HTTP ${version.status}.`);
+    const endpoint = (await version.json() as { webSocketDebuggerUrl?: unknown }).webSocketDebuggerUrl;
+    if (typeof endpoint !== "string") throw new Error("Chromium CDP WebSocket endpoint is missing.");
+    controller.signal.throwIfAborted();
+    transport = await healthTransport(endpoint, controller.signal);
+    const connected = await puppeteer.connect({
+      transport,
       defaultViewport: null,
-      // Health checks only read DOM. Creating a Network session every five
-      // seconds adds work to the shared recruiting page and can hang the probe.
       networkEnabled: false,
       protocolTimeout: 10_000
     });
-    return await verifyBossPageSessionsWithRetry<Page>(
-      () => browser!.pages(),
-      probeLoggedInFromPage
-    );
+    if (controller.signal.aborted) {
+      await connected.disconnect().catch(() => undefined);
+      controller.signal.throwIfAborted();
+    }
+    browser = connected;
+    return verifyBossPageSessionsWithRetry<Page>(() => connected.pages(), probeLoggedInFromPage);
+  };
+  try {
+    return await Promise.race([inspect(), deadline]);
   } catch (error: unknown) {
     return {
       state: "unavailable",
@@ -181,7 +234,12 @@ export async function inspectBossBrowserSession(
           : "无法连接 Chromium CDP。"
     };
   } finally {
-    if (browser) await browser.disconnect().catch(() => undefined);
+    clearTimeout(timer!);
+    controller.abort();
+    // The socket is also closed when connect() throws before assigning browser.
+    // Closing first rejects outstanding CDP requests instead of retaining them.
+    (transport as ConnectionTransport | null)?.close();
+    if (browser) await (browser as Awaited<ReturnType<typeof puppeteer.connect>>).disconnect().catch(() => undefined);
   }
 }
 

@@ -303,7 +303,7 @@ services:
       BOSS_BROWSER_NO_SANDBOX: "true"
       BOSS_FORGE_LOGIN_RELAY_POLL_MS: ${BOSS_FORGE_LOGIN_RELAY_POLL_MS:-1000}
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const fs=require('fs'); const h=JSON.parse(fs.readFileSync('/var/lib/boss-forge/runtime/boss-login-status.json','utf8')); process.exit(Date.now()-Date.parse(h.updatedAt)<20000 ? 0 : 1)\""]
+      test: ["CMD", "node", "apps/boss-worker/scripts/login-healthcheck.mjs"]
       interval: 10s
       timeout: 5s
       retries: 12

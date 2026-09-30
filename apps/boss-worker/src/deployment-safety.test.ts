@@ -98,11 +98,12 @@ describe("intranet deployment safety", () => {
 
   it("documents boss-login startup without dependency recreation or production builds", () => {
     const deployment = source("docs/INTRANET_DEPLOYMENT.md");
-    expect(
-      deployment.match(/up -d --no-build --no-deps boss-login/g)
-    ).toHaveLength(2);
-    expect(deployment).not.toMatch(/up -d boss-login/);
-    expect(deployment).not.toMatch(/up -d --no-build boss-login/);
+    const starts = deployment.split("\n").filter(line => /\bup -d\b/.test(line) && /\bboss-login\b/.test(line));
+    expect(starts.length).toBeGreaterThan(0);
+    for (const command of starts) {
+      expect(command).toContain("--no-build");
+      expect(command).toContain("--no-deps");
+    }
   });
 
   it("keeps real contact off by default and requires every real-mode gate", () => {
