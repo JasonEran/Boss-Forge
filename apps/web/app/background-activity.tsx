@@ -2,7 +2,6 @@
 import { useState } from 'react';
 import { Activity, ArrowUpRight, CircleCheck, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import {
   Popover,
   PopoverContent,
@@ -25,21 +24,13 @@ export function BackgroundActivity() {
     progress: taskProgress(task, data?.candidates ?? []),
   }));
   const active = tasks.filter((item) => item.progress.active);
-  const recent = [
-    ...active,
-    ...tasks.filter(
-      (item) => !item.progress.active && item.task.status !== 'cancelled',
-    ),
-  ].slice(0, 4);
   const contacts =
     user.role === 'interviewer' ? [] : (data?.contactIntents ?? []);
   const contactActive = contacts.filter(
     (item) => item.status === 'ready' || item.status === 'processing',
   ).length;
-  const contactDone = contacts.filter((item) =>
-    ['sent', 'simulated', 'failed', 'uncertain', 'cancelled'].includes(
-      item.status,
-    ),
+  const contactUncertain = contacts.filter(
+    (item) => item.status === 'uncertain',
   ).length;
   const running = active.length + contactActive;
   const runtime = data?.runtime;
@@ -47,6 +38,7 @@ export function BackgroundActivity() {
     runtime?.workerHeartbeatFresh &&
     runtime.browserAuthenticated &&
     runtime.consistent;
+  const awaitingScan = runtime?.state === 'awaiting_scan';
   const processed = active.reduce(
     (sum, item) => sum + item.progress.processed,
     0,
@@ -89,7 +81,9 @@ export function BackgroundActivity() {
               ? '同步中断'
               : running
                 ? `后台运行 ${running}`
-                : '后台进度'}
+                : awaitingScan
+                  ? '等待扫码'
+                  : '后台进度'}
         </span>
       </PopoverTrigger>
       <PopoverContent
@@ -117,7 +111,7 @@ export function BackgroundActivity() {
             : running
               ? `${active.length} 个筛选任务 · ${contactActive} 项联系正在处理`
               : data
-                ? '当前没有后台任务正在执行，下面保留最近的处理进度。'
+                ? '当前没有待执行的后台任务，历史结果保存在任务与联系记录中。'
                 : '正在读取后台任务…'}
         </p>
         <div className="flex flex-wrap gap-2 rounded-lg bg-muted px-3 py-2 text-xs leading-6">
@@ -126,7 +120,12 @@ export function BackgroundActivity() {
               runtime?.workerHeartbeatFresh ? 'text-success' : 'text-warning'
             }
           >
-            后台{runtime?.workerHeartbeatFresh ? '在线' : '待确认'}
+            后台
+            {runtime?.workerHeartbeatFresh
+              ? '在线'
+              : awaitingScan
+                ? '待命'
+                : '待确认'}
           </span>
           <span className="text-border">·</span>
           <span
@@ -134,15 +133,34 @@ export function BackgroundActivity() {
               runtime?.browserAuthenticated ? 'text-success' : 'text-warning'
             }
           >
-            BOSS {runtime?.browserAuthenticated ? '已连接' : '待连接'}
+            BOSS{' '}
+            {runtime?.browserAuthenticated
+              ? '已连接'
+              : awaitingScan
+                ? '等待扫码'
+                : '待连接'}
           </span>
           {runtime && !runtimeReady ? (
             <p className="w-full text-muted-foreground">
-              后台尚未准备好，队列会保留；请处理登录或服务状态后继续。
+              {awaitingScan
+                ? running
+                  ? '请完成扫码登录，当前排队任务会在登录后继续。'
+                  : '完成扫码登录后，可按需启动新任务。'
+                : '请先处理登录或服务状态，再继续执行任务。'}
+              {awaitingScan ? (
+                <Link
+                  href="/boss-login"
+                  onClick={() => setOpen(false)}
+                  className="flex min-h-11 items-center gap-1 text-primary"
+                >
+                  前往扫码登录
+                  <ArrowUpRight className="size-3.5" />
+                </Link>
+              ) : null}
             </p>
           ) : null}
         </div>
-        {recent.map(({ task }) => (
+        {active.slice(0, 4).map(({ task }) => (
           <div key={task.id} className="space-y-2 border-t pt-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-medium">{task.positionName}</p>
@@ -165,34 +183,54 @@ export function BackgroundActivity() {
             />
           </div>
         ))}
-        {contacts.length ? (
+        {contactActive ? (
           <section className="space-y-2 border-t pt-3">
             <p className="text-sm font-medium">联系执行</p>
-            <Progress
-              value={Math.round((contactDone / contacts.length) * 100)}
-              aria-label="联系动作处理进度"
-            />
             <p className="text-xs text-muted-foreground">
-              {contactDone} / {contacts.length} 项已处理 · {contactActive}{' '}
-              项等待或执行中
-            </p>
-            <p className="text-xs text-muted-foreground">
-              模拟、失败与不确定的结果会单独保留在联系记录中。
+              {contactActive} 项等待或执行中
             </p>
             <Link
               href="/contacts"
               onClick={() => setOpen(false)}
               className="inline-flex min-h-11 items-center text-xs text-primary"
             >
-              查看联系记录
+              查看发送队列
               <ArrowUpRight className="size-3.5" />
             </Link>
           </section>
         ) : null}
-        {!recent.length && data ? (
-          <p className="rounded-lg bg-muted p-4 text-sm text-muted-foreground">
-            暂时没有筛选记录，可从任务与计划开始。
+        {contactUncertain ? (
+          <p className="border-t pt-3 text-xs leading-5 text-warning">
+            {contactUncertain} 条历史联系回执待核验，自动发送暂缓。
+            <Link
+              href="/contacts"
+              onClick={() => setOpen(false)}
+              className="flex min-h-11 items-center gap-1 text-primary"
+            >
+              查看待核验记录
+              <ArrowUpRight className="size-3.5" />
+            </Link>
           </p>
+        ) : null}
+        {data ? (
+          <div className="flex gap-4 border-t pt-2 text-xs text-primary">
+            <Link
+              href={user.role === 'interviewer' ? '/candidates' : '/tasks'}
+              onClick={() => setOpen(false)}
+              className="inline-flex min-h-11 items-center"
+            >
+              查看历史{user.role === 'interviewer' ? '候选人' : '任务'}
+            </Link>
+            {user.role !== 'interviewer' ? (
+              <Link
+                href="/contacts"
+                onClick={() => setOpen(false)}
+                className="inline-flex min-h-11 items-center"
+              >
+                查看联系记录
+              </Link>
+            ) : null}
+          </div>
         ) : null}
         <p className="border-t pt-3 text-[11px] text-muted-foreground">
           页面打开时每 5 秒同步 ·{' '}
