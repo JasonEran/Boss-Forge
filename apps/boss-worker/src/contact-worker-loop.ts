@@ -22,8 +22,8 @@ export async function runContactWorkerLoop(input: {
     }
     if (!input.loop || input.shouldStop()) return;
     // An uncertain receipt is a persisted task state, not a process failure.
-    // Fresh uncertain briefly blocks new claims (see claimContactDispatch grace
-    // window); stay alive so the supervisor does not also stop screening.
+    // Uncertain real sends block new contact claims until verified; stay alive
+    // so the supervisor does not also stop independent resume screening.
     if (result === "idle" || result === "uncertain") {
       await wait(idlePollMs);
       idlePollMs = Math.min(idlePollMs * 2, POLL_INTERVAL_MAX_MS);

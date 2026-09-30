@@ -16,6 +16,8 @@
 
 修复生产问题不默认包含真实发消息验收。外部动作须在用户已授权范围内；模拟验证不能称为实盘通过。
 
+浏览器探测/联系调度回归：`apps/boss-worker/src/session-health-connection.test.ts` 覆盖连接和页面探测卡住后的总超时与清理；`apps/boss-worker/src/session-health.e2e.ts` 使用隔离 Chromium，拦截所有页面请求，不连接真实 BOSS。`packages/data/src/contact-screening-priority.integration.ts` 须使用下文的隔离数据库，并设置 `BOSS_FORGE_ALLOW_CONTACT_TEST_DATA=I_UNDERSTAND_ISOLATED_ONLY`；它只创建合成队列，验证旧的待核验发送不会被重新领取，也不饿死简历筛选，不调用发送传输。
+
 ## 2. 仓库命令
 
 在仓库根目录运行：

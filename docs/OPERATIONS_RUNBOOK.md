@@ -36,6 +36,8 @@ docker exec boss-forge-intranet-boss-login-1 cat /var/lib/boss-forge/runtime/wor
 
 联合判断：API、登录状态的 `releaseId` 和联系模式相同；简历策略一致；浏览器认证成功；Worker 心跳新鲜。容器 `healthy` 不能单独证明 BOSS 已登录；心跳 `ready` 表示 Worker 可领取工作，不表示一定有任务。
 
+登录容器的健康检查会将 `error/risk_controlled` 和认证后的陈旧或停止心跳判为不健康；等待本人扫码时允许登录服务保持健康。浏览器探测有 15 秒总超时，失败连接会关闭。`boss_session_supervisor.session_stopped` 日志保留探测失败原因；不要通过延长超时或循环重启掩盖页面无响应。
+
 ## 3. 登录问题
 
 | 现象 | 先检查 | 恢复方式 |
@@ -93,6 +95,8 @@ SQL
 - `failed`：查看具体原因，不能把所有失败批量重置为 ready。
 
 所有恢复必须保留幂等、回执和审计。不要通过 CLI 或数据库 UPDATE 绕过产品联系检查。
+
+同账号存在真实 `uncertain` 记录时，联系 Worker 保持存活但不领取新的发送；等待超过 10 分钟也不会解除核验要求。这类待发送队列，以及被暂停执行的队列，不再抢占简历领取的优先级。筛选推进不等于发送已经恢复，交班时应分别报告两者。
 
 ## 6. 浏览器诊断约束
 

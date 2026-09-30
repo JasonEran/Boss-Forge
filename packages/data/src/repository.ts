@@ -2121,6 +2121,18 @@ export class BossForgeRepository {
               WHERE priority_position.boss_account_id = ${bossAccountId}
                 AND priority_intent.status = 'ready'
                 AND priority_intent.transport_mode = ${contactPriorityTransportMode}
+                AND priority_position.contact_dispatch_paused = false
+                AND NOT EXISTS (
+                  SELECT 1 FROM contact_intents uncertain_contact
+                  JOIN candidate_position_states uncertain_state
+                    ON uncertain_state.id = uncertain_contact.candidate_position_state_id
+                  JOIN positions uncertain_position
+                    ON uncertain_position.id = uncertain_state.position_id
+                  WHERE uncertain_position.boss_account_id = priority_position.boss_account_id
+                    AND uncertain_contact.status = 'uncertain'
+                    AND uncertain_contact.transport_mode = 'real'
+                    AND priority_intent.transport_mode = 'real'
+                )
                 AND priority_event.event_type = 'contact.requested'
                 AND priority_event.status = 'pending'
                 AND priority_event.available_at <= now()
